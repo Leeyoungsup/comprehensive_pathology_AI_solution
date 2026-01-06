@@ -114,3 +114,4 @@ MIT License
 ## 기여
 
 이슈나 풀 리퀘스트는 언제든지 환영합니다!
+"# comprehensive_pathology_AI_solution" 
