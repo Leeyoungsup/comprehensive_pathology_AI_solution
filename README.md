@@ -1,25 +1,64 @@
 # Comprehensive Pathology AI Solution
 
-병리 이미지 뷰어와 AI 분석을 통합한 PyQt6 기반 프로그램
+대용량 병리 이미지(WSI) 뷰어 및 AI 분석 통합 프로그램
 
-## 기능
+## 프로젝트 구조
 
-### 현재 구현된 기능
-- ✅ 병리 이미지 로드 및 표시
-- ✅ 마우스 휠을 이용한 줌 인/아웃
-- ✅ 마우스 드래그를 이용한 패닝
-- ✅ 줌 슬라이더 컨트롤
-- ✅ 화면 맞춤 기능
-- ✅ AI 분석 패널 UI (템플릿)
-- ✅ 이미지 정보 표시
+```
+comprehensive_pathology_AI_solution/
+├── main.py                 # 메인 실행 파일
+├── requirements.txt        # Python 패키지 의존성
+├── README.md              # 프로젝트 문서
+│
+├── core/                  # 핵심 로직
+│   ├── __init__.py
+│   └── wsi_tile_manager.py    # WSI 타일 매니저 (ASAP 기반)
+│
+├── ui/                    # UI 컴포넌트
+│   ├── __init__.py
+│   ├── viewer.py          # 메인 뷰어 윈도우
+│   ├── viewer.ui          # Qt Designer UI 파일
+│   ├── viewer_ui.py       # UI 파일에서 생성된 Python 코드
+│   └── minimap.py         # 미니맵 위젯
+│
+├── libs/                  # 외부 라이브러리
+│   ├── openslide_lib/     # OpenSlide 라이브러리
+│   └── libopenslide-1.dll # OpenSlide DLL
+│
+└── assets/                # 리소스 파일
+    └── (이미지, 아이콘 등)
+```
 
-### 예정된 기능
-- 🔲 조직 분할 (Tissue Segmentation) AI 모델 통합
-- 🔲 암 분류 (Cancer Classification) AI 모델 통합
-- 🔲 병변 검출 (Lesion Detection) AI 모델 통합
-- 🔲 AI 분석 결과 오버레이 표시
-- 🔲 WSI(Whole Slide Image) 파일 지원 (OpenSlide 활용)
-- 🔲 분석 결과 저장 및 내보내기
+## 주요 기능
+
+### 1. WSI 타일 기반 렌더링
+- **ASAP 구조 기반**: TileManager, TileCache, LOD 시스템
+- **멀티 스레드 타일 로딩**: 4개 워커 스레드로 비동기 로딩
+- **레벨별 캐시 관리**: 
+  - 레벨 0 (고해상도): 500 타일 (~500MB)
+  - 레벨 1: 800 타일
+  - 레벨 2: 1200 타일
+  - 레벨 3+: 2000 타일
+- **LRU Eviction**: 메모리 효율적 관리
+
+### 2. 뷰어 기능
+- **부드러운 줌/패닝**: QGraphicsView 기반
+- **4단계 레벨 시스템**: 자동 해상도 전환
+- **프리로딩**: 보이는 영역 ±4 타일 미리 로드
+
+### 3. 미니맵
+- **왼쪽 하단 오버레이**: 반투명 배경
+- **캐시 상태 시각화**:
+  - 레벨 0: 파란색 (고해상도)
+  - 레벨 1: 주황색
+  - 레벨 2: 초록색
+  - 레벨 3+: 노란색
+- **현재 FOV 표시**: 빨간 사각형
+
+### 4. AI 분석 패널 (예정)
+- 조직 분할 (Segmentation)
+- 암 분류 (Classification)
+- 병변 검출 (Detection)
 
 ## 설치 방법
 
