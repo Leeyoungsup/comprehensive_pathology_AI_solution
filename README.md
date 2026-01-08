@@ -2,32 +2,67 @@
 
 대용량 병리 이미지(WSI) 뷰어 및 AI 분석 통합 프로그램
 
-## 프로젝트 구조
+## 프로젝트 구조 (리팩토링 완료 ✅)
 
 ```
 comprehensive_pathology_AI_solution/
-├── main.py                 # 메인 실행 파일
-├── requirements.txt        # Python 패키지 의존성
-├── README.md              # 프로젝트 문서
+├── main.py                      # 메인 실행 파일
+├── requirements.txt             # Python 패키지 의존성
+├── README.md                    # 프로젝트 문서
 │
-├── core/                  # 핵심 로직
+├── core/                        # 핵심 로직
 │   ├── __init__.py
-│   └── wsi_tile_manager.py    # WSI 타일 매니저 (ASAP 기반)
+│   ├── wsi_tile_manager.py      # WSI 타일 매니저 (ASAP 기반)
+│   └── slide_info.py            # 슬라이드 정보 관리 (NEW)
 │
-├── ui/                    # UI 컴포넌트
+├── ui/                          # UI 컴포넌트
 │   ├── __init__.py
-│   ├── viewer.py          # 메인 뷰어 윈도우
-│   ├── viewer.ui          # Qt Designer UI 파일
-│   ├── viewer_ui.py       # UI 파일에서 생성된 Python 코드
-│   └── minimap.py         # 미니맵 위젯
+│   ├── viewer.py                # 메인 뷰어 윈도우 (간소화)
+│   ├── wsi_view_widget.py       # WSI 뷰어 위젯 (NEW)
+│   ├── minimap.py               # 미니맵 위젯
+│   ├── viewer.ui                # Qt Designer UI 파일
+│   ├── viewer_ui.py             # UI 파일에서 생성된 Python 코드
+│   └── dialogs/                 # 다이얼로그 (NEW)
+│       ├── __init__.py
+│       └── slide_info_dialog.py # 슬라이드 정보 다이얼로그
 │
-├── libs/                  # 외부 라이브러리
-│   ├── openslide_lib/     # OpenSlide 라이브러리
-│   └── libopenslide-1.dll # OpenSlide DLL
+├── ai/                          # AI 모듈 (NEW)
+│   ├── __init__.py
+│   ├── segmentation.py          # 조직 분할
+│   ├── classification.py        # 암 분류
+│   └── detection.py             # 병변 검출
 │
-└── assets/                # 리소스 파일
+├── utils/                       # 유틸리티 (NEW)
+│   ├── __init__.py
+│   └── coordinate_utils.py      # 좌표 변환 유틸리티
+│
+├── libs/                        # 외부 라이브러리
+│   ├── openslide_lib/           # OpenSlide 라이브러리
+│   └── libopenslide-1.dll       # OpenSlide DLL
+│
+└── assets/                      # 리소스 파일
     └── (이미지, 아이콘 등)
 ```
+
+### 리팩토링 주요 변경사항
+
+#### 🎯 기능별 모듈 분리
+- **viewer.py (634줄 → 236줄)**: UI 이벤트 처리만 담당
+- **wsi_view_widget.py (NEW)**: WSI 렌더링 엔진 분리
+- **slide_info.py (NEW)**: 슬라이드 정보 관리 로직 분리
+- **slide_info_dialog.py (NEW)**: 정보 다이얼로그 UI 분리
+
+#### 🤖 AI 모듈 구조화
+- **segmentation.py**: 조직 분할 기능 (백그라운드 워커 포함)
+- **classification.py**: 암 분류 기능
+- **detection.py**: 병변 검출 기능
+- 각 모듈은 독립적으로 확장 및 테스트 가능
+
+#### 🛠️ 유틸리티 추가
+- **coordinate_utils.py**: 좌표 변환 헬퍼 함수
+  - 레벨 간 좌표 변환
+  - 타일 인덱스 계산
+  - 물리적 크기 변환
 
 ## 주요 기능
 
