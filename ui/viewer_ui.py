@@ -38,6 +38,8 @@ class Ui_MainWindow(object):
         self.verticalLayout_3 = QtWidgets.QVBoxLayout(self.rightPanel)
         self.verticalLayout_3.setContentsMargins(0, 0, 0, 0)
         self.verticalLayout_3.setObjectName("verticalLayout_3")
+        spacerItem = QtWidgets.QSpacerItem(10, 6, QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Fixed)
+        self.verticalLayout_3.addItem(spacerItem)
         self.groupBox = QtWidgets.QGroupBox(self.rightPanel)
         self.groupBox.setObjectName("groupBox")
         self.verticalLayout_4 = QtWidgets.QVBoxLayout(self.groupBox)
