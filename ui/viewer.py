@@ -189,22 +189,18 @@ class WSIViewer(QGraphicsView):
         # 4단계 레벨 시스템 사용
         level = self.tile_manager.get_stage_level(self.zoom_level)
         
-        print(f"FOV 업데이트: view_rect={view_rect.x():.0f},{view_rect.y():.0f} {view_rect.width():.0f}x{view_rect.height():.0f}, level={level}, zoom={self.zoom_level:.4f}")
+        # print(f"FOV 업데이트: view_rect={view_rect.x():.0f},{view_rect.y():.0f} {view_rect.width():.0f}x{view_rect.height():.0f}, level={level}, zoom={self.zoom_level:.4f}")
         
-        # ★ ASAP 핵심: 레벨이 변경되면 이전 레벨의 모든 타일 제거
+        # ★ 레벨 변경 감지 (이전 타일은 유지하고 새 타일을 위에 덮음)
         level_changed = (self.current_level != level)
         if level_changed:
-            print(f"레벨 변경: {self.current_level} -> {level}, 기존 타일 모두 제거")
-            # 모든 기존 타일 제거
-            for key, item in self.tile_items.items():
-                self.scene.removeItem(item)
-            self.tile_items.clear()
+            # print(f"레벨 변경: {self.current_level} -> {level}, 이전 타일 유지하고 새 타일 덮어씌움")
             self.current_level = level
         
         # 시그널 발생
         self.fieldOfViewChanged.emit(view_rect, level)
         
-        # 타일 로딩 요청
+        # 타일 로딩 요청 (항상 실행, 캐시에 없는 타일만 로드)
         self.tile_manager.load_tiles_for_view(view_rect, level)
         
         # 미니맵 업데이트
@@ -236,7 +232,7 @@ class WSIViewer(QGraphicsView):
         end_tile_x = int(view_rect.right() / tile_size / level_downsample) + 2
         end_tile_y = int(view_rect.bottom() / tile_size / level_downsample) + 2
         
-        print(f"타일 렌더링: 타일 범위 x[{start_tile_x}~{end_tile_x}] y[{start_tile_y}~{end_tile_y}], level={level}")
+        # print(f"타일 렌더링: 타일 범위 x[{start_tile_x}~{end_tile_x}] y[{start_tile_y}~{end_tile_y}], level={level}")
         
         # 타일 렌더링
         tiles_rendered = 0
@@ -262,27 +258,66 @@ class WSIViewer(QGraphicsView):
                         scale = level_downsample
                         item.setScale(scale)
                         
+                        # Z-value 설정: 레벨이 낮을수록(고해상도) 위에 표시
+                        # 레벨 0 = z=4, 레벨 1 = z=3, 레벨 2 = z=2, 레벨 3 = z=1
+                        item.setZValue(10 - level)
+                        
                         self.scene.addItem(item)
                         self.tile_items[cache_key] = item
                         tiles_rendered += 1
         
         if tiles_rendered > 0:
-            print(f"  -> {tiles_rendered}개 타일 렌더링됨 (캐시에서: {tiles_from_cache}개)")
+            # print(f"  -> {tiles_rendered}개 타일 렌더링됨 (캐시에서: {tiles_from_cache}개)")
             # 미니맵 캐시 상태 업데이트
             if hasattr(self, 'minimap') and self.minimap.isVisible():
                 cached_tiles = self.tile_manager.get_cached_tiles_info()
                 self.minimap.update_cached_tiles(cached_tiles)
         
-        # 보이지 않는 타일 제거 (현재 레벨 내에서만)
+        # 타일 정리: 현재 레벨의 보이지 않는 타일 + 이전 레벨의 타일 제거
         keys_to_remove = []
         for key in self.tile_items:
             tx, ty, lv = key
-            # 현재 레벨이 아니거나 보이는 범위 밖이면 제거
-            if lv != level or tx < start_tile_x - 2 or tx > end_tile_x + 2 or \
-               ty < start_tile_y - 2 or ty > end_tile_y + 2:
-                item = self.tile_items[key]
-                self.scene.removeItem(item)
-                keys_to_remove.append(key)
+            
+            # 현재 레벨이면: 보이는 범위 밖만 제거
+            if lv == level:
+                if tx < start_tile_x - 2 or tx > end_tile_x + 2 or \
+                   ty < start_tile_y - 2 or ty > end_tile_y + 2:
+                    item = self.tile_items[key]
+                    self.scene.removeItem(item)
+                    keys_to_remove.append(key)
+            # 다른 레벨이면: 현재 레벨 타일로 덮인 영역만 제거 (배경 유지)
+            else:
+                # 이전 레벨 타일의 영역을 현재 레벨 좌표로 변환
+                old_downsample = self.tile_manager.get_level_downsample(lv)
+                old_tile_x0 = tx * tile_size * old_downsample
+                old_tile_y0 = ty * tile_size * old_downsample
+                old_tile_x1 = old_tile_x0 + tile_size * old_downsample
+                old_tile_y1 = old_tile_y0 + tile_size * old_downsample
+                
+                # 이 영역이 현재 레벨의 타일로 완전히 덮였는지 확인
+                covered = True
+                for new_ty in range(start_tile_y, end_tile_y):
+                    for new_tx in range(start_tile_x, end_tile_x):
+                        new_tile_x0 = new_tx * tile_size * level_downsample
+                        new_tile_y0 = new_ty * tile_size * level_downsample
+                        new_tile_x1 = new_tile_x0 + tile_size * level_downsample
+                        new_tile_y1 = new_tile_y0 + tile_size * level_downsample
+                        
+                        # 겹치는지 확인
+                        if not (new_tile_x1 < old_tile_x0 or new_tile_x0 > old_tile_x1 or
+                                new_tile_y1 < old_tile_y0 or new_tile_y0 > old_tile_y1):
+                            # 겹치는 타일이 캐시에 있는지 확인
+                            if (new_tx, new_ty, level) not in self.tile_items:
+                                covered = False
+                                break
+                    if not covered:
+                        break
+                
+                # 완전히 덮였으면 제거
+                if covered:
+                    item = self.tile_items[key]
+                    self.scene.removeItem(item)
+                    keys_to_remove.append(key)
         
         for key in keys_to_remove:
             del self.tile_items[key]
@@ -429,8 +464,10 @@ class PathologyViewer(QMainWindow):
         self.actionZoomOut.triggered.connect(self.wsi_viewer.zoom_out)
         self.actionFitWindow.triggered.connect(self.wsi_viewer.fit_to_window)
         self.actionSaveResults.triggered.connect(self.save_results)
-        
-        # AI 버튼 연결
+                # 정보 버튼 연결 (UI에 있는 경우)
+        if hasattr(self, 'actionSlideInfo'):
+            self.actionSlideInfo.triggered.connect(self.show_slide_info)
+                # AI 버튼 연결
         self.btnSegmentation.clicked.connect(self.run_segmentation)
         self.btnClassification.clicked.connect(self.run_classification)
         self.btnDetection.clicked.connect(self.run_detection)
@@ -467,6 +504,96 @@ class PathologyViewer(QMainWindow):
     def on_minimap_clicked(self, x, y):
         """미니맵 클릭 시 해당 위치로 이동 (미사용)"""
         pass
+    
+    def show_slide_info(self):
+        """슬라이드 정보 표시 (별도 다이얼로그)"""
+        if not self.wsi_viewer.tile_manager:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.information(self, "정보", "먼저 이미지를 로드해주세요.")
+            return
+        
+        info = self.wsi_viewer.tile_manager.get_slide_info()
+        if not info:
+            return
+        
+        # 정보 다이얼로그 생성
+        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QTextEdit, QPushButton, QGroupBox, QFormLayout
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("슬라이드 정보")
+        dialog.setMinimumWidth(600)
+        
+        main_layout = QVBoxLayout(dialog)
+        
+        # 기본 정보 그룹
+        basic_group = QGroupBox("기본 정보")
+        basic_layout = QFormLayout()
+        
+        filename_edit = QLineEdit(info['filename'])
+        filename_edit.setReadOnly(True)
+        basic_layout.addRow("파일명:", filename_edit)
+        
+        vendor_edit = QLineEdit(info['vendor'])
+        vendor_edit.setReadOnly(True)
+        basic_layout.addRow("벤더:", vendor_edit)
+        
+        objective_edit = QLineEdit(f"{info['objective_power']}x")
+        objective_edit.setReadOnly(True)
+        basic_layout.addRow("배율:", objective_edit)
+        
+        basic_group.setLayout(basic_layout)
+        main_layout.addWidget(basic_group)
+        
+        # 크기 정보 그룹
+        size_group = QGroupBox("크기 정보")
+        size_layout = QFormLayout()
+        
+        dimensions_edit = QLineEdit(f"{info['dimensions'][0]} x {info['dimensions'][1]} pixels")
+        dimensions_edit.setReadOnly(True)
+        size_layout.addRow("픽셀 크기 (Level 0):", dimensions_edit)
+        
+        if info['mpp_x'] and info['mpp_y']:
+            mpp_edit = QLineEdit(f"{info['mpp_x']:.4f} x {info['mpp_y']:.4f} µm/pixel")
+            mpp_edit.setReadOnly(True)
+            size_layout.addRow("MPP:", mpp_edit)
+            
+            # 물리적 크기 계산
+            width_mm = info['dimensions'][0] * info['mpp_x'] / 1000
+            height_mm = info['dimensions'][1] * info['mpp_y'] / 1000
+            physical_edit = QLineEdit(f"{width_mm:.2f} x {height_mm:.2f} mm")
+            physical_edit.setReadOnly(True)
+            size_layout.addRow("물리적 크기:", physical_edit)
+        
+        size_group.setLayout(size_layout)
+        main_layout.addWidget(size_group)
+        
+        # 레벨 정보 그룹
+        level_group = QGroupBox("레벨 정보")
+        level_layout = QVBoxLayout()
+        
+        level_count_label = QLabel(f"총 레벨 수: {info['level_count']}")
+        level_layout.addWidget(level_count_label)
+        
+        level_text = QTextEdit()
+        level_text.setReadOnly(True)
+        level_text.setMaximumHeight(150)
+        
+        level_info_str = ""
+        for i, (dim, downsample) in enumerate(zip(info['level_dimensions'], info['level_downsamples'])):
+            level_info_str += f"Level {i}: {dim[0]} x {dim[1]} pixels (downsample: {downsample:.2f})\n"
+        
+        level_text.setPlainText(level_info_str)
+        level_layout.addWidget(level_text)
+        
+        level_group.setLayout(level_layout)
+        main_layout.addWidget(level_group)
+        
+        # 닫기 버튼
+        close_button = QPushButton("닫기")
+        close_button.clicked.connect(dialog.accept)
+        main_layout.addWidget(close_button)
+        
+        dialog.exec_()
     
     
     def run_segmentation(self):
