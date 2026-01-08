@@ -4,9 +4,9 @@ QGraphicsItem을 사용한 Annotation 렌더링
 ASAP의 PathologyViewer annotation 렌더링 참고
 """
 
-from PyQt5.QtWidgets import QGraphicsItem, QGraphicsPolygonItem, QGraphicsEllipseItem
+from PyQt5.QtWidgets import QGraphicsItem, QGraphicsPolygonItem, QGraphicsEllipseItem, QGraphicsPathItem
 from PyQt5.QtCore import Qt, QPointF, QRectF
-from PyQt5.QtGui import QPen, QBrush, QColor, QPolygonF, QPainter
+from PyQt5.QtGui import QPen, QBrush, QColor, QPolygonF, QPainter, QPainterPath
 from typing import List, Optional, Tuple
 import sys
 from pathlib import Path
@@ -188,10 +188,11 @@ class ControlPointItem(QGraphicsEllipseItem):
         super().hoverLeaveEvent(event)
 
 
-class DrawingPolygonItem(QGraphicsPolygonItem):
+class DrawingPolygonItem(QGraphicsPathItem):
     """
     Polygon 그리기 중인 임시 아이템
     ASAP의 drawing mode 참고
+    - QGraphicsPathItem 사용으로 시작점-끝점 자동 연결 없음
     """
     
     def __init__(self, color: QColor = QColor(0, 255, 0)):
@@ -204,9 +205,8 @@ class DrawingPolygonItem(QGraphicsPolygonItem):
         # 스타일 - 영역 채우기 없이 선만 표시
         pen = QPen(color, 2, Qt.SolidLine)
         pen.setCosmetic(True)  # 배율 독립적 크기
-        brush = QBrush(Qt.NoBrush)  # 투명 (영역 안 그림)
         self.setPen(pen)
-        self.setBrush(brush)
+        self.setBrush(QBrush(Qt.NoBrush))  # 투명
         
         self.setZValue(99)  # Annotation 아래, 타일 위
     
@@ -227,22 +227,27 @@ class DrawingPolygonItem(QGraphicsPolygonItem):
         self.update_polygon()
     
     def update_last_point(self, x: float, y: float):
-        """마지막 점 업데이트 (마우스 따라다니기)"""
+        """마지막 점 업데이트 (마우스 따라다니기) - 열린 경로로 표시"""
         if self.points:
             temp_points = self.points.copy()
             temp_points.append(QPointF(x, y))
             
-            polygon = QPolygonF()
-            for point in temp_points:
-                polygon.append(point)
-            self.setPolygon(polygon)
+            # QPainterPath로 열린 경로 생성 (시작점-끝점 연결 안 함)
+            path = QPainterPath()
+            if temp_points:
+                path.moveTo(temp_points[0])
+                for point in temp_points[1:]:
+                    path.lineTo(point)
+            self.setPath(path)
     
     def update_polygon(self):
-        """Polygon 업데이트"""
-        polygon = QPolygonF()
-        for point in self.points:
-            polygon.append(point)
-        self.setPolygon(polygon)
+        """Path 업데이트"""
+        path = QPainterPath()
+        if self.points:
+            path.moveTo(self.points[0])
+            for point in self.points[1:]:
+                path.lineTo(point)
+        self.setPath(path)
     
     def get_coordinates(self) -> List[Tuple[float, float]]:
         """좌표 리스트 반환"""
