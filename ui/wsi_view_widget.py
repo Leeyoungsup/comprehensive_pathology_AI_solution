@@ -89,6 +89,7 @@ class WSIViewWidget(QGraphicsView):
         # 미니맵 위젯 (오버레이)
         self.minimap = MiniMap(self)
         self.minimap.hide()  # 초기에는 숨김
+        self.minimap.positionClicked.connect(self.on_minimap_clicked)
     
     def load_wsi(self, wsi_path):
         """WSI 파일 로드"""
@@ -141,6 +142,12 @@ class WSIViewWidget(QGraphicsView):
     def get_tile_manager(self):
         """타일 매니저 반환 (외부에서 슬라이드 정보 접근용)"""
         return self.tile_manager
+    
+    def on_minimap_clicked(self, img_x, img_y):
+        """미니맵에서 클릭한 위치로 뷰 이동"""
+        if self.tile_manager:
+            self.centerOn(img_x, img_y)
+            self.update_field_of_view()
     
     def fit_to_window(self):
         """이미지를 윈도우 크기에 맞추기"""
