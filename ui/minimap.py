@@ -101,9 +101,6 @@ class MiniMap(QWidget):
         if self.thumbnail and not self.thumbnail_rect.isEmpty():
             painter.drawPixmap(self.thumbnail_rect, self.thumbnail)
             
-            # 캐시된 타일 시각화
-            self.draw_cached_tiles(painter)
-            
             # FOV 사각형 그리기
             if not self.fov_rect.isEmpty():
                 self.draw_fov_rectangle(painter)
@@ -187,24 +184,36 @@ class MiniMap(QWidget):
     def mousePressEvent(self, event):
         """마우스 클릭 시 해당 위치로 이동"""
         if event.button() == Qt.LeftButton and not self.thumbnail_rect.isEmpty():
-            # 클릭 위치를 이미지 좌표로 변환
-            click_pos = event.pos()
+            self.handle_click(event.pos())
+            self.is_dragging = True
+    
+    def mouseMoveEvent(self, event):
+        """마우스 드래그 시 해당 위치로 이동"""
+        if hasattr(self, 'is_dragging') and self.is_dragging and not self.thumbnail_rect.isEmpty():
+            self.handle_click(event.pos())
+    
+    def mouseReleaseEvent(self, event):
+        """마우스 릴리즈"""
+        if event.button() == Qt.LeftButton:
+            self.is_dragging = False
+    
+    def handle_click(self, click_pos):
+        """클릭/드래그 위치 처리"""
+        if self.thumbnail_rect.contains(click_pos):
+            # 썸네일 내부 클릭
+            img_width, img_height = self.image_dimensions
+            thumb_rect = self.thumbnail_rect
             
-            if self.thumbnail_rect.contains(click_pos):
-                # 썸네일 내부 클릭
-                img_width, img_height = self.image_dimensions
-                thumb_rect = self.thumbnail_rect
-                
-                # 상대 좌표 계산
-                rel_x = (click_pos.x() - thumb_rect.x()) / thumb_rect.width()
-                rel_y = (click_pos.y() - thumb_rect.y()) / thumb_rect.height()
-                
-                # 이미지 좌표로 변환
-                img_x = rel_x * img_width
-                img_y = rel_y * img_height
-                
-                # 시그널 발생
-                self.positionClicked.emit(img_x, img_y)
+            # 상대 좌표 계산
+            rel_x = (click_pos.x() - thumb_rect.x()) / thumb_rect.width()
+            rel_y = (click_pos.y() - thumb_rect.y()) / thumb_rect.height()
+            
+            # 이미지 좌표로 변환
+            img_x = rel_x * img_width
+            img_y = rel_y * img_height
+            
+            # 시그널 발생
+            self.positionClicked.emit(img_x, img_y)
     
     def resizeEvent(self, event):
         """위젯 크기 변경 시"""
