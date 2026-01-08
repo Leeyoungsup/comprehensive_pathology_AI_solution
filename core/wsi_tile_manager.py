@@ -9,7 +9,7 @@ from PyQt5.QtCore import QObject, pyqtSignal, QThread, QRect, QRectF
 from PyQt5.QtGui import QImage, QPixmap
 from collections import OrderedDict
 import threading
-
+import os
 
 class TileCache:
     """타일 캐시 관리 (ASAP의 WSITileGraphicsItemCache 참고)
@@ -109,7 +109,7 @@ class TileLoader(QThread):
     
     tileLoaded = pyqtSignal(QPixmap, int, int, int)  # pixmap, tile_x, tile_y, level
     
-    def __init__(self, slide, tile_size=1024):
+    def __init__(self, slide, tile_size=2048):
         super().__init__()
         self.slide = slide
         self.tile_size = tile_size
@@ -150,7 +150,10 @@ class TileLoader(QThread):
             x = int(tile_x * self.tile_size * downsample)
             y = int(tile_y * self.tile_size * downsample)
             
-            print(f"    타일 로딩 중: ({tile_x}, {tile_y}, level {level}) -> 좌표 ({x}, {y})")
+            # 슬라이드 경계 체크 (level 0 기준)
+            level_0_width, level_0_height = self.slide.level_dimensions[0]
+            if x >= level_0_width or y >= level_0_height:
+                return None
             
             # 타일 읽기
             tile = self.slide.read_region(
@@ -195,7 +198,7 @@ class WSITileManager(QObject):
     
     tilesUpdated = pyqtSignal()
     
-    def __init__(self, slide_path, tile_size=1024, num_workers=4):
+    def __init__(self, slide_path, tile_size=2048, num_workers=16):
         super().__init__()
         self.slide = None
         self.slide_path = slide_path
@@ -205,6 +208,9 @@ class WSITileManager(QObject):
         # 로딩 중인 타일 추적 (중복 로딩 방지)
         self.loading_tiles = set()
         self.loading_lock = threading.Lock()
+        
+        # 이전 로드한 레벨 추적 (레벨 변경 감지용)
+        self.last_loaded_level = -1
         
         # 4단계 레벨 매핑
         self.level_stages = []  # [레벨0, 레벨1, 레벨2, 레벨3]
@@ -305,28 +311,62 @@ class WSITileManager(QObject):
         
         return best_level
     
-    def load_tiles_for_view(self, view_rect, level):
-        """뷰 영역에 필요한 타일 로딩"""
+    def load_tiles_for_view(self, view_rect, level, force_reload=False):
+        """뷰 영역에 필요한 타일 로딩 (현재 보이는 타일이 레벨에 맞지 않을 경우만 로드)"""
         if not self.slide:
             return
         
         downsample = self.get_level_downsample(level)
         
-        # 타일 인덱스 계산 (보이는 영역보다 넉넉하게 +4 타일)
+        # 타일 인덱스 계산 (보이는 영역만, 버퍼 제외)
         tile_size_at_level = self.tile_size
-        buffer_tiles = 4  # 각 방향으로 4타일씩 더 로드
-        start_tile_x = max(0, int(view_rect.left() / downsample / tile_size_at_level) - buffer_tiles)
-        start_tile_y = max(0, int(view_rect.top() / downsample / tile_size_at_level) - buffer_tiles)
-        end_tile_x = int(view_rect.right() / downsample / tile_size_at_level) + 1 + buffer_tiles
-        end_tile_y = int(view_rect.bottom() / downsample / tile_size_at_level) + 1 + buffer_tiles
+        visible_start_x = max(0, int(view_rect.left() / downsample / tile_size_at_level))
+        visible_start_y = max(0, int(view_rect.top() / downsample / tile_size_at_level))
+        visible_end_x = int(view_rect.right() / downsample / tile_size_at_level) + 1
+        visible_end_y = int(view_rect.bottom() / downsample / tile_size_at_level) + 1
         
-        print(f"  타일 로딩 요청: x[{start_tile_x}~{end_tile_x}] y[{start_tile_y}~{end_tile_y}], level={level}, downsample={downsample}")
+        # 현재 보이는 영역에 필요한 타일이 모두 캐시에 있는지 확인
+        all_tiles_cached = True
+        for ty in range(visible_start_y, visible_end_y):
+            for tx in range(visible_start_x, visible_end_x):
+                cache_key = (tx, ty, level)
+                if self.cache.get(cache_key) is None:
+                    all_tiles_cached = False
+                    break
+            if not all_tiles_cached:
+                break
         
-        # 타일 로딩 요청
+        # 레벨 변경 여부 확인
+        level_changed = (self.last_loaded_level != level)
+        
+        # 모든 타일이 캐시에 있고 레벨도 동일하면 로딩 스킵
+        if all_tiles_cached and not level_changed:
+            return
+        
+        # 레벨 기록
+        if level_changed:
+            self.last_loaded_level = level
+        
+        # 타일 범위 확장 (버퍼 포함)
+        buffer_tiles = 4
+        start_tile_x = max(0, visible_start_x - buffer_tiles)
+        start_tile_y = max(0, visible_start_y - buffer_tiles)
+        end_tile_x = visible_end_x + buffer_tiles
+        end_tile_y = visible_end_y + buffer_tiles
+        
+        # 타일 로딩 요청 (캐시에 없고 슬라이드 경계 내의 타일만)
         tiles_requested = 0
         tiles_cached = 0
+        level_width, level_height = self.get_level_dimensions(level)
+        level_width_in_tiles = (level_width + self.tile_size - 1) // self.tile_size
+        level_height_in_tiles = (level_height + self.tile_size - 1) // self.tile_size
+        
         for ty in range(start_tile_y, end_tile_y):
             for tx in range(start_tile_x, end_tile_x):
+                # 슬라이드 경계 체크
+                if tx >= level_width_in_tiles or ty >= level_height_in_tiles:
+                    continue
+                
                 cache_key = (tx, ty, level)
                 
                 # 캐시에 있는지 확인
@@ -402,6 +442,45 @@ class WSITileManager(QObject):
         except Exception as e:
             print(f"썸네일 생성 실패: {e}")
             return None
+    
+    def get_slide_info(self):
+        """슬라이드 정보 반환"""
+        if not self.slide:
+            return None
+        
+        info = {}
+        
+        # 기본 정보
+        info['filename'] = os.path.basename(self.slide_path)
+        info['level_count'] = self.slide.level_count
+        info['dimensions'] = self.slide.level_dimensions[0]
+        
+        # MPP (Microns Per Pixel) 정보
+        properties = self.slide.properties
+        if 'openslide.mpp-x' in properties:
+            info['mpp_x'] = float(properties['openslide.mpp-x'])
+            info['mpp_y'] = float(properties['openslide.mpp-y'])
+        else:
+            info['mpp_x'] = None
+            info['mpp_y'] = None
+        
+        # 배율 정보
+        if 'openslide.objective-power' in properties:
+            info['objective_power'] = properties['openslide.objective-power']
+        else:
+            info['objective_power'] = 'Unknown'
+        
+        # 벤더 정보
+        if 'openslide.vendor' in properties:
+            info['vendor'] = properties['openslide.vendor']
+        else:
+            info['vendor'] = 'Unknown'
+        
+        # 레벨별 크기
+        info['level_dimensions'] = list(self.slide.level_dimensions)
+        info['level_downsamples'] = list(self.slide.level_downsamples)
+        
+        return info
     
     def close(self):
         """리소스 정리"""
