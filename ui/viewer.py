@@ -268,88 +268,90 @@ class PathologyViewer(QMainWindow):
             self.btnDetection.setText("병변 검출")
             self.is_detection_running = False
             
-            if self.lesion_detection is not None:
-                self.lesion_detection.cancel()
-                self.resultText.setText("검출이 중단되었습니다.")
-                self.progressLabel.setText("중단됨")
-                self.progressBar.setValue(0)
-                self.statusbar.showMessage("검출 중단됨")
+            self.detection_service.cancel_detection()
+            self.resultText.setText("검출이 중단되었습니다.")
+            self.progressLabel.setText("중단됨")
+            self.progressBar.setValue(0)
+            self.statusbar.showMessage("검출 중단됨")
             return
         
         if not self.current_image_path:
             self.resultText.setText("먼저 이미지를 로드해주세요.")
             return
         
-        # 버튼 텍스트 변경 및 상태 설정
+        # 버튼 상태 변경
         self.btnDetection.setText("⏸ 중단")
         self.is_detection_running = True
         
-        # AI 모듈 초기화 (처음 사용 시)
-        if self.lesion_detection is None:
-            self.resultText.setText("검출 모듈 초기화 중...")
-            from PyQt5.QtWidgets import QApplication
-            QApplication.processEvents()
-            self.setup_ai_modules()
+        # AI 모듈 초기화
+        self.resultText.setText("검출 모듈 초기화 중...")
+        from PyQt5.QtWidgets import QApplication
+        QApplication.processEvents()
+        self.setup_ai_modules()
         
         # 프로그레스바 초기화
         self.progressBar.setValue(0)
         self.progressLabel.setText("검출 준비 중...")
         
-        # 모델이 로드되지 않았으면 로드
-        if not self.lesion_detection.is_model_loaded():
+        # 모델 로드
+        if not self.detection_service.is_model_loaded():
             self.resultText.setText("모델 로딩 중...")
             self.progressLabel.setText("모델 로딩 중...")
             self.statusbar.showMessage("모델 로딩 중...")
-            
-            # 프로그레스바 업데이트를 위해 이벤트 처리
-            from PyQt5.QtWidgets import QApplication
             QApplication.processEvents()
             
-            if not self.lesion_detection.load_model():
-                error_msg = f"모델 로드 실패\n경로: {self.lesion_detection.default_model_path}\n\n파일이 존재하는지 확인하세요."
-                self.resultText.setText(error_msg)
+            success, message = self.detection_service.load_model()
+            if not success:
+                self.resultText.setText(f"모델 로드 실패\n\n{message}")
                 self.progressLabel.setText("모델 로드 실패")
                 self.progressBar.setValue(0)
                 self.statusbar.showMessage("모델 로드 실패")
-                QMessageBox.critical(self, "모델 로드 오류", error_msg)
+                QMessageBox.critical(self, "모델 로드 오류", message)
+                self.btnDetection.setText("병변 검출")
+                self.is_detection_running = False
                 return
             
             self.progressLabel.setText("모델 로드 완료")
-            self.statusbar.showMessage("모델 로드 완료")
+            self.statusbar.showMessage(message)
         
         self.resultText.setText("세포 검출 분석 실행 중...")
-        self.progressLabel.setText("패치 검출 진행 중...")
+        self.progressLabel.setText("WSI 파일 열기 중...")
         self.statusbar.showMessage("세포 검출 분석 실행 중...")
         
-        # ROI가 그려져 있으면 ROI 영역만 검출
+        # ROI 영역 가져오기
         roi_polygons = None
         if self.wsi_viewer.annotation_list.annotations:
             roi_polygons = self.wsi_viewer.annotation_list.annotations
         
-        # openslide로 슬라이드 열기
+        # 슬라이드 열기 (서비스 이용)
         try:
-            self.resultText.setText("WSI 파일 열기 중...\n(큰 파일은 시간이 걸릴 수 있습니다)")
-            self.progressLabel.setText("WSI 파일 열기 중...")
-            self.statusbar.showMessage("WSI 파일 열기 중...")
-            
-            # 이벤트 처리하여 UI 업데이트
-            from PyQt5.QtWidgets import QApplication
             QApplication.processEvents()
             
-            import openslide
             import time
             start_time = time.time()
-            slide = openslide.OpenSlide(self.current_image_path)
-            load_time = time.time() - start_time
+            slide, message = self.detection_service.open_slide(self.current_image_path)
             
+            if slide is None:
+                self.resultText.setText(f"슬라이드 열기 실패\n\n{message}")
+                self.progressBar.setValue(0)
+                self.statusbar.showMessage("슬라이드 열기 실패")
+                self.btnDetection.setText("병변 검출")
+                self.is_detection_running = False
+                return
+            
+            load_time = time.time() - start_time
             self.progressLabel.setText(f"WSI 로드 완료 ({load_time:.2f}s)")
             QApplication.processEvents()
             
-            self.lesion_detection.run_detection(slide, roi_polygons)
+            # 검출 시작 (서비스 이용)
+            self.detection_service.start_detection(slide, roi_polygons)
+            
         except Exception as e:
             self.resultText.setText(f"검출 실행 실패: {str(e)}")
             self.progressBar.setValue(0)
             self.statusbar.showMessage("검출 실행 실패")
+            self.btnDetection.setText("병변 검출")
+            self.is_detection_running = False
     
     def on_segmentation_complete(self, result):
         """조직 분할 완료"""
@@ -367,27 +369,12 @@ class PathologyViewer(QMainWindow):
     
     def on_detection_complete(self, result):
         """병변 검출 완료"""
+        # 서비스를 통한 결과 포맷팅
+        message = self.detection_service.format_detection_result(result)
         num_cells = result.get('num_cells', 0)
-        message = f"세포 검출 완료\n{result.get('message', '')}"
-        
-        # 클래스별 카운트 표시
-        class_counts = result.get('class_counts', {})
-        total_from_classes = 0
-        if class_counts:
-            message += "\n\n클래스별 검출 수:"
-            for cls_name, count in class_counts.items():
-                if count > 0:
-                    message += f"\n  {cls_name}: {count}"
-                    total_from_classes += count
-            
-            # 합계 표시
-            message += f"\n\n클래스별 합계: {total_from_classes}"
-            message += f"\n전체 세포 수: {num_cells}"
-            if total_from_classes != num_cells:
-                message += f"\n⚠️ 카운트 불일치!"
         
         self.resultText.setText(message)
-        self.statusbar.showMessage(f"세포 검출 완료 - {num_cells}개 검출")
+        self.statusbar.showMessage(f"세포 검출 완료 - {num_cells:,}개 검출")
         
         # 검출 결과를 오버레이로 표시
         cells = result.get('cells', [])
@@ -395,12 +382,12 @@ class PathologyViewer(QMainWindow):
             self.wsi_viewer.set_detection_results(cells)
         
         # GPU 리소스 해제
-        self.lesion_detection.unload_model()
+        self.detection_service.unload_model()
         
         # 프로그레스바 완료 상태
         self.progressBar.setValue(100)
-        self.progressLabel.setText(f"완료 - {num_cells}개 세포 검출")
-        self.statusbar.showMessage(f"세포 검출 완료 - {num_cells}개 검출 (GPU 해제됨)")
+        self.progressLabel.setText(f"완료 - {num_cells:,}개 세포 검출")
+        self.statusbar.showMessage(f"세포 검출 완료 - {num_cells:,}개 검출 (GPU 해제됨)")
         
         # 버튼 상태 복원
         self.btnDetection.setText("병변 검출")
@@ -416,36 +403,9 @@ class PathologyViewer(QMainWindow):
         self.progressLabel.setText(status)
         self.statusbar.showMessage(status)
         
-        # resultText에 tqdm 스타일로 표시
-        if "패치" in status and "/" in status:
-            # 진행 바 생성
-            try:
-                parts = status.split("|")
-                patch_info = parts[0].strip()  # "패치 100/500"
-                
-                # 진행률 추출
-                nums = patch_info.split()[1].split("/")  # "100/500"
-                current = int(nums[0])
-                total = int(nums[1])
-                percent = (current / total) * 100
-                
-                # 텍스트 기반 진행바
-                bar_length = 30
-                filled = int(bar_length * current / total)
-                bar = "█" * filled + "░" * (bar_length - filled)
-                
-                # 결과 텍스트 구성
-                result_text = f"""세포 검출 진행 중...
-
-[패치 처리]
-{bar} {percent:.1f}%
-
-{status}
-"""
-                self.resultText.setText(result_text)
-                
-            except:
-                self.resultText.setText(f"세포 검출 진행 중...\n\n{status}")
+        # 서비스를 통한 진행 상태 포맷팅
+        formatted_text = self.detection_service.format_detection_progress(status)
+        self.resultText.setText(formatted_text)
     
     def on_ai_error(self, error_msg):
         """AI 작업 에러 처리"""
@@ -515,7 +475,8 @@ class PathologyViewer(QMainWindow):
     
     def save_annotations(self):
         """Annotation 저장"""
-        if len(self.wsi_viewer.get_annotations()) == 0:
+        annotations = self.wsi_viewer.get_annotations()
+        if len(annotations) == 0:
             QMessageBox.information(self, "알림", "저장할 ROI가 없습니다.")
             return
         
@@ -527,11 +488,13 @@ class PathologyViewer(QMainWindow):
         )
         
         if file_path:
-            try:
-                self.wsi_viewer.save_annotations(file_path)
-                self.statusbar.showMessage(f"ROI 저장 완료: {Path(file_path).name}")
-            except Exception as e:
-                QMessageBox.critical(self, "오류", f"ROI 저장 실패:\n{str(e)}")
+            # 서비스를 통한 저장
+            success, message = self.annotation_service.save_annotations(annotations, file_path)
+            
+            if success:
+                self.statusbar.showMessage(message)
+            else:
+                QMessageBox.critical(self, "오류", message)
     
     def load_annotations(self):
         """Annotation 로드"""
@@ -543,12 +506,28 @@ class PathologyViewer(QMainWindow):
         )
         
         if file_path:
+            # 서비스를 통한 로드
+            data, message = self.annotation_service.load_annotations(file_path)
+            
+            if data is None:
+                QMessageBox.critical(self, "오류", message)
+                return
+            
+            # 데이터 유효성 검사
+            valid, validation_msg = self.annotation_service.validate_annotation_data(data)
+            if not valid:
+                QMessageBox.critical(self, "오류", f"잘못된 데이터:\n{validation_msg}")
+                return
+            
             try:
+                # WSI 뷰어를 통해 annotation 복원
                 self.wsi_viewer.load_annotations(file_path)
                 num_annotations = len(self.wsi_viewer.get_annotations())
+                
                 # Annotation 패널 새로고침
                 self.annotation_panel.refresh_table()
-                self.statusbar.showMessage(f"ROI 로드 완료: {num_annotations}개")
+                self.statusbar.showMessage(message)
+                
             except Exception as e:
                 QMessageBox.critical(self, "오류", f"ROI 로드 실패:\n{str(e)}")
     
@@ -592,12 +571,11 @@ class PathologyViewer(QMainWindow):
         """윈도우 닫기 시 리소스 정리"""
         self.wsi_viewer.close()
         
-        # AI 작업 취소 (모듈이 생성된 경우만)
+        # AI 작업 취소
+        self.detection_service.cancel_detection()
         if self.tissue_segmentation is not None:
             self.tissue_segmentation.cancel()
         if self.tissue_classification is not None:
             self.tissue_classification.cancel()
-        if self.lesion_detection is not None:
-            self.lesion_detection.cancel()
         
         event.accept()
