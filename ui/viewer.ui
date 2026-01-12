@@ -91,9 +91,9 @@
                </widget>
               </item>
               <item>
-               <widget class="QPushButton" name="btnDetection">
+               <widget class="QPushButton" name="btnHneCellDetection">
                 <property name="text">
-                 <string>병변 검출</string>
+                 <string>(통합)Cell Detection</string>
                 </property>
                </widget>
               </item>
@@ -159,6 +159,40 @@
               <string>클릭하여 클래스 표시/숨김 토글</string>
              </property>
             </widget>
+           </item>
+           <item>
+            <layout class="QHBoxLayout" name="horizontalLayout_results">
+             <item>
+              <widget class="QPushButton" name="btnClearResults">
+               <property name="text">
+                <string>Clear</string>
+               </property>
+               <property name="toolTip">
+                <string>검출 결과 지우기</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="btnSaveResults">
+               <property name="text">
+                <string>Save</string>
+               </property>
+               <property name="toolTip">
+                <string>검출 결과 저장</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="btnLoadResults">
+               <property name="text">
+                <string>Load</string>
+               </property>
+               <property name="toolTip">
+                <string>검출 결과 불러오기</string>
+               </property>
+              </widget>
+             </item>
+            </layout>
            </item>
           </layout>
          </widget>
