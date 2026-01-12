@@ -90,6 +90,11 @@ class WSIViewWidget(QGraphicsView):
         self.minimap = MiniMap(self)
         self.minimap.hide()  # 초기에는 숨김
         self.minimap.positionClicked.connect(self.on_minimap_clicked)
+        
+        # 검출 결과 오버레이
+        self.detection_overlay_item = None  # QGraphicsPixmapItem
+        self.detection_overlay = None  # TiledDetectionOverlay 객체
+        self.detection_cells = []  # 검출된 세포 리스트
     
     def load_wsi(self, wsi_path):
         """WSI 파일 로드"""
@@ -234,6 +239,10 @@ class WSIViewWidget(QGraphicsView):
             cached_tiles = self.tile_manager.get_cached_tiles_info()
             self.minimap.update_cached_tiles(cached_tiles)
         
+        # 검출 결과 오버레이 업데이트
+        if self.detection_cells:
+            self.update_detection_overlay()
+        
         # 즉시 캐시된 타일 렌더링
         self.on_tiles_updated()
     
@@ -335,6 +344,95 @@ class WSIViewWidget(QGraphicsView):
                         return False
         
         return True
+    
+    # ============== 검출 결과 오버레이 ==============
+    
+    def set_detection_results(self, cells):
+        """
+        검출 결과 설정 및 오버레이 표시
+        
+        Args:
+            cells: 검출된 세포 리스트 [{'x': x, 'y': y, 'cls_id': cls_id, 'confidence': conf}, ...]
+        """
+        from ai.detection import TiledDetectionOverlay
+        
+        self.detection_cells = cells
+        
+        # TiledDetectionOverlay 초기화
+        if self.detection_overlay is None:
+            self.detection_overlay = TiledDetectionOverlay()
+        
+        self.detection_overlay.set_cells(cells)
+        
+        # 오버레이 업데이트
+        self.update_detection_overlay()
+    
+    def update_detection_overlay(self):
+        """현재 뷰 영역의 검출 결과 오버레이 업데이트"""
+        if not self.detection_overlay or not self.detection_cells:
+            return
+        
+        if not self.tile_manager:
+            return
+        
+        # 기존 오버레이 제거
+        if self.detection_overlay_item:
+            if isinstance(self.detection_overlay_item, list):
+                for item in self.detection_overlay_item:
+                    self.scene.removeItem(item)
+            else:
+                self.scene.removeItem(self.detection_overlay_item)
+            self.detection_overlay_item = None
+        
+        # 현재 뷰 영역 가져오기
+        view_rect = self.mapToScene(self.viewport().rect()).boundingRect()
+        
+        # 다운샘플 계산 (현재 줌 레벨에 따라)
+        if self.zoom_level < 0.1:
+            downsample = 8
+        elif self.zoom_level < 0.5:
+            downsample = 4
+        elif self.zoom_level < 2:
+            downsample = 2
+        else:
+            downsample = 1
+        
+        # 마스크 생성 (원 크기 자동 보정됨)
+        pixmap, mask_x, mask_y = self.detection_overlay.create_view_mask(view_rect, downsample)
+        
+        if pixmap is None:
+            return
+        
+        # 새 오버레이 아이템 생성
+        self.detection_overlay_item = QGraphicsPixmapItem(pixmap)
+        self.detection_overlay_item.setPos(mask_x, mask_y)
+        self.detection_overlay_item.setScale(downsample)
+        self.detection_overlay_item.setZValue(50)
+        
+        self.scene.addItem(self.detection_overlay_item)
+    
+    def clear_detection_overlay(self):
+        """검출 결과 오버레이 제거"""
+        if self.detection_overlay_item:
+            self.scene.removeItem(self.detection_overlay_item)
+            self.detection_overlay_item = None
+        
+        self.detection_cells = []
+        if self.detection_overlay:
+            self.detection_overlay.clear_cells()
+    
+    def set_detection_class_visibility(self, cls_id, visible):
+        """특정 클래스의 가시성 설정"""
+        if self.detection_overlay:
+            self.detection_overlay.set_class_visibility(cls_id, visible)
+            self.update_detection_overlay()
+    
+    def set_detection_opacity(self, opacity):
+        """검출 결과 오버레이 투명도 설정 (0.0 ~ 1.0)"""
+        if self.detection_overlay_item:
+            self.detection_overlay_item.setOpacity(opacity)
+    
+    # ============================================
     
     def wheelEvent(self, event: QWheelEvent):
         """마우스 휠로 줌 인/아웃"""
