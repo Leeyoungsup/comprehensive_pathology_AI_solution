@@ -406,9 +406,22 @@ class DetectionWorker(QThread):
                     actual_y = start_y + centers_y * 2
                     
                     for i in range(len(detections)):
+                        cell_x = actual_x[i].item()
+                        cell_y = actual_y[i].item()
+                        
+                        # ROI가 지정된 경우, 세포가 ROI 내부에 있는지 체크
+                        if self.roi_polygons:
+                            in_roi = False
+                            for polygon in self.roi_polygons:
+                                if polygon.contains_point(cell_x, cell_y):
+                                    in_roi = True
+                                    break
+                            if not in_roi:
+                                continue  # ROI 밖의 세포는 제외
+                        
                         cell_data = {
-                            'x': actual_x[i].item(),
-                            'y': actual_y[i].item(),
+                            'x': cell_x,
+                            'y': cell_y,
                             'cls_id': int(cls_ids[i].item()),
                             'confidence': confs[i].item()
                         }
