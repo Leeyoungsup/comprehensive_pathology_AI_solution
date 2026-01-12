@@ -439,6 +439,12 @@ class WSIViewWidget(QGraphicsView):
         if self.detection_overlay:
             self.detection_overlay.clear_cells()
     
+    def clear_detection_results(self):
+        """검출 결과 완전히 제거 (오버레이 + 데이터)"""
+        self.clear_detection_overlay()
+        self.detection_overlay = None
+        self.detection_cells = []
+    
     def set_detection_class_visibility(self, cls_id, visible):
         """특정 클래스의 가시성 설정"""
         if self.detection_overlay:
