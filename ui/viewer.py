@@ -146,10 +146,15 @@ class PathologyViewer(QMainWindow):
         # AI 버튼
         self.btnSegmentation.clicked.connect(self.run_segmentation)
         self.btnClassification.clicked.connect(self.run_classification)
-        self.btnDetection.clicked.connect(self.run_detection)
+        self.btnHneCellDetection.clicked.connect(self.run_detection)
         
         # 결과 리스트 아이템 클릭 시그널
         self.resultList.itemClicked.connect(self.on_result_list_item_clicked)
+        
+        # 결과 관리 버튼
+        self.btnClearResults.clicked.connect(self.clear_results)
+        self.btnSaveResults.clicked.connect(self.save_detection_results)
+        self.btnLoadResults.clicked.connect(self.load_detection_results)
     
     def open_image(self):
         """이미지 파일 열기"""
@@ -226,7 +231,7 @@ class PathologyViewer(QMainWindow):
         """병변 검출 실행 또는 중단"""
         # 진행 중이면 중단
         if self.is_detection_running:
-            self.btnDetection.setText("병변 검출")
+            self.btnHneCellDetection.setText("(통합)Cell Detection")
             self.is_detection_running = False
             
             self.detection_service.cancel_detection()
@@ -238,7 +243,7 @@ class PathologyViewer(QMainWindow):
             return
         
         # 버튼 상태 변경
-        self.btnDetection.setText("⏸ 중단")
+        self.btnHneCellDetection.setText("⏸ 중단")
         self.is_detection_running = True
         
         # Progress 초기화
@@ -260,7 +265,7 @@ class PathologyViewer(QMainWindow):
             if not success:
                 self.statusbar.showMessage("모델 로드 실패")
                 QMessageBox.critical(self, "모델 로드 오류", message)
-                self.btnDetection.setText("병변 검출")
+                self.btnHneCellDetection.setText("(통합)Cell Detection")
                 self.is_detection_running = False
                 return
             
@@ -283,7 +288,7 @@ class PathologyViewer(QMainWindow):
             
             if slide is None:
                 self.statusbar.showMessage("슬라이드 열기 실패")
-                self.btnDetection.setText("병변 검출")
+                self.btnHneCellDetection.setText("(통합)Cell Detection")
                 self.is_detection_running = False
                 return
             
@@ -296,7 +301,7 @@ class PathologyViewer(QMainWindow):
             
         except Exception as e:
             self.statusbar.showMessage("검출 실행 실패")
-            self.btnDetection.setText("병변 검출")
+            self.btnHneCellDetection.setText("(통합)Cell Detection")
             self.is_detection_running = False
     
     def on_segmentation_complete(self, result):
@@ -335,7 +340,7 @@ class PathologyViewer(QMainWindow):
         self.detection_service.unload_model()
         
         # 버튼 상태 복원
-        self.btnDetection.setText("병변 검출")
+        self.btnHneCellDetection.setText("(통합)Cell Detection")
         self.is_detection_running = False
     
     def update_result_list(self, class_counts, total_cells):
@@ -462,34 +467,172 @@ class PathologyViewer(QMainWindow):
         
         # 검출 버튼 상태 복원
         if hasattr(self, 'is_detection_running') and self.is_detection_running:
-            self.btnDetection.setText("병변 검출")
+            self.btnHneCellDetection.setText("(통합)Cell Detection")
             self.is_detection_running = False
         
         QMessageBox.critical(self, "오류", error_msg)
     
     def save_results(self):
-        """분석 결과 저장"""
+        """분석 결과 저장 (레거시 메뉴 액션용)"""
+        self.save_detection_results()
+    
+    def clear_results(self):
+        """검출 결과 지우기"""
+        if not self.current_detection_result:
+            self.statusbar.showMessage("지울 결과가 없습니다")
+            return
+        
+        reply = QMessageBox.question(
+            self, 
+            "결과 지우기", 
+            "검출 결과를 지우시겠습니까?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            # 결과 데이터 초기화
+            self.current_detection_result = None
+            
+            # 오버레이 제거
+            self.wsi_viewer.clear_detection_results()
+            
+            # 결과 리스트 초기화
+            self.resultList.clear()
+            
+            # Progress 초기화
+            self.progressBar.setValue(0)
+            self.progressLabel.setText("AI Progress")
+            
+            self.statusbar.showMessage("검출 결과가 지워졌습니다")
+    
+    def save_detection_results(self):
+        """검출 결과를 JSON 파일로 저장"""
         if not self.current_detection_result:
             QMessageBox.information(self, "알림", "저장할 결과가 없습니다.")
             return
         
+        # 기본 파일명 생성 (WSI 파일명에서 확장자 제거)
+        default_filename = ""
+        if self.current_image_path:
+            wsi_filename = Path(self.current_image_path).stem  # 확장자 제외한 파일명
+            default_filename = f"{wsi_filename}_detection_result.json"
+        
         file_path, _ = QFileDialog.getSaveFileName(
             self,
-            "결과 저장",
-            "",
-            "Text Files (*.txt);;All Files (*)"
+            "검출 결과 저장",
+            default_filename,
+            "JSON Files (*.json);;Text Files (*.txt);;All Files (*)"
         )
         
         if file_path:
             try:
-                # 결과를 텍스트로 포맷
-                result_text = self.detection_service.format_detection_result(self.current_detection_result)
+                import json
+                from datetime import datetime
                 
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(result_text)
+                # 파일 확장자 확인
+                if file_path.endswith('.json'):
+                    # 메타데이터 추가
+                    result_with_meta = {
+                        "metadata": {
+                            "model_type": "detection",
+                            "model_name": "YOLOv11n",
+                            "version": "1.0",
+                            "timestamp": datetime.now().isoformat(),
+                            "image_path": str(self.current_image_path) if self.current_image_path else None,
+                            "image_name": Path(self.current_image_path).name if self.current_image_path else None
+                        },
+                        "result": self.current_detection_result
+                    }
+                    
+                    # JSON 형식으로 저장
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        json.dump(result_with_meta, f, indent=2, ensure_ascii=False)
+                else:
+                    # 텍스트 형식으로 저장
+                    result_text = self.detection_service.format_detection_result(self.current_detection_result)
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        f.write(result_text)
+                
                 self.statusbar.showMessage(f"결과 저장 완료: {Path(file_path).name}")
             except Exception as e:
                 QMessageBox.critical(self, "오류", f"결과 저장 실패:\n{str(e)}")
+    
+    def load_detection_results(self):
+        """저장된 AI 결과 불러오기 (모델 타입별 처리)"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "AI 결과 불러오기",
+            "",
+            "JSON Files (*.json);;All Files (*)"
+        )
+        
+        if file_path:
+            try:
+                import json
+                
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    loaded_data = json.load(f)
+                
+                # 새 형식 (메타데이터 포함) vs 레거시 형식 확인
+                if "metadata" in loaded_data and "result" in loaded_data:
+                    # 새 형식
+                    metadata = loaded_data["metadata"]
+                    result = loaded_data["result"]
+                    model_type = metadata.get("model_type", "unknown")
+                    model_name = metadata.get("model_name", "Unknown")
+                    
+                    # 모델 타입별 처리
+                    if model_type == "detection":
+                        self._load_detection_result(result, metadata)
+                        self.statusbar.showMessage(f"불러오기 완료: {model_name} - {result.get('num_cells', 0):,}개 세포")
+                    elif model_type == "segmentation":
+                        # 향후 구현
+                        QMessageBox.information(self, "알림", f"{model_name} 결과는 아직 지원되지 않습니다.")
+                    elif model_type == "classification":
+                        # 향후 구현
+                        QMessageBox.information(self, "알림", f"{model_name} 결과는 아직 지원되지 않습니다.")
+                    else:
+                        raise ValueError(f"알 수 없는 모델 타입: {model_type}")
+                else:
+                    # 레거시 형식 (메타데이터 없음)
+                    required_keys = ['num_cells', 'class_counts', 'cells']
+                    if all(key in loaded_data for key in required_keys):
+                        # Detection 결과로 처리
+                        self._load_detection_result(loaded_data, None)
+                        self.statusbar.showMessage(f"결과 불러오기 완료: {loaded_data.get('num_cells', 0):,}개 세포")
+                    else:
+                        raise ValueError("올바른 AI 결과 파일이 아닙니다.")
+                
+            except json.JSONDecodeError:
+                QMessageBox.critical(self, "오류", "JSON 파일 형식이 올바르지 않습니다.")
+            except Exception as e:
+                QMessageBox.critical(self, "오류", f"결과 불러오기 실패:\n{str(e)}")
+    
+    def _load_detection_result(self, result, metadata=None):
+        """Detection 결과 로드 처리"""
+        # 결과 데이터 설정
+        self.current_detection_result = result
+        
+        # 오버레이에 세포 표시
+        cells = result.get('cells', [])
+        if cells:
+            self.wsi_viewer.set_detection_results(cells)
+        
+        # 결과 리스트 업데이트
+        num_cells = result.get('num_cells', 0)
+        class_counts = result.get('class_counts', {})
+        self.update_result_list(class_counts, num_cells)
+        
+        # Progress 완료 상태로
+        self.progressBar.setValue(100)
+        
+        # 메타데이터가 있으면 표시
+        if metadata:
+            model_info = f"{metadata.get('model_name', 'Unknown')} v{metadata.get('version', '?')}"
+            self.progressLabel.setText(f"로드 완료: {model_info}")
+        else:
+            self.progressLabel.setText("결과 로드 완료")
     
     # === Annotation 기능 ===
     
