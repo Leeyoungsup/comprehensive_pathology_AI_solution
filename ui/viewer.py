@@ -19,7 +19,9 @@ if str(project_root) not in sys.path:
 from ui.wsi_view_widget import WSIViewWidget, AnnotationMode
 from ui.annotation_panel import AnnotationPanel
 from ui.dialogs import show_slide_info_dialog
-# AI 모듈은 lazy import로 처리 (사용 시에만 로드)
+
+# 서비스 레이어 import
+from backend.services import DetectionService, SlideService, AnnotationService
 
 
 class PathologyViewer(QMainWindow):
@@ -39,10 +41,14 @@ class PathologyViewer(QMainWindow):
         # Annotation 툴바 추가
         self.setup_annotation_toolbar()
         
-        # AI 모듈 변수 초기화 (사용 시 생성)
+        # 서비스 레이어 초기화
+        self.detection_service = DetectionService()
+        self.slide_service = SlideService()
+        self.annotation_service = AnnotationService()
+        
+        # AI 모듈 변수 초기화 (레거시, 필요시 삭제 가능)
         self.tissue_segmentation = None
         self.tissue_classification = None
-        self.lesion_detection = None
         self.is_detection_running = False  # 검출 진행 상태
         
         # 시그널 연결
@@ -131,6 +137,13 @@ class PathologyViewer(QMainWindow):
         AI 모듈 초기화 (Lazy Initialization)
         처음 사용 시에만 호출됨
         """
+        # 검출 모듈은 DetectionService를 통해 관리
+        detection_module = self.detection_service.get_detection_module()
+        detection_module.detectionComplete.connect(self.on_detection_complete)
+        detection_module.detectionProgress.connect(self.on_ai_progress)
+        detection_module.detectionStatus.connect(self.on_detection_status)
+        detection_module.detectionError.connect(self.on_ai_error)
+        
         # 조직 분할 (필요 시 생성)
         if self.tissue_segmentation is None:
             from ai import TissueSegmentation
@@ -146,15 +159,6 @@ class PathologyViewer(QMainWindow):
             self.tissue_classification.classificationComplete.connect(self.on_classification_complete)
             self.tissue_classification.classificationProgress.connect(self.on_ai_progress)
             self.tissue_classification.classificationError.connect(self.on_ai_error)
-        
-        # 병변 검출 (세포 검출) (필요 시 생성)
-        if self.lesion_detection is None:
-            from ai.detection import CellDetection
-            self.lesion_detection = CellDetection()
-            self.lesion_detection.detectionComplete.connect(self.on_detection_complete)
-            self.lesion_detection.detectionProgress.connect(self.on_ai_progress)
-            self.lesion_detection.detectionStatus.connect(self.on_detection_status)
-            self.lesion_detection.detectionError.connect(self.on_ai_error)
     
     def connect_signals(self):
         """UI 요소에 시그널 연결"""
