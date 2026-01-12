@@ -5,7 +5,7 @@ ASAP 구조를 참고한 타일 기반 렌더링 시스템
 """
 
 from PyQt5.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QMainWindow
-from PyQt5.QtCore import Qt, QPoint, QRectF, pyqtSignal, QEvent
+from PyQt5.QtCore import Qt, QPoint, QRectF, pyqtSignal, QEvent, QTimer
 from PyQt5.QtGui import QWheelEvent, QMouseEvent, QPainter, QBrush, QColor, QKeyEvent
 from pathlib import Path
 import sys
@@ -95,6 +95,12 @@ class WSIViewWidget(QGraphicsView):
         self.detection_overlay_item = None  # QGraphicsPixmapItem
         self.detection_overlay = None  # TiledDetectionOverlay 객체
         self.detection_cells = []  # 검출된 세포 리스트
+        
+        # 오버레이 업데이트 디바운싱 타이머
+        self.overlay_update_timer = QTimer(self)
+        self.overlay_update_timer.setSingleShot(True)
+        self.overlay_update_timer.timeout.connect(self._do_update_detection_overlay)
+        self.overlay_update_delay = 100  # 100ms 딜레이
     
     def load_wsi(self, wsi_path):
         """WSI 파일 로드"""
@@ -239,9 +245,9 @@ class WSIViewWidget(QGraphicsView):
             cached_tiles = self.tile_manager.get_cached_tiles_info()
             self.minimap.update_cached_tiles(cached_tiles)
         
-        # 검출 결과 오버레이 업데이트
+        # 검출 결과 오버레이 업데이트 (디바운싱)
         if self.detection_cells:
-            self.update_detection_overlay()
+            self.schedule_overlay_update()
         
         # 즉시 캐시된 타일 렌더링
         self.on_tiles_updated()
@@ -365,6 +371,16 @@ class WSIViewWidget(QGraphicsView):
         self.detection_overlay.set_cells(cells)
         
         # 오버레이 업데이트
+        self.schedule_overlay_update()
+    
+    def schedule_overlay_update(self):
+        """오버레이 업데이트 예약 (디바운싱)"""
+        # 타이머가 실행 중이면 재시작
+        self.overlay_update_timer.stop()
+        self.overlay_update_timer.start(self.overlay_update_delay)
+    
+    def _do_update_detection_overlay(self):
+        """실제 오버레이 업데이트 수행 (타이머에서 호출)"""
         self.update_detection_overlay()
     
     def update_detection_overlay(self):
@@ -387,8 +403,10 @@ class WSIViewWidget(QGraphicsView):
         # 현재 뷰 영역 가져오기
         view_rect = self.mapToScene(self.viewport().rect()).boundingRect()
         
-        # 다운샘플 계산 (현재 줌 레벨에 따라)
-        if self.zoom_level < 0.1:
+        # 다운샘플 계산 (현재 줌 레벨에 따라) - 낮은 줌에서 더 많이 다운샘플
+        if self.zoom_level < 0.05:
+            downsample = 16  # 더 큰 다운샘플 추가
+        elif self.zoom_level < 0.1:
             downsample = 8
         elif self.zoom_level < 0.5:
             downsample = 4
