@@ -18,7 +18,6 @@ if openslide_dll_path.exists():
 
 from PyQt5.QtWidgets import QApplication
 from ui.viewer import PathologyViewer
-import openslide
 
 
 def main():
