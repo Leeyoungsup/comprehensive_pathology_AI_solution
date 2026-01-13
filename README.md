@@ -299,6 +299,56 @@ python main.py
 - ✅ **범용 저장 형식**: 메타데이터 포함 JSON으로 모든 AI 결과 관리
 - ✅ **실시간 피드백**: Progress Bar와 상태 메시지로 작업 진행 상황 확인
 
+## 🚀 EXE 파일 빌드 및 배포
+
+이 프로젝트는 PyInstaller를 사용하여 독립 실행형 Windows 실행 파일로 빌드할 수 있습니다.
+
+### 빠른 빌드 (3단계)
+
+1. **환경 확인**
+   ```bash
+   python check_environment.py
+   ```
+
+2. **빌드 실행**
+   ```powershell
+   # PowerShell
+   .\build.ps1
+   
+   # 또는 CMD
+   build.bat
+   ```
+
+3. **결과 확인**
+   - `dist/PathologyAIViewer/PathologyAIViewer.exe` 실행
+   - 폴더 전체를 압축하여 배포
+
+### 📚 상세 문서
+
+- **[빠른 시작 가이드](QUICK_START.md)**: 3단계로 빌드하기
+- **[배포 가이드](DEPLOYMENT_GUIDE.md)**: 상세한 빌드 및 배포 설명서
+
+### 배포 요구사항
+
+**개발 환경** (빌드 시):
+- Python 3.8+
+- 모든 requirements.txt 패키지
+- 디스크 여유 공간 5GB+
+
+**최종 사용자** (실행 시):
+- Windows 10/11 (64-bit)
+- 8GB RAM 이상 권장
+- Visual C++ Redistributable (자동 확인)
+
+### 주요 특징
+- ✅ PyTorch 포함 (GPU/CPU 자동 감지)
+- ✅ OpenSlide 라이브러리 내장
+- ✅ AI 모델 자동 패키징
+- ✅ 독립 실행 (Python 설치 불필요)
+- ✅ 2-4GB 단일 배포 패키지
+
+---
+
 ## 라이선스
 
 MIT License
