@@ -25,15 +25,31 @@ else:
 sys.path.insert(0, str(application_path))
 
 # OpenSlide DLL 경로 설정 (import 전에 반드시 실행)
-# 방법 1: add_dll_directory (Windows 10+)
 dll_paths = [
     bundle_dir,  # 실행 파일과 같은 디렉토리
     bundle_dir / "libs",
     bundle_dir / "libs" / "openslide_lib" / "bin",
+    bundle_dir / "openslide_bin",
     application_path / "libs",
     application_path / "libs" / "openslide_lib" / "bin",
 ]
 
+# OpenSlide 환경변수 설정 (중요!)
+for dll_path in dll_paths:
+    if dll_path.exists():
+        os.environ['OPENSLIDE_PATH'] = str(dll_path)
+        print(f"Set OPENSLIDE_PATH: {dll_path}")
+        break
+
+# PATH 환경 변수에 추가
+for dll_path in dll_paths:
+    if dll_path.exists():
+        path_str = str(dll_path)
+        if path_str not in os.environ.get('PATH', ''):
+            os.environ['PATH'] = path_str + os.pathsep + os.environ.get('PATH', '')
+            print(f"Added to PATH: {dll_path}")
+
+# Windows 10+ DLL 디렉토리 추가
 for dll_path in dll_paths:
     if dll_path.exists():
         try:
@@ -41,14 +57,6 @@ for dll_path in dll_paths:
             print(f"Added DLL directory: {dll_path}")
         except (AttributeError, OSError) as e:
             print(f"Failed to add DLL directory {dll_path}: {e}")
-
-# 방법 2: PATH 환경 변수에 추가 (하위 호환성)
-for dll_path in dll_paths:
-    if dll_path.exists():
-        path_str = str(dll_path)
-        if path_str not in os.environ.get('PATH', ''):
-            os.environ['PATH'] = path_str + os.pathsep + os.environ.get('PATH', '')
-            print(f"Added to PATH: {dll_path}")
 
 from PyQt5.QtWidgets import QApplication
 from ui.viewer import PathologyViewer
