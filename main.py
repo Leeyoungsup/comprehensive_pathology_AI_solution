@@ -7,14 +7,48 @@ import sys
 import os
 from pathlib import Path
 
-# 프로젝트 루트를 Python 경로에 추가
-project_root = Path(__file__).parent
-sys.path.insert(0, str(project_root))
+# PyInstaller 실행 파일인 경우와 스크립트 실행 구분
+if getattr(sys, 'frozen', False):
+    # PyInstaller로 빌드된 실행 파일의 디렉토리
+    application_path = Path(sys.executable).parent
+    # _MEIPASS는 PyInstaller의 임시 폴더
+    if hasattr(sys, '_MEIPASS'):
+        bundle_dir = Path(sys._MEIPASS)
+    else:
+        bundle_dir = application_path
+else:
+    # 스크립트로 실행
+    application_path = Path(__file__).parent
+    bundle_dir = application_path
 
-# OpenSlide DLL 경로 설정
-openslide_dll_path = project_root / "libs"
-if openslide_dll_path.exists():
-    os.add_dll_directory(str(openslide_dll_path))
+# 프로젝트 루트를 Python 경로에 추가
+sys.path.insert(0, str(application_path))
+
+# OpenSlide DLL 경로 설정 (import 전에 반드시 실행)
+# 방법 1: add_dll_directory (Windows 10+)
+dll_paths = [
+    bundle_dir,  # 실행 파일과 같은 디렉토리
+    bundle_dir / "libs",
+    bundle_dir / "libs" / "openslide_lib" / "bin",
+    application_path / "libs",
+    application_path / "libs" / "openslide_lib" / "bin",
+]
+
+for dll_path in dll_paths:
+    if dll_path.exists():
+        try:
+            os.add_dll_directory(str(dll_path))
+            print(f"Added DLL directory: {dll_path}")
+        except (AttributeError, OSError) as e:
+            print(f"Failed to add DLL directory {dll_path}: {e}")
+
+# 방법 2: PATH 환경 변수에 추가 (하위 호환성)
+for dll_path in dll_paths:
+    if dll_path.exists():
+        path_str = str(dll_path)
+        if path_str not in os.environ.get('PATH', ''):
+            os.environ['PATH'] = path_str + os.pathsep + os.environ.get('PATH', '')
+            print(f"Added to PATH: {dll_path}")
 
 from PyQt5.QtWidgets import QApplication
 from ui.viewer import PathologyViewer
