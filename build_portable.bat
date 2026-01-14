@@ -124,6 +124,15 @@ echo python main.py >> PathologyAIViewer_Portable\run.bat
 echo. >> PathologyAIViewer_Portable\run.bat
 echo pause >> PathologyAIViewer_Portable\run.bat
 
+:: 콘솔 없는 실행 파일 (VBScript)
+echo Set WshShell = CreateObject("WScript.Shell") > PathologyAIViewer_Portable\run_nogui.vbs
+echo WshShell.Run "python_env\pythonw.exe main.py", 0, False >> PathologyAIViewer_Portable\run_nogui.vbs
+
+echo   실행 파일 생성 완료!
+echo   - run.bat: 콘솔 창 표시
+echo   - run_nogui.vbs: 콘솔 없이 실행
+echo.
+
 echo.
 echo ========================================
 echo 배포 패키지 생성 완료!
