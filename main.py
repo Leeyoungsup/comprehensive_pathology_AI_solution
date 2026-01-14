@@ -72,13 +72,11 @@ import traceback
 import logging
 from datetime import datetime
 
-# 로깅 설정
-log_file = application_path / f"error_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+# 로깅 설정 (파일 출력 비활성화, 콘솔만 사용)
 logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.WARNING,  # WARNING 이상만 출력
+    format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(log_file, encoding='utf-8'),
         logging.StreamHandler(sys.stdout)
     ]
 )
@@ -87,53 +85,55 @@ logger = logging.getLogger(__name__)
 def main():
     """메인 애플리케이션 실행"""
     try:
-        logger.info("="*60)
-        logger.info("Pathology AI Viewer 시작")
-        logger.info(f"Python 버전: {sys.version}")
-        logger.info(f"실행 경로: {application_path}")
-        logger.info(f"Bundle 경로: {bundle_dir}")
-        logger.info("="*60)
+        # 로그 출력 최소화
+        # logger.info("="*60)
+        # logger.info("Pathology AI Viewer 시작")
+        # logger.info(f"Python 버전: {sys.version}")
+        # logger.info(f"실행 경로: {application_path}")
+        # logger.info(f"Bundle 경로: {bundle_dir}")
+        # logger.info("="*60)
         
-        # PyTorch 정보 로깅
-        try:
-            import torch
-            logger.info(f"PyTorch 버전: {torch.__version__}")
-            logger.info(f"CUDA 사용 가능: {torch.cuda.is_available()}")
-            if torch.cuda.is_available():
-                logger.info(f"CUDA 버전: {torch.version.cuda}")
-                logger.info(f"GPU: {torch.cuda.get_device_name(0)}")
-        except Exception as e:
-            logger.error(f"PyTorch 정보 확인 실패: {e}")
+        # PyTorch 정보 로깅 (주석 처리)
+        # try:
+        #     import torch
+        #     logger.info(f"PyTorch 버전: {torch.__version__}")
+        #     logger.info(f"CUDA 사용 가능: {torch.cuda.is_available()}")
+        #     if torch.cuda.is_available():
+        #         logger.info(f"CUDA 버전: {torch.version.cuda}")
+        #         logger.info(f"GPU: {torch.cuda.get_device_name(0)}")
+        # except Exception as e:
+        #     logger.error(f"PyTorch 정보 확인 실패: {e}")
         
-        # OpenSlide 정보 로깅
-        try:
-            import openslide
-            logger.info(f"OpenSlide 버전: {openslide.__version__}")
-        except Exception as e:
-            logger.error(f"OpenSlide 정보 확인 실패: {e}")
+        # OpenSlide 정보 로깅 (주석 처리)
+        # try:
+        #     import openslide
+        #     logger.info(f"OpenSlide 버전: {openslide.__version__}")
+        # except Exception as e:
+        #     logger.error(f"OpenSlide 정보 확인 실패: {e}")
         
-        logger.info("Qt 애플리케이션 생성 중...")
+        # logger.info("Qt 애플리케이션 생성 중...")
         app = QApplication(sys.argv)
         app.setApplicationName("Pathology AI Viewer")
         
-        logger.info("메인 뷰어 윈도우 생성 중...")
+        # logger.info("메인 뷰어 윈도우 생성 중...")
         viewer = PathologyViewer()
         viewer.show()
         
-        logger.info("애플리케이션 실행")
+        # logger.info("애플리케이션 실행")
         sys.exit(app.exec())
         
     except Exception as e:
         error_msg = f"치명적인 오류 발생:\n\n{str(e)}\n\n{traceback.format_exc()}"
         logger.critical(error_msg)
-        print("\n" + "="*60)
-        print("오류 발생!")
-        print("="*60)
-        print(error_msg)
-        print("="*60)
-        print(f"\n로그 파일 저장됨: {log_file}")
-        print("\n아무 키나 눌러 종료...")
-        input()
+        # 콘솔 출력 비활성화 (GUI에서는 표시 안 됨)
+        # print("\n" + "="*60)
+        # print("오류 발생!")
+        # print("="*60)
+        # print(error_msg)
+        # print("="*60)
+        # print(f"\n로그 파일 저장됨: {log_file}")
+        # print("\n아무 키나 눌러 종료...")
+        # input()
         sys.exit(1)
 
 
