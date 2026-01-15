@@ -749,7 +749,8 @@ class WSIViewWidget(QGraphicsView):
             # ESC: 그리기 취소
             if self.annotation_mode in [AnnotationMode.DRAWING_POLYGON, 
                                        AnnotationMode.DRAWING_RECTANGLE,
-                                       AnnotationMode.DRAWING_POINT]:
+                                       AnnotationMode.DRAWING_POINT,
+                                       AnnotationMode.DRAWING_BRUSH]:
                 self.cancel_drawing()
                 event.accept()
                 return
