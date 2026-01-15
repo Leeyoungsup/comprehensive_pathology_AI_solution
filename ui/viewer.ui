@@ -276,6 +276,7 @@
    <attribute name="toolBarBreak">
     <bool>false</bool>
    </attribute>
+   <addaction name="actionStopDrawing"/>
    <addaction name="actionDrawPolygon"/>
    <addaction name="actionDrawRectangle"/>
    <addaction name="actionDrawPoint"/>
@@ -383,6 +384,10 @@
    <property name="checkable">
     <bool>true</bool>
    </property>
+   <property name="icon">
+    <iconset>
+     <normaloff>../icon/Rectangular_ROI_measurement.png</normaloff>../icon/Rectangular_ROI_measurement.png</iconset>
+   </property>
    <property name="text">
     <string>▭ Rectangle</string>
    </property>
@@ -393,6 +398,10 @@
   <action name="actionDrawPoint">
    <property name="checkable">
     <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset>
+     <normaloff>../icon/Point.png</normaloff>../icon/Point.png</iconset>
    </property>
    <property name="text">
     <string>● Point</string>
@@ -446,34 +455,16 @@
     <bool>false</bool>
    </property>
   </action>
-  <action name="actionDrawRectangle">
-   <property name="checkable">
-    <bool>true</bool>
+  <action name="actionStopDrawing">
+   <property name="text">
+    <string>Stop Drawing</string>
    </property>
    <property name="icon">
     <iconset>
-     <normaloff>../icon/Rectangular_ROI_measurement.png</normaloff>../icon/Rectangular_ROI_measurement.png</iconset>
-   </property>
-   <property name="text">
-    <string>▭ Rectangle</string>
+     <normaloff>../icon/cursor.png</normaloff>../icon/cursor.png</iconset>
    </property>
    <property name="toolTip">
-    <string>Rectangle 그리기 (드래그로 사각형 생성, ESC: 취소)</string>
-   </property>
-  </action>
-  <action name="actionDrawPoint">
-   <property name="checkable">
-    <bool>true</bool>
-   </property>
-   <property name="icon">
-    <iconset>
-     <normaloff>../icon/Point.png</normaloff>../icon/Point.png</iconset>
-   </property>
-   <property name="text">
-    <string>● Point</string>
-   </property>
-   <property name="toolTip">
-    <string>Point 그리기 (클릭으로 포인트 추가, 우클릭: 종료, ESC: 취소)</string>
+    <string>현재 그리기 도구 종료</string>
    </property>
   </action>
  </widget>
