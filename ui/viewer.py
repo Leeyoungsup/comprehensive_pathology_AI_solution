@@ -139,9 +139,11 @@ class PathologyViewer(QMainWindow):
         
         # Annotation 툴바 액션 (viewer.ui에서 정의됨)
         self.actionDrawPolygon.toggled.connect(self.toggle_draw_polygon)
-        self.actionClearROI.triggered.connect(self.clear_roi)
-        self.actionSaveROI.triggered.connect(self.save_annotations)
-        self.actionLoadROI.triggered.connect(self.load_annotations)
+        self.actionDrawRectangle.toggled.connect(self.toggle_draw_rectangle)
+        self.actionDrawPoint.toggled.connect(self.toggle_draw_point)
+        # self.actionClearROI.triggered.connect(self.clear_roi)
+        # self.actionSaveROI.triggered.connect(self.save_annotations)
+        # self.actionLoadROI.triggered.connect(self.load_annotations)
         
         # AI 버튼
         self.btnSegmentation.clicked.connect(self.run_segmentation)
@@ -275,8 +277,26 @@ class PathologyViewer(QMainWindow):
         
         # ROI 영역 가져오기
         roi_polygons = None
+        roi_info = "전체 슬라이드"
         if self.wsi_viewer.annotation_list.annotations:
             roi_polygons = self.wsi_viewer.annotation_list.annotations
+            roi_count = len(roi_polygons)
+            
+            # ROI 타입별 카운트
+            from core.annotation import AnnotationType
+            type_counts = {}
+            for ann in roi_polygons:
+                type_name = ann.type.value
+                type_counts[type_name] = type_counts.get(type_name, 0) + 1
+            
+            # ROI 정보 문자열 생성
+            type_strs = [f"{count}개 {type_name}" for type_name, count in type_counts.items()]
+            roi_info = f"ROI {roi_count}개 ({', '.join(type_strs)})"
+            
+            self.statusbar.showMessage(f"세포 검출 분석 실행 중... [{roi_info}]")
+            self.progressLabel.setText(f"검출 대상: {roi_info}")
+        else:
+            self.progressLabel.setText("검출 대상: 전체 슬라이드")
         
         # 슬라이드 열기 (서비스 이용)
         try:
@@ -639,12 +659,53 @@ class PathologyViewer(QMainWindow):
     def toggle_draw_polygon(self, checked):
         """Polygon 그리기 토글"""
         if checked:
+            # 다른 그리기 버튼 해제
+            if hasattr(self, 'actionDrawRectangle') and self.actionDrawRectangle.isChecked():
+                self.actionDrawRectangle.setChecked(False)
+            if hasattr(self, 'actionDrawPoint') and self.actionDrawPoint.isChecked():
+                self.actionDrawPoint.setChecked(False)
+            
             # Polygon 그리기 모드 활성화
             self.wsi_viewer.start_drawing_polygon()
             self.statusbar.showMessage("ROI 그리기 모드: 클릭으로 점 추가, 우클릭으로 완성, ESC로 취소")
         else:
             # 일반 모드로 복귀
             self.wsi_viewer.cancel_drawing()
+            self.wsi_viewer.set_annotation_mode(AnnotationMode.NONE)
+            self.statusbar.showMessage("준비됨")
+    
+    def toggle_draw_rectangle(self, checked):
+        """Rectangle 그리기 토글"""
+        if checked:
+            # 다른 그리기 버튼 해제
+            if self.actionDrawPolygon.isChecked():
+                self.actionDrawPolygon.setChecked(False)
+            if hasattr(self, 'actionDrawPoint') and self.actionDrawPoint.isChecked():
+                self.actionDrawPoint.setChecked(False)
+            
+            # Rectangle 그리기 모드 활성화
+            self.wsi_viewer.start_drawing_rectangle()
+            self.statusbar.showMessage("사각형 그리기 모드: 드래그로 사각형 생성, ESC로 취소")
+        else:
+            # 일반 모드로 복귀
+            self.wsi_viewer.cancel_drawing()
+            self.wsi_viewer.set_annotation_mode(AnnotationMode.NONE)
+            self.statusbar.showMessage("준비됨")
+    
+    def toggle_draw_point(self, checked):
+        """Point 그리기 토글"""
+        if checked:
+            # 다른 그리기 버튼 해제
+            if self.actionDrawPolygon.isChecked():
+                self.actionDrawPolygon.setChecked(False)
+            if hasattr(self, 'actionDrawRectangle') and self.actionDrawRectangle.isChecked():
+                self.actionDrawRectangle.setChecked(False)
+            
+            # Point 그리기 모드 활성화
+            self.wsi_viewer.start_drawing_point()
+            self.statusbar.showMessage("포인트 그리기 모드: 클릭으로 점 추가, 우클릭으로 종료, ESC로 취소")
+        else:
+            # 일반 모드로 복귀
             self.wsi_viewer.set_annotation_mode(AnnotationMode.NONE)
             self.statusbar.showMessage("준비됨")
     
@@ -733,9 +794,13 @@ class PathologyViewer(QMainWindow):
         # Annotation 패널 업데이트
         self.annotation_panel.add_annotation(annotation)
         
-        # Polygon 그리기 완료 후 자동으로 토글 해제
+        # 그리기 완료 후 자동으로 토글 해제
         if self.actionDrawPolygon.isChecked():
             self.actionDrawPolygon.setChecked(False)
+        if hasattr(self, 'actionDrawRectangle') and self.actionDrawRectangle.isChecked():
+            self.actionDrawRectangle.setChecked(False)
+        if hasattr(self, 'actionDrawPoint') and self.actionDrawPoint.isChecked():
+            self.actionDrawPoint.setChecked(False)
     
     def on_annotation_selected(self, annotation):
         """Annotation 선택 시 호출 (뷰어에서)"""
@@ -759,6 +824,10 @@ class PathologyViewer(QMainWindow):
         """그리기 취소 시 호출"""
         if self.actionDrawPolygon.isChecked():
             self.actionDrawPolygon.setChecked(False)
+        if hasattr(self, 'actionDrawRectangle') and self.actionDrawRectangle.isChecked():
+            self.actionDrawRectangle.setChecked(False)
+        if hasattr(self, 'actionDrawPoint') and self.actionDrawPoint.isChecked():
+            self.actionDrawPoint.setChecked(False)
         self.statusbar.showMessage("ROI 그리기 취소됨")
     
     def closeEvent(self, event):

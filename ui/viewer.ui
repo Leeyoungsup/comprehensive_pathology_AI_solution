@@ -224,7 +224,7 @@
      <x>0</x>
      <y>0</y>
      <width>1400</width>
-     <height>22</height>
+     <height>21</height>
     </rect>
    </property>
    <widget class="QMenu" name="menuFile">
@@ -277,6 +277,8 @@
     <bool>false</bool>
    </attribute>
    <addaction name="actionDrawPolygon"/>
+   <addaction name="actionDrawRectangle"/>
+   <addaction name="actionDrawPoint"/>
    <addaction name="separator"/>
    <addaction name="actionClearROI"/>
    <addaction name="separator"/>
@@ -373,12 +375,40 @@
     <string>Polygon 그리기 (클릭: 점 추가, 우클릭: 완성, ESC: 취소)</string>
    </property>
   </action>
+  <action name="actionDrawRectangle">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>▭ Rectangle</string>
+   </property>
+   <property name="toolTip">
+    <string>사각형 그리기 (드래그로 생성, ESC: 취소)</string>
+   </property>
+  </action>
+  <action name="actionDrawPoint">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>● Point</string>
+   </property>
+   <property name="toolTip">
+    <string>포인트 그리기 (클릭: 점 추가, 우클릭: 종료, ESC: 취소)</string>
+   </property>
+  </action>
   <action name="actionClearROI">
    <property name="text">
     <string>🗑️ Clear ROI</string>
    </property>
    <property name="toolTip">
     <string>모든 ROI 삭제</string>
+   </property>
+   <property name="autoRepeat">
+    <bool>false</bool>
+   </property>
+   <property name="visible">
+    <bool>false</bool>
    </property>
   </action>
   <action name="actionSaveROI">
@@ -388,13 +418,50 @@
    <property name="toolTip">
     <string>ROI 저장</string>
    </property>
+   <property name="autoRepeat">
+    <bool>false</bool>
+   </property>
+   <property name="visible">
+    <bool>false</bool>
+   </property>
   </action>
   <action name="actionLoadROI">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
    <property name="text">
     <string>📁 Load ROI</string>
    </property>
    <property name="toolTip">
     <string>ROI 불러오기</string>
+   </property>
+   <property name="autoRepeat">
+    <bool>false</bool>
+   </property>
+   <property name="visible">
+    <bool>false</bool>
+   </property>
+  </action>
+  <action name="actionDrawRectangle">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>▭ Rectangle</string>
+   </property>
+   <property name="toolTip">
+    <string>Rectangle 그리기 (드래그로 사각형 생성, ESC: 취소)</string>
+   </property>
+  </action>
+  <action name="actionDrawPoint">
+   <property name="checkable">
+    <bool>true</bool>
+   </property>
+   <property name="text">
+    <string>● Point</string>
+   </property>
+   <property name="toolTip">
+    <string>Point 그리기 (클릭으로 포인트 추가, 우클릭: 종료, ESC: 취소)</string>
    </property>
   </action>
  </widget>

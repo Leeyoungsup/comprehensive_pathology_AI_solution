@@ -73,26 +73,47 @@ class Annotation:
         return (min(xs), min(ys), max(xs), max(ys))
     
     def contains_point(self, x: float, y: float) -> bool:
-        """점이 Polygon 내부에 있는지 확인 (Ray Casting Algorithm)"""
-        if self.type != AnnotationType.POLYGON or len(self.coordinates) < 3:
+        """점이 Annotation 내부에 있는지 확인"""
+        if not self.coordinates:
             return False
         
-        n = len(self.coordinates)
-        inside = False
+        # POINT: 일정 거리 내에 있는지 확인
+        if self.type == AnnotationType.POINT:
+            if len(self.coordinates) != 1:
+                return False
+            px, py = self.coordinates[0]
+            distance = ((x - px) ** 2 + (y - py) ** 2) ** 0.5
+            return distance < 10  # 10픽셀 이내
         
-        p1x, p1y = self.coordinates[0]
-        for i in range(1, n + 1):
-            p2x, p2y = self.coordinates[i % n]
-            if y > min(p1y, p2y):
-                if y <= max(p1y, p2y):
-                    if x <= max(p1x, p2x):
-                        if p1y != p2y:
-                            xinters = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
-                        if p1x == p2x or x <= xinters:
-                            inside = not inside
-            p1x, p1y = p2x, p2y
+        # RECTANGLE: 경계 박스 내부 확인
+        if self.type == AnnotationType.RECTANGLE:
+            bounds = self.get_bounds()
+            return (bounds[0] <= x <= bounds[2] and 
+                    bounds[1] <= y <= bounds[3])
         
-        return inside
+        # POLYGON: Ray Casting Algorithm
+        if self.type == AnnotationType.POLYGON:
+            if len(self.coordinates) < 3:
+                return False
+            
+            n = len(self.coordinates)
+            inside = False
+            
+            p1x, p1y = self.coordinates[0]
+            for i in range(1, n + 1):
+                p2x, p2y = self.coordinates[i % n]
+                if y > min(p1y, p2y):
+                    if y <= max(p1y, p2y):
+                        if x <= max(p1x, p2x):
+                            if p1y != p2y:
+                                xinters = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
+                            if p1x == p2x or x <= xinters:
+                                inside = not inside
+                p1x, p1y = p2x, p2y
+            
+            return inside
+        
+        return False
     
     def get_area(self) -> float:
         """Polygon 면적 계산 (Shoelace formula)"""

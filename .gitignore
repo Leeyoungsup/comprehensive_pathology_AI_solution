@@ -1,5 +1,20 @@
 model/HnE_detection.pt
 dist/
-__pycache__/
 build/
 PathologyAIViewer_Portable/
+
+# Python 캐시 폴더
+__pycache__/
+ai/__pycache__/
+ai/nets/__pycache__/
+ai/utils/__pycache__/
+ui/__pycache__/
+ui/dialogs/__pycache__/
+core/__pycache__/
+backend/__pycache__/
+backend/services/__pycache__/
+utils/__pycache__/
+
+*.py[cod]
+*$py.class
+*.so

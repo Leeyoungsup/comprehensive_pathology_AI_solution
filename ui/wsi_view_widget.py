@@ -18,15 +18,17 @@ if str(project_root) not in sys.path:
 from core.wsi_tile_manager import WSITileManager
 from core.annotation import AnnotationList, Annotation, AnnotationType
 from ui.minimap import MiniMap
-from ui.annotation_items import AnnotationGraphicsItem, DrawingPolygonItem
+from ui.annotation_items import AnnotationGraphicsItem, DrawingPolygonItem, DrawingRectangleItem, DrawingPointItem
 
 
 class AnnotationMode:
     """Annotation 모드"""
     NONE = 0
     DRAWING_POLYGON = 1
-    EDITING = 2
-    SELECTING = 3
+    DRAWING_RECTANGLE = 2
+    DRAWING_POINT = 3
+    EDITING = 4
+    SELECTING = 5
 
 
 class WSIViewWidget(QGraphicsView):
@@ -524,6 +526,41 @@ class WSIViewWidget(QGraphicsView):
                 event.accept()
                 return
         
+        elif self.annotation_mode == AnnotationMode.DRAWING_RECTANGLE:
+            if event.button() == Qt.LeftButton:
+                # Scene 좌표로 변환
+                scene_pos = self.mapToScene(event.pos())
+                
+                # Rectangle 그리기 시작
+                self.current_drawing = DrawingRectangleItem(self.annotation_color)
+                self.current_drawing.set_start_point(scene_pos.x(), scene_pos.y())
+                self.scene.addItem(self.current_drawing)
+                self.is_drawing_drag = True
+                
+                event.accept()
+                return
+            elif event.button() == Qt.RightButton:
+                # 우클릭: 취소
+                self.cancel_drawing()
+                event.accept()
+                return
+        
+        elif self.annotation_mode == AnnotationMode.DRAWING_POINT:
+            if event.button() == Qt.LeftButton:
+                # Scene 좌표로 변환
+                scene_pos = self.mapToScene(event.pos())
+                
+                # Point 즉시 생성
+                self.finish_drawing_point(scene_pos.x(), scene_pos.y())
+                
+                event.accept()
+                return
+            elif event.button() == Qt.RightButton:
+                # 우클릭: 모드 종료
+                self.set_annotation_mode(AnnotationMode.NONE)
+                event.accept()
+                return
+        
         # 일반 모드: 패닝
         if event.button() == Qt.LeftButton:
             # Scene 아이템 클릭 확인 (Annotation 선택)
@@ -611,6 +648,13 @@ class WSIViewWidget(QGraphicsView):
             event.accept()
             return
         
+        elif self.annotation_mode == AnnotationMode.DRAWING_RECTANGLE and self.is_drawing_drag and self.current_drawing:
+            # Rectangle 그리기 중
+            scene_pos = self.mapToScene(event.pos())
+            self.current_drawing.update_end_point(scene_pos.x(), scene_pos.y())
+            event.accept()
+            return
+        
         # 마우스 좌표 표시
         if self.tile_manager:
             scene_pos = self.mapToScene(event.pos())
@@ -646,6 +690,12 @@ class WSIViewWidget(QGraphicsView):
                 event.accept()
                 return
             
+            # Rectangle 그리기 완료
+            if self.annotation_mode == AnnotationMode.DRAWING_RECTANGLE and self.is_drawing_drag:
+                self.finish_drawing_rectangle()
+                event.accept()
+                return
+            
             self.setCursor(Qt.ArrowCursor)
             event.accept()
         else:
@@ -663,7 +713,9 @@ class WSIViewWidget(QGraphicsView):
         """키 이벤트 처리"""
         if event.key() == Qt.Key_Escape:
             # ESC: 그리기 취소
-            if self.annotation_mode == AnnotationMode.DRAWING_POLYGON:
+            if self.annotation_mode in [AnnotationMode.DRAWING_POLYGON, 
+                                       AnnotationMode.DRAWING_RECTANGLE,
+                                       AnnotationMode.DRAWING_POINT]:
                 self.cancel_drawing()
                 event.accept()
                 return
@@ -712,6 +764,10 @@ class WSIViewWidget(QGraphicsView):
         
         if mode == AnnotationMode.DRAWING_POLYGON:
             self.setCursor(Qt.CrossCursor)
+        elif mode == AnnotationMode.DRAWING_RECTANGLE:
+            self.setCursor(Qt.CrossCursor)
+        elif mode == AnnotationMode.DRAWING_POINT:
+            self.setCursor(Qt.CrossCursor)
         elif mode == AnnotationMode.EDITING:
             self.setCursor(Qt.ArrowCursor)
             # 선택된 annotation 편집 시작
@@ -726,6 +782,7 @@ class WSIViewWidget(QGraphicsView):
     def start_drawing_polygon(self):
         """Polygon 그리기 시작"""
         self.set_annotation_mode(AnnotationMode.DRAWING_POLYGON)
+        self.annotation_color = QColor(0, 255, 0)  # 초록색
         self.current_drawing = DrawingPolygonItem(self.annotation_color)
         self.scene.addItem(self.current_drawing)
     
@@ -775,8 +832,9 @@ class WSIViewWidget(QGraphicsView):
     def cancel_drawing(self):
         """그리기 취소"""
         if self.current_drawing:
-            # 시작점 표시 제거
-            self.current_drawing.remove_start_point_indicator()
+            # 시작점 표시 제거 (polygon만 해당)
+            if hasattr(self.current_drawing, 'remove_start_point_indicator'):
+                self.current_drawing.remove_start_point_indicator()
             self.scene.removeItem(self.current_drawing)
             self.current_drawing = None
         
@@ -787,6 +845,85 @@ class WSIViewWidget(QGraphicsView):
         
         self.set_annotation_mode(AnnotationMode.NONE)
         self.drawingCancelled.emit()  # 시그널 발생
+    
+    def start_drawing_rectangle(self):
+        """Rectangle 그리기 시작"""
+        self.set_annotation_mode(AnnotationMode.DRAWING_RECTANGLE)
+        self.annotation_color = QColor(255, 0, 0)  # 빨간색
+        # Rectangle은 마우스 press 시 생성
+    
+    def finish_drawing_rectangle(self):
+        """Rectangle 그리기 완료"""
+        if self.current_drawing and isinstance(self.current_drawing, DrawingRectangleItem) and self.current_drawing.is_valid():
+            # Annotation 생성
+            self.annotation_counter += 1
+            annotation = Annotation(
+                name=f"Rectangle_{self.annotation_counter}",
+                type=AnnotationType.RECTANGLE,
+                coordinates=self.current_drawing.get_coordinates(),
+                color=(self.annotation_color.red(), 
+                       self.annotation_color.green(), 
+                       self.annotation_color.blue())
+            )
+            
+            # AnnotationList에 추가
+            self.annotation_list.add_annotation(annotation)
+            
+            # 그래픽 아이템 생성 및 제어점 표시
+            self.add_annotation_item(annotation)
+            
+            # 방금 생성한 annotation 선택하고 제어점 표시
+            annotation.selected = True
+            if annotation.id in self.annotation_items:
+                self.annotation_items[annotation.id].start_editing()
+            
+            # 시그널 발생
+            self.annotationAdded.emit(annotation)
+        
+        # 그리기 아이템 제거
+        if self.current_drawing:
+            self.scene.removeItem(self.current_drawing)
+            self.current_drawing = None
+        
+        # 드래그 상태 초기화
+        self.is_drawing_drag = False
+        self.drag_start_pos = None
+        
+        self.set_annotation_mode(AnnotationMode.NONE)
+    
+    def start_drawing_point(self):
+        """Point 그리기 시작"""
+        self.set_annotation_mode(AnnotationMode.DRAWING_POINT)
+        self.annotation_color = QColor(0, 0, 255)  # 파란색
+        # Point는 클릭 시 즉시 생성
+    
+    def finish_drawing_point(self, x: float, y: float):
+        """Point 그리기 완료"""
+        # Annotation 생성
+        self.annotation_counter += 1
+        annotation = Annotation(
+            name=f"Point_{self.annotation_counter}",
+            type=AnnotationType.POINT,
+            coordinates=[(x, y)],
+            color=(self.annotation_color.red(), 
+                   self.annotation_color.green(), 
+                   self.annotation_color.blue())
+        )
+        
+        # AnnotationList에 추가
+        self.annotation_list.add_annotation(annotation)
+        
+        # 그래픽 아이템 생성
+        self.add_annotation_item(annotation)
+        
+        # 방금 생성한 annotation 선택
+        annotation.selected = True
+        
+        # 시그널 발생
+        self.annotationAdded.emit(annotation)
+        
+        # 즉시 일반 모드로 복귀 (계속 그리기 가능)
+        # self.set_annotation_mode(AnnotationMode.NONE)
     
     def add_annotation_item(self, annotation: Annotation):
         """Annotation 그래픽 아이템 추가"""

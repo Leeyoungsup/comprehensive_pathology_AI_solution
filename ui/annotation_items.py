@@ -10,6 +10,7 @@ from PyQt5.QtGui import QPen, QBrush, QColor, QPolygonF, QPainter, QPainterPath
 from typing import List, Optional, Tuple
 import sys
 from pathlib import Path
+import math
 
 # 프로젝트 루트 추가
 project_root = Path(__file__).parent.parent
@@ -43,11 +44,25 @@ class AnnotationGraphicsItem(QGraphicsPolygonItem):
         if not self.annotation.coordinates:
             return
         
-        # Polygon 생성
-        polygon = QPolygonF()
-        for x, y in self.annotation.coordinates:
-            polygon.append(QPointF(x, y))
-        self.setPolygon(polygon)
+        # Point 타입은 작은 원으로 표시
+        if self.annotation.type == AnnotationType.POINT and len(self.annotation.coordinates) == 1:
+            # Point의 경우 작은 원을 근사하는 다각형
+            x, y = self.annotation.coordinates[0]
+            radius = 15
+            polygon = QPolygonF()
+            # 원을 근사하는 16각형
+            for i in range(16):
+                angle = 2 * math.pi * i / 16
+                px = x + radius * math.cos(angle)
+                py = y + radius * math.sin(angle)
+                polygon.append(QPointF(px, py))
+            self.setPolygon(polygon)
+        else:
+            # Polygon/Rectangle 생성
+            polygon = QPolygonF()
+            for x, y in self.annotation.coordinates:
+                polygon.append(QPointF(x, y))
+            self.setPolygon(polygon)
         
         # 스타일 설정
         self.update_style()
@@ -277,3 +292,99 @@ class DrawingPolygonItem(QGraphicsPathItem):
         if self.start_point_item and self.scene():
             self.scene().removeItem(self.start_point_item)
             self.start_point_item = None
+
+
+class DrawingRectangleItem(QGraphicsPathItem):
+    """
+    Rectangle 그리기 중인 임시 아이템
+    드래그로 사각형 생성
+    """
+    
+    def __init__(self, color: QColor = QColor(255, 0, 0)):
+        super().__init__()
+        
+        self.start_point: Optional[QPointF] = None
+        self.end_point: Optional[QPointF] = None
+        self.color = color
+        
+        # 스타일 - 영역 채우기 없이 선만 표시
+        pen = QPen(color, 2, Qt.SolidLine)
+        pen.setCosmetic(True)  # 배율 독립적 크기
+        self.setPen(pen)
+        self.setBrush(QBrush(QColor(color.red(), color.green(), color.blue(), 30)))
+        
+        self.setZValue(99)  # Annotation 아래, 타일 위
+    
+    def set_start_point(self, x: float, y: float):
+        """시작점 설정"""
+        self.start_point = QPointF(x, y)
+        self.end_point = QPointF(x, y)
+        self.update_rectangle()
+    
+    def update_end_point(self, x: float, y: float):
+        """끝점 업데이트"""
+        self.end_point = QPointF(x, y)
+        self.update_rectangle()
+    
+    def update_rectangle(self):
+        """사각형 업데이트"""
+        if self.start_point and self.end_point:
+            path = QPainterPath()
+            rect = QRectF(self.start_point, self.end_point).normalized()
+            path.addRect(rect)
+            self.setPath(path)
+    
+    def get_coordinates(self) -> List[Tuple[float, float]]:
+        """사각형의 네 꼭지점 좌표 반환 (polygon과 호환)"""
+        if not self.start_point or not self.end_point:
+            return []
+        
+        rect = QRectF(self.start_point, self.end_point).normalized()
+        return [
+            (rect.left(), rect.top()),
+            (rect.right(), rect.top()),
+            (rect.right(), rect.bottom()),
+            (rect.left(), rect.bottom())
+        ]
+    
+    def is_valid(self) -> bool:
+        """유효한 Rectangle인지 확인"""
+        if not self.start_point or not self.end_point:
+            return False
+        
+        rect = QRectF(self.start_point, self.end_point).normalized()
+        return rect.width() > 5 and rect.height() > 5
+
+
+class DrawingPointItem(QGraphicsEllipseItem):
+    """
+    Point 그리기 중인 임시 아이템
+    클릭한 위치에 점 표시
+    """
+    
+    def __init__(self, x: float, y: float, color: QColor = QColor(0, 0, 255)):
+        # 반지름 10 픽셀의 원
+        super().__init__(-10, -10, 20, 20)
+        
+        self.setPos(x, y)
+        self.color = color
+        self.point_x = x
+        self.point_y = y
+        
+        # 스타일
+        pen = QPen(color, 2, Qt.SolidLine)
+        pen.setCosmetic(True)  # 배율 독립적 크기
+        self.setPen(pen)
+        self.setBrush(QBrush(color))
+        
+        # 배율에 관계없이 크기 유지
+        self.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
+        self.setZValue(99)  # Annotation 아래, 타일 위
+    
+    def get_coordinates(self) -> List[Tuple[float, float]]:
+        """점 좌표 반환"""
+        return [(self.point_x, self.point_y)]
+    
+    def is_valid(self) -> bool:
+        """항상 유효"""
+        return True
