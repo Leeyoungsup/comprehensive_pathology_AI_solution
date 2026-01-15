@@ -141,6 +141,8 @@ class PathologyViewer(QMainWindow):
         self.actionDrawPolygon.toggled.connect(self.toggle_draw_polygon)
         self.actionDrawRectangle.toggled.connect(self.toggle_draw_rectangle)
         self.actionDrawPoint.toggled.connect(self.toggle_draw_point)
+        if hasattr(self, 'actionStopDrawing'):
+            self.actionStopDrawing.triggered.connect(self.stop_drawing)
         # self.actionClearROI.triggered.connect(self.clear_roi)
         # self.actionSaveROI.triggered.connect(self.save_annotations)
         # self.actionLoadROI.triggered.connect(self.load_annotations)
@@ -665,13 +667,13 @@ class PathologyViewer(QMainWindow):
             if hasattr(self, 'actionDrawPoint') and self.actionDrawPoint.isChecked():
                 self.actionDrawPoint.setChecked(False)
             
-            # Polygon 그리기 모드 활성화
+            # Polygon 그리기 모드 활성화 (지속 그리기)
+            self.wsi_viewer.keep_drawing = True
             self.wsi_viewer.start_drawing_polygon()
-            self.statusbar.showMessage("ROI 그리기 모드: 클릭으로 점 추가, 우클릭으로 완성, ESC로 취소")
+            self.statusbar.showMessage("ROI 그리기 모드(지속): 클릭으로 점 추가, 우클릭으로 완성, ESC로 취소")
         else:
             # 일반 모드로 복귀
-            self.wsi_viewer.cancel_drawing()
-            self.wsi_viewer.set_annotation_mode(AnnotationMode.NONE)
+            self.wsi_viewer.exit_drawing_mode()
             self.statusbar.showMessage("준비됨")
     
     def toggle_draw_rectangle(self, checked):
@@ -683,13 +685,13 @@ class PathologyViewer(QMainWindow):
             if hasattr(self, 'actionDrawPoint') and self.actionDrawPoint.isChecked():
                 self.actionDrawPoint.setChecked(False)
             
-            # Rectangle 그리기 모드 활성화
+            # Rectangle 그리기 모드 활성화 (지속 그리기)
+            self.wsi_viewer.keep_drawing = True
             self.wsi_viewer.start_drawing_rectangle()
-            self.statusbar.showMessage("사각형 그리기 모드: 드래그로 사각형 생성, ESC로 취소")
+            self.statusbar.showMessage("사각형 그리기 모드(지속): 드래그로 사각형 생성, ESC로 취소")
         else:
             # 일반 모드로 복귀
-            self.wsi_viewer.cancel_drawing()
-            self.wsi_viewer.set_annotation_mode(AnnotationMode.NONE)
+            self.wsi_viewer.exit_drawing_mode()
             self.statusbar.showMessage("준비됨")
     
     def toggle_draw_point(self, checked):
@@ -701,12 +703,13 @@ class PathologyViewer(QMainWindow):
             if hasattr(self, 'actionDrawRectangle') and self.actionDrawRectangle.isChecked():
                 self.actionDrawRectangle.setChecked(False)
             
-            # Point 그리기 모드 활성화
+            # Point 그리기 모드 활성화 (지속 그리기)
+            self.wsi_viewer.keep_drawing = True
             self.wsi_viewer.start_drawing_point()
-            self.statusbar.showMessage("포인트 그리기 모드: 클릭으로 점 추가, 우클릭으로 종료, ESC로 취소")
+            self.statusbar.showMessage("포인트 그리기 모드(지속): 클릭으로 점 추가, 우클릭으로 종료, ESC로 취소")
         else:
             # 일반 모드로 복귀
-            self.wsi_viewer.set_annotation_mode(AnnotationMode.NONE)
+            self.wsi_viewer.exit_drawing_mode()
             self.statusbar.showMessage("준비됨")
     
     def start_draw_roi(self):
@@ -794,13 +797,7 @@ class PathologyViewer(QMainWindow):
         # Annotation 패널 업데이트
         self.annotation_panel.add_annotation(annotation)
         
-        # 그리기 완료 후 자동으로 토글 해제
-        if self.actionDrawPolygon.isChecked():
-            self.actionDrawPolygon.setChecked(False)
-        if hasattr(self, 'actionDrawRectangle') and self.actionDrawRectangle.isChecked():
-            self.actionDrawRectangle.setChecked(False)
-        if hasattr(self, 'actionDrawPoint') and self.actionDrawPoint.isChecked():
-            self.actionDrawPoint.setChecked(False)
+        # 그리기 완료 후에도 툴이 켜져있다면 지속해서 그릴 수 있음 (자동 해제하지 않음)
     
     def on_annotation_selected(self, annotation):
         """Annotation 선택 시 호출 (뷰어에서)"""
@@ -822,13 +819,22 @@ class PathologyViewer(QMainWindow):
     
     def on_drawing_cancelled(self):
         """그리기 취소 시 호출"""
-        if self.actionDrawPolygon.isChecked():
+        # 현재 그리기 중인 아이템이 취소된 상태 알림만 표시 (툴은 유지)
+        self.statusbar.showMessage("현재 그리기 중인 항목이 취소되었습니다. 계속하려면 동일 도구를 사용하거나 'Stop Drawing'을 눌러 종료하세요.")
+
+    def stop_drawing(self):
+        """사용자가 명시적으로 그리기 모드를 종료할 때 호출"""
+        # 모든 그리기 토글 해제
+        if hasattr(self, 'actionDrawPolygon') and self.actionDrawPolygon.isChecked():
             self.actionDrawPolygon.setChecked(False)
         if hasattr(self, 'actionDrawRectangle') and self.actionDrawRectangle.isChecked():
             self.actionDrawRectangle.setChecked(False)
         if hasattr(self, 'actionDrawPoint') and self.actionDrawPoint.isChecked():
             self.actionDrawPoint.setChecked(False)
-        self.statusbar.showMessage("ROI 그리기 취소됨")
+        
+        # 뷰어의 그리기 모드 완전 종료
+        self.wsi_viewer.exit_drawing_mode()
+        self.statusbar.showMessage("그리기 모드가 종료되었습니다.")
     
     def closeEvent(self, event):
         """윈도우 닫기 시 리소스 정리"""
