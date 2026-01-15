@@ -27,8 +27,9 @@ class AnnotationMode:
     DRAWING_POLYGON = 1
     DRAWING_RECTANGLE = 2
     DRAWING_POINT = 3
-    EDITING = 4
-    SELECTING = 5
+    DRAWING_BRUSH = 4
+    EDITING = 5
+    SELECTING = 6
 
 
 class WSIViewWidget(QGraphicsView):
@@ -81,7 +82,7 @@ class WSIViewWidget(QGraphicsView):
         self.annotation_list = AnnotationList()
         self.annotation_items = {}  # annotation.id -> AnnotationGraphicsItem
         self.annotation_mode = AnnotationMode.NONE
-        self.current_drawing = None  # DrawingPolygonItem
+        self.current_drawing = None  # Drawing item (Polygon/Rectangle/Brush/Point)
         self.annotation_color = QColor(0, 255, 0)  # 기본 초록색
         self.annotation_counter = 0
         self.is_drawing_drag = False  # 드래그 중인지 여부
@@ -89,6 +90,8 @@ class WSIViewWidget(QGraphicsView):
         self.last_view_pos = None  # 마지막 점 추가 위치 (view 좌표)
         # 지속 그리기 플래그 (툴을 켜둔 상태에서 계속 그리기)
         self.keep_drawing = False
+        # 브러시 관련
+        self.brush_size = 15.0  # 기본 브러시 반지름
         
         # 미니맵 위젯 (오버레이)
         self.minimap = MiniMap(self)
@@ -528,6 +531,21 @@ class WSIViewWidget(QGraphicsView):
                 event.accept()
                 return
         
+        elif self.annotation_mode == AnnotationMode.DRAWING_BRUSH:
+            if event.button() == Qt.LeftButton:
+                scene_pos = self.mapToScene(event.pos())
+                self.current_drawing = DrawingBrushItem(radius=self.brush_size, color=self.annotation_color)
+                self.current_drawing.add_point(scene_pos.x(), scene_pos.y())
+                self.scene.addItem(self.current_drawing)
+                self.is_drawing_drag = True
+                event.accept()
+                return
+            elif event.button() == Qt.RightButton:
+                # 우클릭: Brush 완료
+                self.finish_drawing_brush()
+                event.accept()
+                return
+        
         elif self.annotation_mode == AnnotationMode.DRAWING_RECTANGLE:
             if event.button() == Qt.LeftButton:
                 # Scene 좌표로 변환
@@ -650,6 +668,13 @@ class WSIViewWidget(QGraphicsView):
             event.accept()
             return
         
+        elif self.annotation_mode == AnnotationMode.DRAWING_BRUSH and self.current_drawing and self.is_drawing_drag:
+            # 브러시 그리기 중
+            scene_pos = self.mapToScene(event.pos())
+            self.current_drawing.add_point(scene_pos.x(), scene_pos.y())
+            event.accept()
+            return
+        
         elif self.annotation_mode == AnnotationMode.DRAWING_RECTANGLE and self.is_drawing_drag and self.current_drawing:
             # Rectangle 그리기 중
             scene_pos = self.mapToScene(event.pos())
@@ -695,6 +720,13 @@ class WSIViewWidget(QGraphicsView):
             # Rectangle 그리기 완료
             if self.annotation_mode == AnnotationMode.DRAWING_RECTANGLE and self.is_drawing_drag:
                 self.finish_drawing_rectangle()
+                event.accept()
+                return
+            
+            # Brush 그리기 완료
+            if self.annotation_mode == AnnotationMode.DRAWING_BRUSH and self.is_drawing_drag:
+                self.is_drawing_drag = False
+                self.finish_drawing_brush()
                 event.accept()
                 return
             
@@ -808,13 +840,11 @@ class WSIViewWidget(QGraphicsView):
             # AnnotationList에 추가
             self.annotation_list.add_annotation(annotation)
             
-            # 그래픽 아이템 생성 및 제어점 표시
+            # 그래픽 아이템 생성
             self.add_annotation_item(annotation)
             
-            # 방금 생성한 annotation 선택하고 제어점 표시
-            annotation.selected = True
-            if annotation.id in self.annotation_items:
-                self.annotation_items[annotation.id].start_editing()
+            # 방금 생성한 annotation을 선택 상태로 설정 (제어점은 선택 시에만 표시됨)
+            self.select_annotation(annotation)
             
             # 시그널 발생
             self.annotationAdded.emit(annotation)
@@ -882,13 +912,11 @@ class WSIViewWidget(QGraphicsView):
             # AnnotationList에 추가
             self.annotation_list.add_annotation(annotation)
             
-            # 그래픽 아이템 생성 및 제어점 표시
+            # 그래픽 아이템 생성
             self.add_annotation_item(annotation)
             
-            # 방금 생성한 annotation 선택하고 제어점 표시
-            annotation.selected = True
-            if annotation.id in self.annotation_items:
-                self.annotation_items[annotation.id].start_editing()
+            # 방금 생성한 annotation을 선택 상태로 설정 (제어점은 선택 시에만 표시됨)
+            self.select_annotation(annotation)
             
             # 시그널 발생
             self.annotationAdded.emit(annotation)
@@ -969,6 +997,11 @@ class WSIViewWidget(QGraphicsView):
         # 그래픽 아이템 제거
         if annotation.id in self.annotation_items:
             item = self.annotation_items[annotation.id]
+            # 편집 모드(제어점)가 활성화되어 있으면 제어점을 먼저 제거
+            try:
+                item.stop_editing()
+            except Exception:
+                pass
             self.scene.removeItem(item)
             del self.annotation_items[annotation.id]
         
@@ -976,13 +1009,18 @@ class WSIViewWidget(QGraphicsView):
         self.annotation_list.remove_annotation(annotation)
     
     def select_annotation(self, annotation: Annotation):
-        """Annotation 선택"""
+        """Annotation 선택 - 선택된 annotation에 대해서만 제어점 표시"""
         self.annotation_list.select_annotation(annotation)
         
-        # 모든 아이템 스타일 업데이트
+        # 선택된 annotation만 편집 모드(제어점 표시)를 활성화하고, 나머지는 비활성화
         for ann in self.annotation_list.annotations:
             if ann.id in self.annotation_items:
-                self.annotation_items[ann.id].update_style()
+                item = self.annotation_items[ann.id]
+                if annotation and ann.id == annotation.id:
+                    item.start_editing()
+                else:
+                    item.stop_editing()
+                item.update_style()
         
         self.annotationSelected.emit(annotation)
     
@@ -995,7 +1033,12 @@ class WSIViewWidget(QGraphicsView):
     def clear_annotations(self):
         """모든 Annotation 제거"""
         # 그래픽 아이템 제거
-        for item in self.annotation_items.values():
+        for item in list(self.annotation_items.values()):
+            # 편집 모드(제어점)가 활성화되어 있으면 제어점을 먼저 제거
+            try:
+                item.stop_editing()
+            except Exception:
+                pass
             self.scene.removeItem(item)
         self.annotation_items.clear()
         
