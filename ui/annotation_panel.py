@@ -161,12 +161,20 @@ class AnnotationPanel(QWidget):
         self.table.item(row, 0).setData(Qt.UserRole, annotation.id)
     
     def add_annotation(self, annotation: Annotation):
-        """새 annotation 추가"""
+        """새 annotation 추가: 추가 후 해당 행으로 스크롤하고 선택함"""
         if not self.annotation_list:
             return
         
         row = self.table.rowCount()
         self.add_annotation_row(row, annotation)
+        
+        # 새로 추가된 행이 보이도록 스크롤 및 선택
+        item = self.table.item(row, 0) or self.table.item(row, 1)
+        if item:
+            # 가운데 위치로 스크롤
+            self.table.scrollToItem(item, QAbstractItemView.PositionAtCenter)
+            # 행 선택 - 이로써 선택 시그널이 발생하여 뷰어와 동기화됨
+            self.table.selectRow(row)
     
     def remove_annotation(self, annotation: Annotation):
         """Annotation 제거"""
