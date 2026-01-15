@@ -368,6 +368,10 @@
    <property name="checkable">
     <bool>true</bool>
    </property>
+   <property name="icon">
+    <iconset>
+     <normaloff>../icon/Polygon.png</normaloff>../icon/Polygon.png</iconset>
+   </property>
    <property name="text">
     <string>🖊️ Polygon</string>
    </property>
@@ -446,6 +450,10 @@
    <property name="checkable">
     <bool>true</bool>
    </property>
+   <property name="icon">
+    <iconset>
+     <normaloff>../icon/Rectangular_ROI_measurement.png</normaloff>../icon/Rectangular_ROI_measurement.png</iconset>
+   </property>
    <property name="text">
     <string>▭ Rectangle</string>
    </property>
@@ -456,6 +464,10 @@
   <action name="actionDrawPoint">
    <property name="checkable">
     <bool>true</bool>
+   </property>
+   <property name="icon">
+    <iconset>
+     <normaloff>../icon/Point.png</normaloff>../icon/Point.png</iconset>
    </property>
    <property name="text">
     <string>● Point</string>

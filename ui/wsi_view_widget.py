@@ -87,6 +87,8 @@ class WSIViewWidget(QGraphicsView):
         self.is_drawing_drag = False  # 드래그 중인지 여부
         self.drag_start_pos = None  # 드래그 시작 위치 (scene 좌표)
         self.last_view_pos = None  # 마지막 점 추가 위치 (view 좌표)
+        # 지속 그리기 플래그 (툴을 켜둔 상태에서 계속 그리기)
+        self.keep_drawing = False
         
         # 미니맵 위젯 (오버레이)
         self.minimap = MiniMap(self)
@@ -819,6 +821,7 @@ class WSIViewWidget(QGraphicsView):
         
         # 그리기 아이템 제거
         if self.current_drawing:
+            self.current_drawing.remove_start_point_indicator()
             self.scene.removeItem(self.current_drawing)
             self.current_drawing = None
         
@@ -827,7 +830,13 @@ class WSIViewWidget(QGraphicsView):
         self.drag_start_pos = None
         self.last_view_pos = None
         
-        self.set_annotation_mode(AnnotationMode.NONE)
+        # 지속 그리기 모드라면 같은 모드 유지하여 다음 그리기를 바로 시작할 수 있게 함
+        if self.keep_drawing and self.annotation_mode == AnnotationMode.DRAWING_POLYGON:
+            # 새 그리기 아이템 생성
+            self.current_drawing = DrawingPolygonItem(self.annotation_color)
+            self.scene.addItem(self.current_drawing)
+        else:
+            self.set_annotation_mode(AnnotationMode.NONE)
     
     def cancel_drawing(self):
         """그리기 취소"""
@@ -841,10 +850,14 @@ class WSIViewWidget(QGraphicsView):
         # 드래그 상태 초기화
         self.is_drawing_drag = False
         self.drag_start_pos = None
-        self.last_view_pos = None
         
-        self.set_annotation_mode(AnnotationMode.NONE)
-        self.drawingCancelled.emit()  # 시그널 발생
+        # 지속 그리기 모드면 모드를 유지, 아니면 종료
+        if not self.keep_drawing:
+            self.set_annotation_mode(AnnotationMode.NONE)
+            self.drawingCancelled.emit()  # 시그널 발생
+        else:
+            # keep_drawing인 경우에는 현재 그리기 상태만 초기화
+            self.last_view_pos = None
     
     def start_drawing_rectangle(self):
         """Rectangle 그리기 시작"""
@@ -889,7 +902,9 @@ class WSIViewWidget(QGraphicsView):
         self.is_drawing_drag = False
         self.drag_start_pos = None
         
-        self.set_annotation_mode(AnnotationMode.NONE)
+        # 지속 그리기 모드라면 다음 그리기를 위해 모드를 유지, 아니면 종료
+        if not self.keep_drawing:
+            self.set_annotation_mode(AnnotationMode.NONE)
     
     def start_drawing_point(self):
         """Point 그리기 시작"""
@@ -922,9 +937,27 @@ class WSIViewWidget(QGraphicsView):
         # 시그널 발생
         self.annotationAdded.emit(annotation)
         
-        # 즉시 일반 모드로 복귀 (계속 그리기 가능)
-        # self.set_annotation_mode(AnnotationMode.NONE)
-    
+        # 지속 그리기 모드가 아니면 일반 모드로 복귀
+        if not self.keep_drawing:
+            self.set_annotation_mode(AnnotationMode.NONE)
+
+    def exit_drawing_mode(self):
+        """그리기 모드 완전 종료 (툴을 끔)"""
+        # 현재 그리기 아이템 제거
+        if self.current_drawing:
+            if hasattr(self.current_drawing, 'remove_start_point_indicator'):
+                self.current_drawing.remove_start_point_indicator()
+            self.scene.removeItem(self.current_drawing)
+            self.current_drawing = None
+        
+        # 플래그 및 상태 초기화
+        self.keep_drawing = False
+        self.is_drawing_drag = False
+        self.drag_start_pos = None
+        self.last_view_pos = None
+        
+        self.set_annotation_mode(AnnotationMode.NONE)
+        self.drawingCancelled.emit()    
     def add_annotation_item(self, annotation: Annotation):
         """Annotation 그래픽 아이템 추가"""
         item = AnnotationGraphicsItem(annotation)

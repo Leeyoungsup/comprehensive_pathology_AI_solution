@@ -4,7 +4,8 @@ ASAP의 annotation panel 참고
 """
 
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, 
-                             QTableWidgetItem, QPushButton, QHeaderView, QAbstractItemView, QLabel, QSizePolicy)
+                             QTableWidgetItem, QPushButton, QHeaderView, QAbstractItemView, QLabel, QSizePolicy,
+                             QColorDialog, QInputDialog)
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QKeySequence
 import sys
@@ -69,8 +70,20 @@ class AnnotationPanel(QWidget):
         self.table.setMaximumHeight(250)  # 최대 높이 제한으로 스크롤 생성
         self.table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)  # 가로 확장
         
+        # 스타일시트 설정: 선택 시에도 Color 컬럼의 배경색 유지
+        self.table.setStyleSheet("""
+            QTableWidget {
+                gridline-color: #d0d0d0;
+            }
+            QTableWidget::item:selected {
+                background-color: rgba(51, 153, 255, 80);
+                color: black;
+            }
+        """)
+        
         # 테이블 시그널 연결
         self.table.itemSelectionChanged.connect(self.on_table_selection_changed)
+        self.table.itemDoubleClicked.connect(self.on_item_double_clicked)
         
         layout.addWidget(self.table)
         
@@ -127,10 +140,13 @@ class AnnotationPanel(QWidget):
         """테이블에 annotation 행 추가"""
         self.table.insertRow(row)
         
-        # Color 컬럼
+        # Color 컬럼 - 선택 불가(항상 색상 보이게), 더블클릭은 허용
         color_item = QTableWidgetItem()
         color = QColor(*annotation.color)
         color_item.setBackground(color)
+        color_item.setForeground(QColor(0, 0, 0, 0))  # 투명 텍스트
+        color_item.setText("")
+        color_item.setFlags(color_item.flags() & ~Qt.ItemIsSelectable | Qt.ItemIsEnabled)
         self.table.setItem(row, 0, color_item)
         
         # Name 컬럼
@@ -192,6 +208,68 @@ class AnnotationPanel(QWidget):
             if item and item.data(Qt.UserRole) == annotation.id:
                 self.table.selectRow(row)
                 break
+    
+    def on_item_double_clicked(self, item: QTableWidgetItem):
+        """테이블 아이템 더블클릭 처리"""
+        if not self.annotation_list:
+            return
+        
+        row = item.row()
+        col = item.column()
+        annotation_id = self.table.item(row, 0).data(Qt.UserRole)
+        
+        # Annotation 찾기
+        annotation = None
+        for ann in self.annotation_list.annotations:
+            if ann.id == annotation_id:
+                annotation = ann
+                break
+        
+        if not annotation:
+            return
+        
+        # 0번 컬럼(Color): 색상 선택 다이얼로그
+        if col == 0:
+            current_color = QColor(*annotation.color)
+            new_color = QColorDialog.getColor(current_color, self, "색상 선택")
+            
+            if new_color.isValid():
+                # Annotation 색상 업데이트
+                annotation.color = (new_color.red(), new_color.green(), new_color.blue())
+                
+                # 테이블 색상 업데이트
+                self.table.item(row, 0).setBackground(new_color)
+                
+                # 뷰어의 그래픽 아이템도 업데이트 (부모 위젯에서 처리)
+                self.update_annotation_graphics(annotation)
+        
+        # 1번 컬럼(Name): 이름 변경 다이얼로그
+        elif col == 1:
+            new_name, ok = QInputDialog.getText(
+                self, 
+                "이름 변경", 
+                "새 이름을 입력하세요:",
+                text=annotation.name
+            )
+            
+            if ok and new_name:
+                # Annotation 이름 업데이트
+                annotation.name = new_name
+                
+                # 테이블 이름 업데이트
+                self.table.item(row, 1).setText(new_name)
+    
+    def update_annotation_graphics(self, annotation: Annotation):
+        """Annotation 그래픽 아이템 업데이트 (색상 변경 시)"""
+        # 부모 윈도우를 통해 뷰어에 접근하여 업데이트
+        parent = self.parent()
+        while parent:
+            if hasattr(parent, 'wsi_viewer'):
+                viewer = parent.wsi_viewer
+                if annotation.id in viewer.annotation_items:
+                    viewer.annotation_items[annotation.id].update_style()
+                break
+            parent = parent.parent()
     
     def on_delete_clicked(self):
         """Delete 버튼 클릭 - 선택된 annotation 삭제"""
