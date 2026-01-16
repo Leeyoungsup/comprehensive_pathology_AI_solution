@@ -115,8 +115,28 @@ def main():
         app = QApplication(sys.argv)
         app.setApplicationName("Pathology AI Viewer")
         
+        # 애플리케이션 아이콘 설정 (bundle_dir 기준으로 icon/app_icon.ico 사용)
+        try:
+            from PyQt5.QtGui import QIcon
+            icon_path = bundle_dir / "icon" / "app_icon.ico"
+            if icon_path.exists():
+                app.setWindowIcon(QIcon(str(icon_path)))
+            else:
+                # fallback: check application_path/icon
+                alt_icon = application_path / "icon" / "app_icon.ico"
+                if alt_icon.exists():
+                    app.setWindowIcon(QIcon(str(alt_icon)))
+        except Exception:
+            pass
+        
         # logger.info("메인 뷰어 윈도우 생성 중...")
         viewer = PathologyViewer()
+        try:
+            # 메인 윈도우에도 아이콘 명시적으로 설정
+            if 'icon_path' in locals() and icon_path.exists():
+                viewer.setWindowIcon(QIcon(str(icon_path)))
+        except Exception:
+            pass
         viewer.show()
         
         # logger.info("애플리케이션 실행")
