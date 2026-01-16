@@ -4,7 +4,7 @@ WSI 뷰어 위젯
 ASAP 구조를 참고한 타일 기반 렌더링 시스템
 """
 
-from PyQt5.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QMainWindow
+from PyQt5.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QMainWindow, QGraphicsEllipseItem, QGraphicsItem
 from PyQt5.QtCore import Qt, QPoint, QRectF, pyqtSignal, QEvent, QTimer
 from PyQt5.QtGui import QWheelEvent, QMouseEvent, QPainter, QBrush, QColor, QKeyEvent
 from pathlib import Path
@@ -17,6 +17,7 @@ if str(project_root) not in sys.path:
 
 from core.wsi_tile_manager import WSITileManager
 from core.annotation import AnnotationList, Annotation, AnnotationType
+from ai.detection import CLASS_COLORS_RGB
 from ui.minimap import MiniMap
 from ui.annotation_items import AnnotationGraphicsItem, DrawingPolygonItem, DrawingRectangleItem, DrawingPointItem
 
@@ -27,9 +28,8 @@ class AnnotationMode:
     DRAWING_POLYGON = 1
     DRAWING_RECTANGLE = 2
     DRAWING_POINT = 3
-    DRAWING_BRUSH = 4
-    EDITING = 5
-    SELECTING = 6
+    EDITING = 4
+    SELECTING = 5
 
 
 class WSIViewWidget(QGraphicsView):
@@ -82,7 +82,7 @@ class WSIViewWidget(QGraphicsView):
         self.annotation_list = AnnotationList()
         self.annotation_items = {}  # annotation.id -> AnnotationGraphicsItem
         self.annotation_mode = AnnotationMode.NONE
-        self.current_drawing = None  # Drawing item (Polygon/Rectangle/Brush/Point)
+        self.current_drawing = None  # DrawingPolygonItem
         self.annotation_color = QColor(0, 255, 0)  # 기본 초록색
         self.annotation_counter = 0
         self.is_drawing_drag = False  # 드래그 중인지 여부
@@ -90,8 +90,6 @@ class WSIViewWidget(QGraphicsView):
         self.last_view_pos = None  # 마지막 점 추가 위치 (view 좌표)
         # 지속 그리기 플래그 (툴을 켜둔 상태에서 계속 그리기)
         self.keep_drawing = False
-        # 브러시 관련
-        self.brush_size = 15.0  # 기본 브러시 반지름
         
         # 미니맵 위젯 (오버레이)
         self.minimap = MiniMap(self)
@@ -102,6 +100,12 @@ class WSIViewWidget(QGraphicsView):
         self.detection_overlay_item = None  # QGraphicsPixmapItem
         self.detection_overlay = None  # TiledDetectionOverlay 객체
         self.detection_cells = []  # 검출된 세포 리스트
+
+        # 벡터 오버레이 (모두 QGraphicsEllipseItem로 생성하여 화면에서 즉시 표시)
+        self.use_vector_detection = False  # 벡터 방식 사용 여부 (기본: False)
+        self.vector_items = []  # list of tuples (QGraphicsEllipseItem, cls_id)
+        self.vector_point_size = 8  # 화면 픽셀 단위 점 크기
+        self.vector_opacity = 0.9  # 벡터 아이템 투명도
         
         # 오버레이 업데이트 디바운싱 타이머
         self.overlay_update_timer = QTimer(self)
@@ -377,6 +381,31 @@ class WSIViewWidget(QGraphicsView):
         
         self.detection_overlay.set_cells(cells)
         
+        # 가능한 경우 전체 오버레이를 미리 생성하여 즉시 표시(줌/팬 시 추가 계산 불필요)
+        try:
+            if self.tile_manager:
+                width, height = self.tile_manager.get_level_dimensions(0)
+                # 슬라이드 크기에 따라 다운샘플 자동 선택 (너무 큰 경우 더 큰 다운샘플 사용)
+                max_dim = max(width, height)
+                if max_dim > 100000:
+                    ds = 32
+                elif max_dim > 50000:
+                    ds = 16
+                elif max_dim > 20000:
+                    ds = 8
+                else:
+                    ds = 4
+                self.detection_overlay.create_full_overlay(width, height, downsample=ds)
+        except Exception:
+            pass
+
+        # 벡터 오버레이 모드면 즉시 벡터 아이템 생성
+        if getattr(self, 'use_vector_detection', False):
+            try:
+                self._create_vector_detection_items()
+            except Exception as ex:
+                print(f"벡터 오버레이 생성 실패: {ex}")
+        
         # 오버레이 업데이트
         self.schedule_overlay_update()
     
@@ -398,6 +427,12 @@ class WSIViewWidget(QGraphicsView):
         if not self.tile_manager:
             return
         
+        # 벡터 모드가 활성화되어 있으면 raster 오버레이가 아닌 벡터 아이템을 사용
+        if getattr(self, 'use_vector_detection', False):
+            # 벡터는 이미 scene에 추가되어 있으므로 가시성만 관리하면 된다
+            # (필요 시 클래스별 필터링은 set_detection_class_visibility에서 처리됨)
+            return
+        
         # 기존 오버레이 제거
         if self.detection_overlay_item:
             if isinstance(self.detection_overlay_item, list):
@@ -417,13 +452,31 @@ class WSIViewWidget(QGraphicsView):
             downsample = 8
         elif self.zoom_level < 0.5:
             downsample = 4
-        elif self.zoom_level < 2:
+        elif self.zoom_level < 1.5:
             downsample = 2
         else:
             downsample = 1
         
-        # 마스크 생성 (원 크기 자동 보정됨)
-        pixmap, mask_x, mask_y = self.detection_overlay.create_view_mask(view_rect, downsample)
+        # 필요 시, 축소(완전 축소) 상태에서 포인트가 보이도록 더 높은 해상도의 전체 오버레이를 재생성
+        try:
+            width, height = self.tile_manager.get_level_dimensions(0)
+            if self.zoom_level < 0.05:
+                # 완전 축소 상태 - 더 작은 downsample(더 높은 해상도)로 전체 오버레이 생성하여 포인트를 가시화
+                desired_ds = 4
+                current_ds = getattr(self.detection_overlay, 'full_downsample', None)
+                if current_ds is None or current_ds > desired_ds:
+                    self.detection_overlay.create_full_overlay(width, height, downsample=desired_ds)
+        except Exception:
+            pass
+
+        # 만약 전체 오버레이가 미리 계산되어 있다면 그 오버레이의 다운샘플을 사용하여 크롭 및 표시
+        used_downsample = downsample
+        if hasattr(self.detection_overlay, 'full_overlay') and getattr(self.detection_overlay, 'full_overlay') is not None:
+            # precomputed overlay의 다운샘플 사용
+            used_downsample = getattr(self.detection_overlay, 'full_downsample', downsample)
+        
+        # 마스크 생성 또는 크롭 (internal에서 full_overlay가 있으면 이를 사용함)
+        pixmap, mask_x, mask_y = self.detection_overlay.create_view_mask(view_rect, used_downsample)
         
         if pixmap is None:
             return
@@ -431,7 +484,7 @@ class WSIViewWidget(QGraphicsView):
         # 새 오버레이 아이템 생성
         self.detection_overlay_item = QGraphicsPixmapItem(pixmap)
         self.detection_overlay_item.setPos(mask_x, mask_y)
-        self.detection_overlay_item.setScale(downsample)
+        self.detection_overlay_item.setScale(used_downsample)
         self.detection_overlay_item.setZValue(50)
         
         self.scene.addItem(self.detection_overlay_item)
@@ -445,23 +498,48 @@ class WSIViewWidget(QGraphicsView):
         self.detection_cells = []
         if self.detection_overlay:
             self.detection_overlay.clear_cells()
+            # 전체 오버레이가 있으면 삭제
+            try:
+                self.detection_overlay.clear_full_overlay()
+            except Exception:
+                pass
+        # 벡터 오버레이도 삭제
+        try:
+            self._clear_vector_detection_items()
+        except Exception:
+            pass
     
     def clear_detection_results(self):
         """검출 결과 완전히 제거 (오버레이 + 데이터)"""
         self.clear_detection_overlay()
         self.detection_overlay = None
         self.detection_cells = []
+        # 벡터 오버레이 설정도 초기화
+        self.use_vector_detection = False
+        self._clear_vector_detection_items()
     
     def set_detection_class_visibility(self, cls_id, visible):
         """특정 클래스의 가시성 설정"""
         if self.detection_overlay:
             self.detection_overlay.set_class_visibility(cls_id, visible)
             self.update_detection_overlay()
+        # 벡터 모드이면 해당 클래스 아이템 표시/숨김
+        if getattr(self, 'use_vector_detection', False):
+            for item, cid in list(self.vector_items):
+                if cid == cls_id:
+                    item.setVisible(visible)
     
     def set_detection_opacity(self, opacity):
         """검출 결과 오버레이 투명도 설정 (0.0 ~ 1.0)"""
         if self.detection_overlay_item:
             self.detection_overlay_item.setOpacity(opacity)
+        # 벡터 아이템에도 적용
+        try:
+            self.vector_opacity = opacity
+            for item, _ in self.vector_items:
+                item.setOpacity(opacity)
+        except Exception:
+            pass
     
     # ============================================
     
@@ -528,21 +606,6 @@ class WSIViewWidget(QGraphicsView):
             elif event.button() == Qt.RightButton:
                 # 우클릭: Polygon 완성
                 self.finish_drawing_polygon()
-                event.accept()
-                return
-        
-        elif self.annotation_mode == AnnotationMode.DRAWING_BRUSH:
-            if event.button() == Qt.LeftButton:
-                scene_pos = self.mapToScene(event.pos())
-                self.current_drawing = DrawingBrushItem(radius=self.brush_size, color=self.annotation_color)
-                self.current_drawing.add_point(scene_pos.x(), scene_pos.y())
-                self.scene.addItem(self.current_drawing)
-                self.is_drawing_drag = True
-                event.accept()
-                return
-            elif event.button() == Qt.RightButton:
-                # 우클릭: Brush 완료
-                self.finish_drawing_brush()
                 event.accept()
                 return
         
@@ -668,13 +731,6 @@ class WSIViewWidget(QGraphicsView):
             event.accept()
             return
         
-        elif self.annotation_mode == AnnotationMode.DRAWING_BRUSH and self.current_drawing and self.is_drawing_drag:
-            # 브러시 그리기 중
-            scene_pos = self.mapToScene(event.pos())
-            self.current_drawing.add_point(scene_pos.x(), scene_pos.y())
-            event.accept()
-            return
-        
         elif self.annotation_mode == AnnotationMode.DRAWING_RECTANGLE and self.is_drawing_drag and self.current_drawing:
             # Rectangle 그리기 중
             scene_pos = self.mapToScene(event.pos())
@@ -723,13 +779,6 @@ class WSIViewWidget(QGraphicsView):
                 event.accept()
                 return
             
-            # Brush 그리기 완료
-            if self.annotation_mode == AnnotationMode.DRAWING_BRUSH and self.is_drawing_drag:
-                self.is_drawing_drag = False
-                self.finish_drawing_brush()
-                event.accept()
-                return
-            
             self.setCursor(Qt.ArrowCursor)
             event.accept()
         else:
@@ -749,8 +798,7 @@ class WSIViewWidget(QGraphicsView):
             # ESC: 그리기 취소
             if self.annotation_mode in [AnnotationMode.DRAWING_POLYGON, 
                                        AnnotationMode.DRAWING_RECTANGLE,
-                                       AnnotationMode.DRAWING_POINT,
-                                       AnnotationMode.DRAWING_BRUSH]:
+                                       AnnotationMode.DRAWING_POINT]:
                 self.cancel_drawing()
                 event.accept()
                 return
@@ -1024,6 +1072,19 @@ class WSIViewWidget(QGraphicsView):
                 item.update_style()
         
         self.annotationSelected.emit(annotation)
+
+    def center_on_annotation(self, annotation: Annotation):
+        """Annotation의 중심 좌표로 뷰를 이동시킴"""
+        if not annotation or not annotation.coordinates:
+            return
+
+        x_min, y_min, x_max, y_max = annotation.get_bounds()
+        center_x = (x_min + x_max) / 2.0
+        center_y = (y_min + y_max) / 2.0
+
+        # 중심으로 이동
+        self.centerOn(center_x, center_y)
+        self.update_field_of_view()
     
     def start_editing_annotation(self, annotation: Annotation):
         """Annotation 편집 시작"""
