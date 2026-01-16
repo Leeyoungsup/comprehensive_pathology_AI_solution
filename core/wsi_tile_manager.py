@@ -266,7 +266,7 @@ class WSITileManager(QObject):
             return 0
         
         # 줌 레벨에 따라 4단계 중 선택
-        if zoom_level >= 0.3:
+        if zoom_level >= 0.2:
             # 고배율: 레벨 0 (원본)
             return self.level_stages[0]
         elif zoom_level >= 0.03:
