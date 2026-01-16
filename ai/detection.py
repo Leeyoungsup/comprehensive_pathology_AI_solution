@@ -837,41 +837,6 @@ class TiledDetectionOverlay:
         width = int(view_rect.width())
         height = int(view_rect.height())
         
-        # 우선적으로 전체 오버레이가 미리 계산되어 있다면 그걸 사용해서 빠르게 자름
-        if hasattr(self, 'full_overlay') and self.full_overlay is not None:
-            # full_overlay는 downsample 기준으로 저장되어 있다
-            import math
-            ds = self.full_downsample
-
-            # 요청한 뷰 영역을 full_overlay 좌표계로 변환
-            sx = int(math.floor(x / ds))
-            sy = int(math.floor(y / ds))
-            sw = int(math.ceil(width / ds))
-            sh = int(math.ceil(height / ds))
-
-            # full_overlay 범위로 클램프 (copy가 범위를 넘어가면 예외 또는 잘못된 위치가 됨)
-            overlay_w = self.full_overlay.width()
-            overlay_h = self.full_overlay.height()
-
-            sx_clamped = max(0, min(sx, overlay_w))
-            sy_clamped = max(0, min(sy, overlay_h))
-
-            sw_clamped = max(0, min(sw, overlay_w - sx_clamped))
-            sh_clamped = max(0, min(sh, overlay_h - sy_clamped))
-
-            if sw_clamped <= 0 or sh_clamped <= 0:
-                return None, x, y
-
-            try:
-                cropped = self.full_overlay.copy(sx_clamped, sy_clamped, sw_clamped, sh_clamped)
-                # 잘린 이미지의 실제 좌표를 level-0 기준으로 반환
-                mask_x = sx_clamped * ds
-                mask_y = sy_clamped * ds
-                return cropped, mask_x, mask_y
-            except Exception:
-                # 크롭 실패 시 폴백
-                pass
-        
         mask = self.create_tile_mask(x, y, width, height, downsample)
         
         if mask is None:
@@ -884,61 +849,6 @@ class TiledDetectionOverlay:
         pixmap = QPixmap.fromImage(qimage)
         
         return pixmap, x, y
-
-    def create_full_overlay(self, slide_width, slide_height, downsample=8):
-        """
-        전체 슬라이드 영역에 대한 오버레이를 미리 생성하여 빠르게 잘라 쓰도록 함
-        Args:
-            slide_width, slide_height: 레벨 0 기준 슬라이드 크기
-            downsample: 오버레이의 다운샘플 비율 (픽셀 크기 감소)
-        """
-        import cv2
-        from PyQt5.QtGui import QImage, QPixmap
-
-        mask_w = max(1, slide_width // downsample)
-        mask_h = max(1, slide_height // downsample)
-
-        mask = np.zeros((mask_h, mask_w, 4), dtype=np.uint8)
-
-        adjusted_radius = max(1, int(self.point_radius / downsample))
-        line_thickness = max(1, int(5 // downsample))
-
-        cell_count = 0
-        for cell in self.cells:
-            cls_id = cell.get('cls_id', 0)
-            if not self.class_visibility.get(cls_id, True):
-                continue
-            cell_x = int(cell['x'] // downsample)
-            cell_y = int(cell['y'] // downsample)
-            if 0 <= cell_x < mask_w and 0 <= cell_y < mask_h:
-                color = CLASS_COLORS_RGB.get(cls_id, (255, 255, 255))
-                # 축소 시에도 가시성을 위해 작은 반경이면 채운 원으로 그림
-                if adjusted_radius <= 2:
-                    thickness = -1  # 채움
-                else:
-                    thickness = line_thickness
-                cv2.circle(mask, (cell_x, cell_y), adjusted_radius,
-                           (color[0], color[1], color[2], self.alpha), thickness)
-                cell_count += 1
-
-        if cell_count == 0:
-            # 생성된 오버레이 없음
-            self.full_overlay = None
-            self.full_downsample = None
-            return None
-
-        bytes_per_line = 4 * mask_w
-        qimage = QImage(mask.data, mask_w, mask_h, bytes_per_line, QImage.Format_RGBA8888)
-        self.full_overlay = QPixmap.fromImage(qimage.copy())
-        self.full_downsample = downsample
-        return self.full_overlay
-
-    def clear_full_overlay(self):
-        """미리 생성된 전체 오버레이 삭제"""
-        self.full_overlay = None
-        self.full_downsample = None
-
-
     
     def get_cells_in_region(self, x, y, width, height):
         """특정 영역 내의 세포 리스트 반환"""
