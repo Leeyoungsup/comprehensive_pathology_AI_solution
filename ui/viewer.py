@@ -154,6 +154,8 @@ class PathologyViewer(QMainWindow):
         
         # 결과 리스트 아이템 클릭 시그널
         self.resultList.itemClicked.connect(self.on_result_list_item_clicked)
+        # 체크박스 변경 시그널 (가시성 토글 처리)
+        self.resultList.itemChanged.connect(self.on_result_list_item_changed)
         
         # 결과 관리 버튼
         self.btnClearResults.clicked.connect(self.clear_results)
@@ -366,110 +368,89 @@ class PathologyViewer(QMainWindow):
         self.is_detection_running = False
     
     def update_result_list(self, class_counts, total_cells):
-        """검출 결과를 리스트에 표시"""
+        """검출 결과를 리스트에 표시 (가시성 향상: 체크박스, 색상 아이콘, 툴팁)"""
         from PyQt5.QtWidgets import QListWidgetItem
         from PyQt5.QtCore import Qt
+        from PyQt5.QtGui import QIcon, QPixmap, QColor
         from ai.detection import CLASS_NAMES, CLASS_COLORS_RGB
-        
+
+        # 업데이트 중에는 시그널 차단
+        self.resultList.blockSignals(True)
         self.resultList.clear()
-        
-        # 총 세포 수 아이템
-        total_item = QListWidgetItem(f"✓ 전체: {total_cells:,}개")
-        total_item.setData(Qt.UserRole, None)  # 전체는 None으로 표시
+
+        # 총 세포 수 아이템 (체크박스: 체크=표시, 언체크=숨김)
+        total_item = QListWidgetItem(f"전체: {total_cells:,}개")
+        total_item.setData(Qt.UserRole, None)
+        total_item.setFlags(total_item.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+        total_item.setCheckState(Qt.Checked)
         font = total_item.font()
         font.setBold(True)
         total_item.setFont(font)
+        total_item.setToolTip("전체 클래스 표시/숨김")
         self.resultList.addItem(total_item)
-        
+
         # 클래스별 아이템
         for cls_id, cls_name in CLASS_NAMES.items():
             count = class_counts.get(cls_name, 0)
             if count > 0:
-                # 클래스 색상
                 color_rgb = CLASS_COLORS_RGB.get(cls_id, (255, 255, 255))
-                
-                item = QListWidgetItem(f"✓ {cls_name}: {count:,}개")
-                item.setData(Qt.UserRole, cls_id)  # 클래스 ID 저장
-                
-                # 색상 표시
-                from PyQt5.QtGui import QColor
-                item.setForeground(QColor(color_rgb[0], color_rgb[1], color_rgb[2]))
-                
+
+                # 컬러 아이콘 생성
+                pix = QPixmap(16, 16)
+                pix.fill(QColor(*color_rgb))
+                icon = QIcon(pix)
+
+                item = QListWidgetItem(icon, f"{cls_name}: {count:,}개")
+                item.setData(Qt.UserRole, cls_id)
+                item.setFlags(item.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+                item.setCheckState(Qt.Checked)
+                item.setForeground(QColor(*color_rgb))
+                item.setToolTip(f"{cls_name}: {count:,}개")
                 self.resultList.addItem(item)
+
+        # 시그널 복원
+        self.resultList.blockSignals(False)
     
     def on_result_list_item_clicked(self, item):
-        """결과 리스트 아이템 클릭 시 클래스 토글"""
+        """리스트 클릭 시 체크박스 토글(버튼/마우스 클릭 친화적)"""
+        # 클릭 시 체크 상태를 반전시켜 itemChanged에서 처리하도록 함
+        if item.flags() & Qt.ItemIsUserCheckable:
+            if item.checkState() == Qt.Checked:
+                item.setCheckState(Qt.Unchecked)
+            else:
+                item.setCheckState(Qt.Checked)
+
+    def on_result_list_item_changed(self, item):
+        """체크박스 상태 변경 처리: 전체/개별 클래스 표시 토글"""
+        from PyQt5.QtCore import Qt
         cls_id = item.data(Qt.UserRole)
-        
-        # 오버레이 체크
+        visible = item.checkState() == Qt.Checked
+
+        # 오버레이 확인
         if not self.wsi_viewer.detection_overlay:
             return
-        
-        # 전체 아이템 클릭 시 모든 클래스 토글
+
+        # 전체 아이템 토글 시 모든 클래스에 반영
         if cls_id is None:
-            text = item.text()
-            # 현재 전체 상태 확인 (✓면 보이는 상태, ✗면 숨김 상태)
-            current_all_visible = text.startswith("✓")
-            new_all_visible = not current_all_visible
-            
-            # 모든 클래스 visibility 토글
             from ai.detection import CLASS_NAMES
-            for cls_id_to_toggle in CLASS_NAMES.keys():
-                self.wsi_viewer.detection_overlay.set_class_visibility(cls_id_to_toggle, new_all_visible)
-            
-            # 전체 아이템 텍스트 업데이트
-            if new_all_visible:
-                item.setText(text.replace("✗", "✓", 1))
-            else:
-                item.setText(text.replace("✓", "✗", 1))
-            
-            # 모든 클래스 아이템 텍스트 업데이트
-            for i in range(1, self.resultList.count()):  # 0번은 전체 아이템이므로 1번부터
+            # 신호 중복 방지
+            self.resultList.blockSignals(True)
+            for i in range(1, self.resultList.count()):
                 class_item = self.resultList.item(i)
-                class_text = class_item.text()
-                if new_all_visible:
-                    if class_text.startswith("✗"):
-                        class_item.setText("✓" + class_text[1:])
-                else:
-                    if class_text.startswith("✓"):
-                        class_item.setText("✗" + class_text[1:])
-            
-            # 오버레이 다시 그리기
+                class_item.setCheckState(Qt.Checked if visible else Qt.Unchecked)
+                class_id = class_item.data(Qt.UserRole)
+                self.wsi_viewer.detection_overlay.set_class_visibility(class_id, visible)
+            self.resultList.blockSignals(False)
             self.wsi_viewer.schedule_overlay_update()
-            
-            # 상태바 업데이트
-            visibility_text = "전체 표시" if new_all_visible else "전체 숨김"
-            self.statusbar.showMessage(visibility_text)
+            self.statusbar.showMessage("전체 표시" if visible else "전체 숨김")
             return
-        
-        # 개별 클래스 토글
-        current_visibility = self.wsi_viewer.detection_overlay.class_visibility.get(cls_id, True)
-        new_visibility = not current_visibility
-        
-        # visibility 토글
-        self.wsi_viewer.detection_overlay.set_class_visibility(cls_id, new_visibility)
-        
-        # 아이템 텍스트 업데이트 (체크 표시)
-        text = item.text()
-        if new_visibility:
-            # 보이기
-            if text.startswith("✗"):
-                text = "✓" + text[1:]
-        else:
-            # 숨기기
-            if text.startswith("✓"):
-                text = "✗" + text[1:]
-        
-        item.setText(text)
-        
-        # 오버레이 다시 그리기
+
+        # 개별 클래스
+        self.wsi_viewer.detection_overlay.set_class_visibility(cls_id, visible)
         self.wsi_viewer.schedule_overlay_update()
-        
-        # 상태바 업데이트
         from ai.detection import CLASS_NAMES
         cls_name = CLASS_NAMES.get(cls_id, "Unknown")
-        visibility_text = "표시" if new_visibility else "숨김"
-        self.statusbar.showMessage(f"{cls_name}: {visibility_text}")
+        self.statusbar.showMessage(f"{cls_name}: {'표시' if visible else '숨김'}")
     
     def on_ai_progress(self, progress):
         """AI 작업 진행률 업데이트"""
