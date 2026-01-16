@@ -236,6 +236,17 @@ class AnnotationPanel(QWidget):
         if not annotation:
             return
         
+        self.table.selectRow(row)
+        parent = self.parent()
+        while parent:
+            if hasattr(parent, 'wsi_viewer'):
+                viewer = parent.wsi_viewer
+                try:
+                    viewer.center_on_annotation(annotation)
+                except Exception:
+                    pass
+                break
+            parent = parent.parent()
         # 0번 컬럼(Color): 색상 선택 다이얼로그
         if col == 0:
             current_color = QColor(*annotation.color)
@@ -266,6 +277,11 @@ class AnnotationPanel(QWidget):
                 
                 # 테이블 이름 업데이트
                 self.table.item(row, 1).setText(new_name)
+
+        # 더블클릭(임의 컬럼) 시: 뷰어에서 해당 ROI 위치로 이동
+        # (이 동작은 수정/색상 선택과 별개로 항상 수행)
+        # 행을 선택 상태로 만들고, 부모 윈도우의 WSI 뷰어에게 이동 요청
+        
     
     def update_annotation_graphics(self, annotation: Annotation):
         """Annotation 그래픽 아이템 업데이트 (색상 변경 시)"""
