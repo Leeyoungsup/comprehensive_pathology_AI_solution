@@ -408,6 +408,12 @@ class WSIViewWidget(QGraphicsView):
         
         # 오버레이 업데이트
         self.schedule_overlay_update()
+        # 벡터 모드면 즉시 벡터 아이템 생성
+        if getattr(self, 'use_vector_detection', False):
+            try:
+                self._create_vector_detection_items()
+            except Exception as ex:
+                print(f"벡터 오버레이 생성 실패(후): {ex}")
     
     def schedule_overlay_update(self):
         """오버레이 업데이트 예약 (디바운싱)"""
