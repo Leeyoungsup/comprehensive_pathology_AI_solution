@@ -404,7 +404,8 @@ class PathologyViewer(QMainWindow):
                 item.setData(Qt.UserRole, cls_id)
                 item.setFlags(item.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
                 item.setCheckState(Qt.Checked)
-                item.setForeground(QColor(*color_rgb))
+                # 텍스트 색상은 검은색으로 고정
+                item.setForeground(QColor(0, 0, 0))
                 item.setToolTip(f"{cls_name}: {count:,}개")
                 self.resultList.addItem(item)
 
