@@ -158,6 +158,141 @@
                </item>
               </layout>
              </widget>
+             <widget class="QWidget" name="pdl1Tab">
+              <attribute name="title">
+               <string>PD-L1</string>
+              </attribute>
+              <layout class="QVBoxLayout" name="verticalLayout_pdl1">
+               <item>
+                <widget class="QPushButton" name="btnPDL1Detection">
+                 <property name="text">
+                  <string>PD-L1 Detection</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <spacer name="verticalSpacer_pdl1">
+                 <property name="orientation">
+                  <enum>Qt::Vertical</enum>
+                 </property>
+                 <property name="sizeHint" stdset="0">
+                  <size>
+                   <width>20</width>
+                   <height>40</height>
+                  </size>
+                 </property>
+                </spacer>
+               </item>
+              </layout>
+             </widget>
+             <widget class="QWidget" name="her2Tab">
+              <attribute name="title">
+               <string>HER2</string>
+              </attribute>
+              <layout class="QVBoxLayout" name="verticalLayout_her2">
+               <item>
+                <widget class="QPushButton" name="btnHER2Detection">
+                 <property name="text">
+                  <string>HER2 Detection</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <spacer name="verticalSpacer_her2">
+                 <property name="orientation">
+                  <enum>Qt::Vertical</enum>
+                 </property>
+                 <property name="sizeHint" stdset="0">
+                  <size>
+                   <width>20</width>
+                   <height>40</height>
+                  </size>
+                 </property>
+                </spacer>
+               </item>
+              </layout>
+             </widget>
+             <widget class="QWidget" name="erTab">
+              <attribute name="title">
+               <string>ER</string>
+              </attribute>
+              <layout class="QVBoxLayout" name="verticalLayout_er">
+               <item>
+                <widget class="QPushButton" name="btnERDetection">
+                 <property name="text">
+                  <string>ER Detection</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <spacer name="verticalSpacer_er">
+                 <property name="orientation">
+                  <enum>Qt::Vertical</enum>
+                 </property>
+                 <property name="sizeHint" stdset="0">
+                  <size>
+                   <width>20</width>
+                   <height>40</height>
+                  </size>
+                 </property>
+                </spacer>
+               </item>
+              </layout>
+             </widget>
+             <widget class="QWidget" name="prTab">
+              <attribute name="title">
+               <string>PR</string>
+              </attribute>
+              <layout class="QVBoxLayout" name="verticalLayout_pr">
+               <item>
+                <widget class="QPushButton" name="btnPRDetection">
+                 <property name="text">
+                  <string>PR Detection</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <spacer name="verticalSpacer_pr">
+                 <property name="orientation">
+                  <enum>Qt::Vertical</enum>
+                 </property>
+                 <property name="sizeHint" stdset="0">
+                  <size>
+                   <width>20</width>
+                   <height>40</height>
+                  </size>
+                 </property>
+                </spacer>
+               </item>
+              </layout>
+             </widget>
+             <widget class="QWidget" name="claudinTab">
+              <attribute name="title">
+               <string>Claudin 18.2</string>
+              </attribute>
+              <layout class="QVBoxLayout" name="verticalLayout_claudin">
+               <item>
+                <widget class="QPushButton" name="btnClaudinDetection">
+                 <property name="text">
+                  <string>Claudin 18.2 Detection</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <spacer name="verticalSpacer_claudin">
+                 <property name="orientation">
+                  <enum>Qt::Vertical</enum>
+                 </property>
+                 <property name="sizeHint" stdset="0">
+                  <size>
+                   <width>20</width>
+                   <height>40</height>
+                  </size>
+                 </property>
+                </spacer>
+               </item>
+              </layout>
+             </widget>
             </widget>
            </item>
           </layout>

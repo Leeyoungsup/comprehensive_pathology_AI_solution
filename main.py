@@ -139,6 +139,7 @@ def main():
             pass
         viewer.show()
         
+        
         # logger.info("애플리케이션 실행")
         sys.exit(app.exec())
         
