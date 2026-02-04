@@ -21,7 +21,12 @@ from ui.annotation_panel import AnnotationPanel
 from ui.dialogs import show_slide_info_dialog
 
 # 서비스 레이어 import
-from backend.services import DetectionService, SlideService, AnnotationService
+from backend.services import (
+    DetectionService,
+    SlideService,
+    AnnotationService,
+    EpithelialClassificationService
+)
 
 
 class PathologyViewer(QMainWindow):
@@ -42,18 +47,25 @@ class PathologyViewer(QMainWindow):
         self.detection_service = DetectionService()
         self.slide_service = SlideService()
         self.annotation_service = AnnotationService()
+        self.epithelial_classification_service = EpithelialClassificationService()
         
         # AI 모듈 변수 초기화 (레거시, 필요시 삭제 가능)
         self.tissue_segmentation = None
         self.tissue_classification = None
         self.is_detection_running = False  # 검출 진행 상태
-        
+
         # 클래스별 검출 결과 캐시
         self.current_detection_result = None
+
+        # 조직 타입 (기본값: Stomach)
+        self.current_tissue_type = "Stomach"
         
         # 시그널 연결
         self.connect_signals()
-        
+
+        # 추가 UI 요소 설정 (프로그래밍 방식)
+        self.setup_ui_additions()
+
         # 초기 상태 설정
         self.progressBar.setValue(0)
         self.progressLabel.setText("AI Progress")
@@ -96,6 +108,12 @@ class PathologyViewer(QMainWindow):
         self.annotation_panel.saveRequested.connect(self.save_annotations)
         self.annotation_panel.loadRequested.connect(self.load_annotations)
     
+    def setup_ui_additions(self):
+        """추가 UI 요소 설정 (프로그래밍 방식으로 버튼 추가 등)"""
+        # Cell Detection이 자동으로 Epithelial 재분류를 수행하므로
+        # 별도의 재분류 버튼은 필요하지 않음
+        pass
+
     def setup_ai_modules(self):
         """
         AI 모듈 초기화 (Lazy Initialization)
@@ -151,7 +169,12 @@ class PathologyViewer(QMainWindow):
         self.btnSegmentation.clicked.connect(self.run_segmentation)
         self.btnClassification.clicked.connect(self.run_classification)
         self.btnHneCellDetection.clicked.connect(self.run_detection)
-        
+
+        # 조직 타입 Radio button
+        self.radioBreast.toggled.connect(self.on_tissue_type_changed)
+        self.radioStomach.toggled.connect(self.on_tissue_type_changed)
+        self.radioOther.toggled.connect(self.on_tissue_type_changed)
+
         # 결과 리스트 아이템 클릭 시그널
         self.resultList.itemClicked.connect(self.on_result_list_item_clicked)
         # 체크박스 변경 시그널 (가시성 토글 처리)
@@ -161,7 +184,19 @@ class PathologyViewer(QMainWindow):
         self.btnClearResults.clicked.connect(self.clear_results)
         self.btnSaveResults.clicked.connect(self.save_detection_results)
         self.btnLoadResults.clicked.connect(self.load_detection_results)
-    
+
+    def on_tissue_type_changed(self):
+        """조직 타입 Radio button 변경 시 호출"""
+        if self.radioBreast.isChecked():
+            self.current_tissue_type = "Breast"
+            self.statusbar.showMessage("조직 타입: Breast (Epithelial 재분류 활성화)")
+        elif self.radioStomach.isChecked():
+            self.current_tissue_type = "Stomach"
+            self.statusbar.showMessage("조직 타입: Stomach (Epithelial 재분류 활성화)")
+        elif self.radioOther.isChecked():
+            self.current_tissue_type = "Other"
+            self.statusbar.showMessage("조직 타입: Other (Epithelial 재분류 비활성화)")
+
     def open_image(self):
         """이미지 파일 열기"""
         file_path, _ = QFileDialog.getOpenFileName(
@@ -179,8 +214,18 @@ class PathologyViewer(QMainWindow):
         if self.wsi_viewer.load_wsi(file_path):
             self.current_image_path = file_path
             file_name = Path(file_path).name
+
+            # 이전 결과 모두 초기화
+            self.current_detection_result = None
+            self.wsi_viewer.clear_detection_results()  # Detection overlay 제거
+            self.wsi_viewer.clear_annotations()        # Annotation/Polygon 제거
+            self.resultList.clear()                    # 결과 리스트 초기화
+
+            # Progress 초기화
+            self.progressBar.setValue(0)
+            self.progressLabel.setText("AI Progress")
+
             self.statusbar.showMessage(f"이미지 로드 완료: {file_name}")
-            self.resultList.clear()
         else:
             self.statusbar.showMessage("이미지 로드 실패")
             QMessageBox.critical(self, "오류", "이미지를 로드할 수 없습니다.")
@@ -319,9 +364,15 @@ class PathologyViewer(QMainWindow):
             load_time = time.time() - start_time
             self.statusbar.showMessage(f"WSI 로드 완료 ({load_time:.2f}s)")
             QApplication.processEvents()
-            
+
+            # 조직 타입에 따라 Epithelial 재분류 여부 결정
+            # Breast, Stomach: 재분류 활성화 / Other: 재분류 비활성화
+            auto_classify = (self.current_tissue_type in ["Breast", "Stomach"])
+
             # 검출 시작 (서비스 이용)
-            self.detection_service.start_detection(slide, roi_polygons)
+            self.detection_service.start_detection(slide, roi_polygons,
+                                                    auto_classify_epithelial=auto_classify,
+                                                    tissue_type=self.current_tissue_type)
             
         except Exception as e:
             self.statusbar.showMessage("검출 실행 실패")
@@ -818,15 +869,132 @@ class PathologyViewer(QMainWindow):
         self.wsi_viewer.exit_drawing_mode()
         self.statusbar.showMessage("그리기 모드가 종료되었습니다.")
     
+    # ============================================================================
+    # Epithelial 재분류 (WSI Segmentation + Cell Detection)
+    # ============================================================================
+
+    def run_epithelial_classification(self):
+        """Epithelial cell 재분류 실행 (Segmentation 기반)"""
+        if not self.current_image_path:
+            QMessageBox.warning(self, "경고", "먼저 이미지를 로드하세요.")
+            return
+
+        if self.current_detection_result is None:
+            QMessageBox.warning(self, "경고", "먼저 Cell Detection을 실행하세요.")
+            return
+
+        # Load segmentation model if not loaded
+        if not self.epithelial_classification_service.is_model_loaded():
+            self.statusbar.showMessage("Segmentation 모델 로드 중...")
+            from PyQt5.QtWidgets import QApplication
+            QApplication.processEvents()
+
+            success, msg = self.epithelial_classification_service.load_model()
+            if not success:
+                QMessageBox.critical(self, "오류", msg)
+                return
+            self.statusbar.showMessage(msg)
+            QApplication.processEvents()
+
+        # Get OpenSlide object from tile manager
+        tile_manager = self.wsi_viewer.get_tile_manager()
+        if tile_manager is None or tile_manager.slide is None:
+            QMessageBox.critical(self, "오류", "슬라이드를 로드할 수 없습니다.")
+            return
+
+        slide = tile_manager.slide
+
+        # Get detection cells
+        detection_cells = self.current_detection_result['cells']
+
+        # Check if there are any Epithelial cells
+        epithelial_count = sum(1 for cell in detection_cells if cell['cls_id'] == 1)
+        if epithelial_count == 0:
+            QMessageBox.information(
+                self, "알림",
+                "Epithelial cell이 검출되지 않았습니다.\n재분류할 세포가 없습니다."
+            )
+            return
+
+        # Setup signals
+        self.setup_classification_signals()
+
+        # Run classification
+        self.epithelial_classification_service.run_classification(slide, detection_cells)
+        self.statusbar.showMessage(f"Epithelial 재분류 시작... ({epithelial_count}개 세포)")
+        self.progressBar.setValue(0)
+        self.progressLabel.setText("Epithelial 재분류 중...")
+
+    def setup_classification_signals(self):
+        """Setup signals for epithelial classification"""
+        classifier = self.epithelial_classification_service.get_classifier()
+
+        # Disconnect if already connected (avoid duplicates)
+        try:
+            classifier.classificationComplete.disconnect()
+            classifier.classificationProgress.disconnect()
+            classifier.classificationStatus.disconnect()
+            classifier.classificationError.disconnect()
+        except:
+            pass
+
+        # Connect signals
+        classifier.classificationComplete.connect(self.on_epithelial_classification_complete)
+        classifier.classificationProgress.connect(self.on_ai_progress)
+        classifier.classificationStatus.connect(self.on_detection_status)
+        classifier.classificationError.connect(self.on_ai_error)
+
+    def on_epithelial_classification_complete(self, result):
+        """Handle epithelial classification completion"""
+        self.is_detection_running = False
+        self.progressBar.setValue(100)
+        self.progressLabel.setText("재분류 완료")
+
+        # Cache results (replace old detection results)
+        self.current_detection_result = result
+
+        # Update UI - reuse existing detection result display
+        self.wsi_viewer.set_detection_results(result['cells'])
+        self.update_result_list(result)
+
+        # Show detailed message
+        msg = self.format_epithelial_classification_result(result)
+        QMessageBox.information(self, "재분류 완료", msg)
+        self.statusbar.showMessage("Epithelial 재분류 완료")
+
+    def format_epithelial_classification_result(self, result):
+        """Format epithelial classification result message"""
+        epi_breakdown = result.get('epithelial_breakdown', {})
+        class_counts = result.get('class_counts', {})
+
+        msg = f"세포 검출 및 재분류 완료\n\n"
+        msg += f"총 세포 수: {result['num_cells']:,}개\n\n"
+        msg += "=== Epithelial 세포 분포 ===\n"
+        msg += f"Tumor 영역: {epi_breakdown.get('tumor_epithelial', 0):,}개\n"
+        msg += f"Non-Tumor 영역: {epi_breakdown.get('nt_epithelial', 0):,}개\n"
+        msg += f"Stroma/Background: {epi_breakdown.get('stroma_epithelial', 0):,}개\n"
+        msg += f"재분류 전: {epi_breakdown.get('total_epithelial', 0):,}개\n\n"
+
+        # Add non-epithelial counts
+        msg += "=== 기타 세포 ===\n"
+        other_classes = ['Neutrophil', 'Lymphocyte', 'Plasma', 'Eosinophil', 'Connective tissue']
+        for cls_name in other_classes:
+            count = class_counts.get(cls_name, 0)
+            if count > 0:
+                msg += f"{cls_name}: {count:,}개\n"
+
+        return msg
+
     def closeEvent(self, event):
         """윈도우 닫기 시 리소스 정리"""
         self.wsi_viewer.close()
-        
+
         # AI 작업 취소
         self.detection_service.cancel_detection()
+        self.epithelial_classification_service.cancel()
         if self.tissue_segmentation is not None:
             self.tissue_segmentation.cancel()
         if self.tissue_classification is not None:
             self.tissue_classification.cancel()
-        
+
         event.accept()
