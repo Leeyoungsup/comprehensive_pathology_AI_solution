@@ -66,20 +66,25 @@ class DetectionService:
         except Exception as e:
             return None, f"슬라이드 열기 실패: {str(e)}"
     
-    def start_detection(self, slide: openslide.OpenSlide, roi_polygons: Optional[List] = None):
+    def start_detection(self, slide: openslide.OpenSlide, roi_polygons: Optional[List] = None,
+                        auto_classify_epithelial: bool = True, tissue_type: str = "Stomach"):
         """
         검출 시작
-        
+
         Args:
             slide: OpenSlide 객체
             roi_polygons: ROI 폴리곤 리스트 (없으면 전체 영역)
+            auto_classify_epithelial: Epithelial 자동 재분류 여부 (기본값: True)
+            tissue_type: 조직 타입 (Breast, Stomach, Other)
         """
         detection = self._ensure_detection_module()
-        
+
         if not self.is_model_loaded():
             raise RuntimeError("모델이 로드되지 않았습니다.")
-        
-        detection.run_detection(slide, roi_polygons)
+
+        detection.run_detection(slide, roi_polygons,
+                                auto_classify_epithelial=auto_classify_epithelial,
+                                tissue_type=tissue_type)
     
     def cancel_detection(self):
         """진행 중인 검출 취소"""
