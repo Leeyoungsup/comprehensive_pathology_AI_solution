@@ -35,30 +35,39 @@ from nets import nn
 # 클래스 설정
 CLASS_NAMES = {
     0: "Neutrophil",
-    1: "Epithelial",
+    1: "Epithelial",  # Legacy (재분류 전)
     2: "Lymphocyte",
     3: "Plasma",
     4: "Eosinophil",
-    5: "Connective tissue"
+    5: "Connective tissue",
+    6: "tumor epithelial(Invasive)",  # NEW: Tumor + Stromal 영역의 상피세포 (침습성)
+    7: "benign epithelial",           # NEW: Non_Tumor 영역의 상피세포 (정상)
+    8: "stromal epithelial"           # UNUSED: Class 6에 통합됨
 }
 
 CLASS_COLORS = {
-    0: "#FFA500",  # Neutrophil - 주황색
-    1: "#008000",  # Epithelial - 녹색
-    2: "#FF0000",  # Lymphocyte - 빨간색
-    3: "#87CEEB",  # Plasma - 하늘색
-    4: "#0000FF",  # Eosinophil - 파란색
-    5: "#FFFF00"   # Connective tissue - 노란색
+    0: "#FF4500",  # Neutrophil - 붉은 주황색 (OrangeRed)
+    1: "#00FF00",  # Epithelial - 밝은 녹색 (legacy)
+    2: "#0000FF",  # Lymphocyte - 파란색
+    3: "#FFFF00",  # Plasma - 밝은 노란색
+    4: "#8A2BE2",  # Eosinophil - 청보라
+    5: "#808080",  # Connective tissue - 회색
+    6: "#FF0000",  # tumor epithelial(Invasive) - 빨간색 (가장 중요!)
+    7: "#00FF00",  # benign epithelial - 밝은 녹색 (정상)
+    8: "#00BFFF"   # stromal epithelial - 진한 하늘색 (UNUSED)
 }
 
 # RGB 색상 (마스크 생성용)
 CLASS_COLORS_RGB = {
-    0: (255, 165, 0),    # Neutrophil - 주황색
-    1: (0, 128, 0),      # Epithelial - 녹색
-    2: (255, 0, 0),      # Lymphocyte - 빨간색
-    3: (135, 206, 235),  # Plasma - 하늘색
-    4: (0, 0, 255),      # Eosinophil - 파란색
-    5: (255, 255, 0)     # Connective tissue - 노란색
+    0: (255, 69, 0),     # Neutrophil - 붉은 주황색 (OrangeRed)
+    1: (0, 255, 0),      # Epithelial - 밝은 녹색 (legacy)
+    2: (0, 0, 255),      # Lymphocyte - 파란색
+    3: (255, 255, 0),    # Plasma - 밝은 노란색
+    4: (138, 43, 226),   # Eosinophil - 청보라
+    5: (128, 128, 128),  # Connective tissue - 회색
+    6: (255, 0, 0),      # tumor epithelial(Invasive) - 빨간색 (가장 중요!)
+    7: (0, 255, 0),      # benign epithelial - 밝은 녹색 (정상)
+    8: (0, 191, 255)     # stromal epithelial - 진한 하늘색 (UNUSED)
 }
 
 
@@ -146,14 +155,16 @@ class DetectionWorker(QThread):
     error = pyqtSignal(str)      # 에러 메시지
     status = pyqtSignal(str)     # 상태 메시지
     
-    def __init__(self, slide, model, roi_polygons=None, device='cuda'):
+    def __init__(self, slide, model, roi_polygons=None, device='cuda', auto_classify_epithelial=True, tissue_type="Stomach"):
         super().__init__()
         self.slide = slide  # pyvips 또는 openslide 이미지
         self.model = model
         self.roi_polygons = roi_polygons  # ROI 폴리곤 리스트
         self.device = device
         self.is_cancelled = False
-        
+        self.auto_classify_epithelial = auto_classify_epithelial  # 자동 Epithelial 재분류
+        self.tissue_type = tissue_type  # 조직 타입 (Breast, Stomach, Other)
+
         # 설정
         self.image_size = 1024
         
@@ -279,19 +290,28 @@ class DetectionWorker(QThread):
             if self.is_cancelled:
                 self.error.emit("검출이 취소되었습니다.")
                 return
-            
+
             self.status.emit(f"결과 정리 중... ({detected_cells_count}개 검출)")
-            self.progress.emit(98)
-            
+            self.progress.emit(50)
+
+            # Epithelial 재분류 (자동 실행)
+            if self.auto_classify_epithelial:
+                epithelial_count = sum(1 for cell in all_cells if cell.get('cls_id') == 1)
+                if epithelial_count > 0:
+                    self.status.emit(f"Epithelial 세포 재분류 시작... ({epithelial_count}개)")
+                    all_cells = self._run_epithelial_classification(all_cells)
+                else:
+                    self.status.emit("Epithelial 세포가 없어 재분류를 건너뜁니다.")
+
             # 결과 정리
             result = {
                 'status': 'success',
                 'cells': all_cells,
                 'num_cells': len(all_cells),
                 'class_counts': self._count_by_class(all_cells),
-                'message': f'총 {len(all_cells)}개 세포 검출 완료'
+                'message': f'총 {len(all_cells)}개 세포 검출 완료 (재분류 포함)'
             }
-            
+
             self.progress.emit(100)
             self.finished.emit(result)
             
@@ -438,15 +458,142 @@ class DetectionWorker(QThread):
         for cell in cells:
             cls_name = CLASS_NAMES.get(cell['cls_id'], 'Unknown')
             counts[cls_name] = counts.get(cls_name, 0) + 1
-        
+
         # 디버그: 총합 확인
         total_from_classes = sum(counts.values())
         print(f"세포 카운트 검증: 전체={len(cells)}, 클래스별 합계={total_from_classes}")
         if total_from_classes != len(cells):
             print(f"경고: 카운트 불일치! 차이={len(cells) - total_from_classes}")
-        
+
         return counts
-    
+
+    def _run_epithelial_classification(self, cells):
+        """
+        Epithelial 세포 재분류 (WSI Segmentation 기반)
+
+        Args:
+            cells: 검출된 세포 리스트
+
+        Returns:
+            재분류된 세포 리스트
+        """
+        print("\n" + "="*50)
+        print("Epithelial 재분류 시작")
+        print("="*50)
+
+        try:
+            from ai.epithelial_classifier import WSISegmentationModel
+            if self.tissue_type == "Other":
+                print("조직 타입이 'Other'로 설정되어 있어 재분류를 건너뜁니다.")
+                self.status.emit("조직 타입이 'Other'로 설정되어 있어 재분류를 건너뜁니다.")
+                return cells
+            # Segmentation 모델 로딩
+            print("Segmentation 모델 로딩 중...")
+            self.status.emit("Segmentation 모델 로딩 중...")
+            self.progress.emit(52)
+
+            from pathlib import Path
+            project_root = Path(__file__).parent.parent
+            if self.tissue_type == "Breast":
+                model_path = project_root / "model" / "HnE_BR_segmentation.pt"
+            elif self.tissue_type == "Stomach":
+                model_path = project_root / "model" / "HnE_ST_segmentation.pt"
+
+            print(f"Segmentation 모델 경로: {model_path}")
+            print(f"모델 파일 존재: {model_path.exists()}")
+
+            # WSISegmentationModel은 __init__에서 자동으로 모델 로딩
+            try:
+                seg_model = WSISegmentationModel(
+                    model_path=str(model_path),
+                    model_mpp=1.0,
+                    output_mpp=8.0,
+                    device=self.device
+                )
+                print("Segmentation 모델 로드 성공!")
+            except (FileNotFoundError, ImportError) as e:
+                print(f"Segmentation 모델 로드 실패: {e}")
+                self.status.emit(f"Segmentation 모델 로드 실패, 재분류 건너뜀: {str(e)}")
+                return cells
+
+            # WSI Segmentation 실행
+            print("WSI Segmentation 실행 중...")
+            self.status.emit("WSI Segmentation 실행 중...")
+
+            def progress_callback(progress_pct):
+                # Segmentation: 55-90% 범위
+                adjusted_progress = 55 + int(progress_pct * 0.35)
+                self.progress.emit(adjusted_progress)
+                if int(progress_pct) % 10 == 0:
+                    self.status.emit(f"Segmentation 진행 중... {int(progress_pct)}%")
+
+            prediction_mask, metadata = seg_model.predict_wsi(
+                self.slide,
+                patch_size=512,
+                overlap_ratio=0.4,
+                batch_size=8,
+                progress_callback=progress_callback
+            )
+
+            self.status.emit("Epithelial 세포 재분류 중...")
+            self.progress.emit(92)
+
+            # MPP 정보
+            wsi_mpp = self.origin_mpp
+            output_mpp = seg_model.output_mpp
+            scale_factor = wsi_mpp / output_mpp
+
+            # Epithelial cells 재분류
+            print(f"Scale factor: {scale_factor} (wsi_mpp={wsi_mpp}, output_mpp={output_mpp})")
+            print(f"Prediction mask shape: {prediction_mask.shape}")
+
+            epithelial_count = sum(1 for cell in cells if cell.get('cls_id') == 1)
+            print(f"Epithelial cells to reclassify: {epithelial_count}")
+
+            reclassified_count = 0
+            class_distribution = {6: 0, 7: 0}  # Tumor(Invasive), Benign
+
+            for cell in cells:
+                if cell.get('cls_id') == 1:  # Epithelial
+                    # Level 0 좌표 → Segmentation mask 좌표
+                    mask_x = int(cell['x'] * scale_factor)
+                    mask_y = int(cell['y'] * scale_factor)
+
+                    # Boundary check
+                    if 0 <= mask_x < prediction_mask.shape[1] and 0 <= mask_y < prediction_mask.shape[0]:
+                        seg_class = prediction_mask[mask_y, mask_x]
+
+                        # 재분류
+                        if seg_class == 2:  # Non_Tumor 영역
+                            cell['cls_id'] = 7  # benign epithelial
+                            class_distribution[7] += 1
+                        else:  # Tumor (3), Stroma (1), Background (0) → 모두 침습성으로 간주
+                            cell['cls_id'] = 6  # tumor epithelial(Invasive)
+                            class_distribution[6] += 1
+
+                        reclassified_count += 1
+
+            print(f"재분류 완료: {reclassified_count}개")
+            print(f"  - tumor epithelial(Invasive): {class_distribution[6]}")
+            print(f"  - benign epithelial: {class_distribution[7]}")
+            print("="*50 + "\n")
+
+            self.status.emit(f"Epithelial 재분류 완료 ({reclassified_count}개)")
+            self.progress.emit(98)
+
+            # GPU 메모리 정리
+            del seg_model
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            return cells
+
+        except Exception as e:
+            import traceback
+            print(f"Epithelial 재분류 실패: {e}\n{traceback.format_exc()}")
+            self.status.emit(f"재분류 실패, 원본 결과 사용: {str(e)}")
+            return cells
+
     def cancel(self):
         """작업 취소"""
         self.is_cancelled = True
@@ -487,7 +634,9 @@ class CellDetection(QObject):
             bool: 로드 성공 여부
         """
         try:
-            num_classes = len(CLASS_NAMES)
+            # YOLO 모델은 원래 6개 클래스로 학습됨
+            # 새로운 3개 클래스(Tumor/NT/Stroma-epithelial)는 재분류 단계에서 생성
+            num_classes = 6  # 원본 YOLO 모델 클래스 수
             self.model = nn.yolo_v11_m(num_classes).to(self.device)
             
             # 경로가 지정되지 않으면 기본 경로 사용
@@ -518,23 +667,28 @@ class CellDetection(QObject):
             self.detectionError.emit(error_msg)
             return False
     
-    def run_detection(self, slide, roi_polygons=None):
+    def run_detection(self, slide, roi_polygons=None, auto_classify_epithelial=True, tissue_type="Stomach"):
         """
         세포 검출 실행
-        
+
         Args:
             slide: pyvips 또는 openslide 이미지 객체
             roi_polygons: ROI Annotation 리스트 (선택사항)
+            auto_classify_epithelial: Epithelial 자동 재분류 여부 (기본값: True)
+            tissue_type: 조직 타입 (Breast, Stomach, Other)
         """
         if self.model is None:
             self.detectionError.emit("모델이 로드되지 않았습니다.")
             return
-        
+
         if self.worker and self.worker.isRunning():
             print("이미 검출 작업이 실행 중입니다.")
             return
-        
-        self.worker = DetectionWorker(slide, self.model, roi_polygons, self.device)
+
+        # auto_classify_epithelial과 tissue_type 파라미터 전달
+        self.worker = DetectionWorker(slide, self.model, roi_polygons, self.device,
+                                       auto_classify_epithelial=auto_classify_epithelial,
+                                       tissue_type=tissue_type)
         self.worker.finished.connect(self._on_finished)
         self.worker.progress.connect(self._on_progress)
         self.worker.status.connect(self._on_status)
