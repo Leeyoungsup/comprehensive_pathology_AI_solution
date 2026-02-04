@@ -109,12 +109,12 @@ class WSISegmentationModel:
     Handles model loading and inference on WSI slides using overlapping patches
     """
 
-    def __init__(self, model_path=None, model_mpp=1.0, output_mpp=8.0, device='cuda'):
+    def __init__(self, model_path=None, model_mpp=1.0, output_mpp=4.0, device='cuda'):
         """
         Args:
             model_path: Path to HnE_ST_segmentation.pt (default: ./model/HnE_ST_segmentation.pt)
             model_mpp: MPP at which model was trained (1.0)
-            output_mpp: Desired output mask MPP (8.0)
+            output_mpp: Desired output mask MPP (4.0)
             device: torch device
         """
         self.model_mpp = model_mpp
@@ -162,9 +162,9 @@ class WSISegmentationModel:
 
         print(f"Segmentation model loaded from: {self.model_path}")
 
-    def predict_wsi(self, slide, patch_size=512, overlap_ratio=0.3, batch_size=8, progress_callback=None):
+    def predict_wsi(self, slide, patch_size=512, overlap_ratio=0.3, batch_size=8, progress_callback=None, roi_bounds=None):
         """
-        Predict on entire WSI using overlapping patches with weighted blending
+        Predict on entire WSI or ROI region using overlapping patches with weighted blending
 
         Args:
             slide: OpenSlide object
@@ -172,6 +172,8 @@ class WSISegmentationModel:
             overlap_ratio: Overlap ratio between adjacent patches (default: 0.4)
             batch_size: Batch size for inference (default: 8)
             progress_callback: Optional callback(progress_percent) for progress updates
+            roi_bounds: Optional (x_min, y_min, x_max, y_max) tuple for ROI region at level 0
+                       If None, processes entire WSI
 
         Returns:
             prediction_mask: numpy array (H, W) with class IDs at output_mpp resolution
@@ -184,7 +186,33 @@ class WSISegmentationModel:
         base_mpp = get_wsi_mpp(slide)
         wsi_w, wsi_h = slide.dimensions
 
-        print(f"WSI dimensions: {wsi_w} x {wsi_h}")
+        # Determine processing region
+        if roi_bounds is not None:
+            # Add buffer (10% on each side)
+            x_min, y_min, x_max, y_max = roi_bounds
+            buffer_x = int((x_max - x_min) * 0.1)
+            buffer_y = int((y_max - y_min) * 0.1)
+            
+            x_min = max(0, x_min - buffer_x)
+            y_min = max(0, y_min - buffer_y)
+            x_max = min(wsi_w, x_max + buffer_x)
+            y_max = min(wsi_h, y_max + buffer_y)
+            
+            region_w = x_max - x_min
+            region_h = y_max - y_min
+            region_offset_x = x_min
+            region_offset_y = y_min
+            
+            print(f"ROI region: ({x_min}, {y_min}) to ({x_max}, {y_max})")
+            print(f"ROI size: {region_w} x {region_h} (with 10% buffer)")
+        else:
+            # Process entire WSI
+            region_w = wsi_w
+            region_h = wsi_h
+            region_offset_x = 0
+            region_offset_y = 0
+            print(f"Processing entire WSI: {wsi_w} x {wsi_h}")
+
         print(f"WSI base MPP: {base_mpp:.4f}")
 
         # Calculate scale factors
@@ -198,9 +226,9 @@ class WSISegmentationModel:
         step_size = int(patch_size * (1 - overlap_ratio))
         step_size_level0 = int(step_size * read_scale)
 
-        # Output dimensions at model_mpp resolution
-        model_res_w = int(wsi_w / read_scale)
-        model_res_h = int(wsi_h / read_scale)
+        # Output dimensions at model_mpp resolution (for processing region)
+        model_res_w = int(region_w / read_scale)
+        model_res_h = int(region_h / read_scale)
 
         # Output dimensions at output_mpp resolution
         output_w = int(model_res_w / output_scale)
@@ -224,22 +252,28 @@ class WSISegmentationModel:
         # Create weight mask
         weight_mask = create_gaussian_weight_mask(patch_size, sigma=0.3)
 
-        # Calculate number of patches
-        n_patches_x = max(1, int(np.ceil((wsi_w - patch_size_level0) / step_size_level0)) + 1)
-        n_patches_y = max(1, int(np.ceil((wsi_h - patch_size_level0) / step_size_level0)) + 1)
+        # Calculate number of patches (for processing region)
+        n_patches_x = max(1, int(np.ceil((region_w - patch_size_level0) / step_size_level0)) + 1)
+        n_patches_y = max(1, int(np.ceil((region_h - patch_size_level0) / step_size_level0)) + 1)
         total_patches = n_patches_x * n_patches_y
 
         print(f"Total patches: {n_patches_x} x {n_patches_y} = {total_patches}")
 
-        # Generate patch coordinates
+        # Generate patch coordinates (relative to processing region)
         patch_coords = []
         for y_idx in range(n_patches_y):
             for x_idx in range(n_patches_x):
-                x = min(x_idx * step_size_level0, wsi_w - patch_size_level0)
-                y = min(y_idx * step_size_level0, wsi_h - patch_size_level0)
-                x = max(0, x)
-                y = max(0, y)
-                patch_coords.append((x, y))
+                # Calculate position relative to region
+                x_rel = min(x_idx * step_size_level0, region_w - patch_size_level0)
+                y_rel = min(y_idx * step_size_level0, region_h - patch_size_level0)
+                x_rel = max(0, x_rel)
+                y_rel = max(0, y_rel)
+                
+                # Convert to absolute WSI coordinates
+                x_abs = region_offset_x + x_rel
+                y_abs = region_offset_y + y_rel
+                
+                patch_coords.append((x_abs, y_abs, x_rel, y_rel))  # (abs_x, abs_y, rel_x, rel_y)
 
         # Process patches in batches
         tf = ToTensor()
@@ -250,11 +284,11 @@ class WSISegmentationModel:
             batch_images = []
             valid_coords = []
 
-            for (x, y) in batch_coords:
-                # Read patch at the best level
+            for (x_abs, y_abs, x_rel, y_rel) in batch_coords:
+                # Read patch at the best level (using absolute coordinates)
                 try:
                     patch = slide.read_region(
-                        (x, y),
+                        (x_abs, y_abs),
                         read_level,
                         (int(patch_size_level0 / level_downsample),
                          int(patch_size_level0 / level_downsample))
@@ -270,7 +304,7 @@ class WSISegmentationModel:
 
                     if white_ratio < 0.9:  # Skip mostly white patches
                         batch_images.append(patch_tensor)
-                        valid_coords.append((x, y))
+                        valid_coords.append((x_rel, y_rel))  # Store relative coordinates
                 except Exception as e:
                     continue
 
@@ -290,10 +324,10 @@ class WSISegmentationModel:
                 predictions = predictions.cpu().numpy()
 
             # Accumulate predictions with weights
-            for i, (x, y) in enumerate(valid_coords):
-                # Calculate position in model resolution
-                x_model = int(x / read_scale)
-                y_model = int(y / read_scale)
+            for i, (x_rel, y_rel) in enumerate(valid_coords):
+                # Calculate position in model resolution (using relative coordinates)
+                x_model = int(x_rel / read_scale)
+                y_model = int(y_rel / read_scale)
 
                 # Get the region to update
                 x_end = min(x_model + patch_size, model_res_w)
@@ -341,6 +375,7 @@ class WSISegmentationModel:
             'output_mpp': self.output_mpp,
             'mask_shape': prediction_mask.shape,
             'class_names': self.class_names,
+            'region_offset': (region_offset_x, region_offset_y),  # ROI offset
         }
 
         return prediction_mask, metadata
@@ -533,7 +568,7 @@ class EpithelialClassifier(QObject):
             self.segmentation_model = WSISegmentationModel(
                 model_path=model_path,
                 model_mpp=1.0,
-                output_mpp=8.0,
+                output_mpp=4.0,
                 device=self.device
             )
             return True
