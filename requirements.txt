@@ -8,6 +8,7 @@ Pillow>=9.0.0
 torch>=2.0.0
 torchvision>=0.15.0
 ultralytics>=8.0.0
+segmentation-models-pytorch>=0.3.0
 
 # Medical Imaging
 openslide-python>=1.2.0
