@@ -74,11 +74,11 @@ class AnnotationGraphicsItem(QGraphicsPolygonItem):
         if self.annotation.selected or self.isSelected():
             # 선택됨: 굵은 선
             pen = QPen(color, 3, Qt.SolidLine)
-            brush = QBrush(QColor(color.red(), color.green(), color.blue(), 50))
+            brush = QBrush(Qt.NoBrush)  # 투명 (채우기 없음)
         else:
-            # 일반: 얇은 선
+            # 일반: 얗은 선
             pen = QPen(color, 2, Qt.SolidLine)
-            brush = QBrush(QColor(color.red(), color.green(), color.blue(), 30))
+            brush = QBrush(Qt.NoBrush)  # 투명 (채우기 없음)
         
         # Cosmetic pen: 배율에 관계없이 화면에서 일정한 두께
         pen.setCosmetic(True)
@@ -311,7 +311,7 @@ class DrawingRectangleItem(QGraphicsPathItem):
         pen = QPen(color, 2, Qt.SolidLine)
         pen.setCosmetic(True)  # 배율 독립적 크기
         self.setPen(pen)
-        self.setBrush(QBrush(QColor(color.red(), color.green(), color.blue(), 30)))
+        self.setBrush(QBrush(Qt.NoBrush))  # 투명 (채우기 없음)
         
         self.setZValue(99)  # Annotation 아래, 타일 위
     
