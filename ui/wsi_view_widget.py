@@ -100,6 +100,14 @@ class WSIViewWidget(QGraphicsView):
         self.detection_overlay = None  # TiledDetectionOverlay 객체
         self.detection_cells = []  # 검출된 세포 리스트
         
+        # Segmentation 오버레이
+        self.segmentation_overlay_item = None  # QGraphicsPixmapItem
+        self.segmentation_mask = None
+        self.segmentation_metadata = None
+        self.segmentation_class_names = None
+        self.segmentation_class_visibility = {}  # 클래스별 가시성
+        self.segmentation_roi_bounds = None  # ROI 영역 정보
+        
         # 오버레이 업데이트 디바운싱 타이머
         self.overlay_update_timer = QTimer(self)
         self.overlay_update_timer.setSingleShot(True)
@@ -191,11 +199,18 @@ class WSIViewWidget(QGraphicsView):
         zoom_level = max(self.min_zoom, min(self.max_zoom, zoom_level))
         
         if anchor_pos:
-            # 마우스 위치 기준 줌
-            scene_pos = self.mapToScene(anchor_pos)
+            # 마우스 위치 기준 줌 (부분적 센터링)
+            old_center = self.mapToScene(self.viewport().rect().center())
+            target_pos = self.mapToScene(anchor_pos)
+            
             self.resetTransform()
             self.scale(zoom_level, zoom_level)
-            self.centerOn(scene_pos)
+            
+            # 현재 중심과 마우스 위치의 중간 지점으로 이동 (30% 센터링 강도)
+            centering_strength = 0.3  # 0.0 = 센터링 없음, 1.0 = 완전 센터링
+            new_center_x = old_center.x() + (target_pos.x() - old_center.x()) * centering_strength
+            new_center_y = old_center.y() + (target_pos.y() - old_center.y()) * centering_strength
+            self.centerOn(new_center_x, new_center_y)
         else:
             # 중앙 기준 줌
             center = self.mapToScene(self.viewport().rect().center())
@@ -211,14 +226,14 @@ class WSIViewWidget(QGraphicsView):
         """줌 인"""
         if self.zoom_level >= self.max_zoom:
             return  # 이미 최대 줌
-        new_zoom = self.zoom_level * 1.2
+        new_zoom = self.zoom_level * 1.1
         self.set_zoom(new_zoom, anchor_pos)
     
     def zoom_out(self, anchor_pos=None):
         """줌 아웃"""
         if self.zoom_level <= self.min_zoom:
             return  # 이미 최소 줌
-        new_zoom = self.zoom_level / 1.2
+        new_zoom = self.zoom_level / 1.1
         self.set_zoom(new_zoom, anchor_pos)
     
     def update_field_of_view(self):
@@ -252,6 +267,10 @@ class WSIViewWidget(QGraphicsView):
         # 검출 결과 오버레이 업데이트 (디바운싱)
         if self.detection_cells:
             self.schedule_overlay_update()
+        
+        # Segmentation 오버레이 업데이트
+        if self.segmentation_mask is not None:
+            self.update_segmentation_overlay()
         
         # 즉시 캐시된 타일 렌더링
         self.on_tiles_updated()
@@ -451,6 +470,188 @@ class WSIViewWidget(QGraphicsView):
         """검출 결과 완전히 제거 (오버레이 + 데이터)"""
         self.clear_detection_overlay()
         self.detection_overlay = None
+    
+    def set_segmentation_overlay(self, mask, metadata, class_names, roi_bounds=None, roi_polygons=None):
+        """세분화 결과를 오버레이로 표시"""
+        self.segmentation_mask = mask
+        self.segmentation_metadata = metadata
+        self.segmentation_roi_bounds = roi_bounds
+        self.segmentation_roi_polygons = roi_polygons  # ROI polygon 좌표 저장
+        
+        # class_names가 리스트인 경우 딕셔너리로 변환
+        if isinstance(class_names, list):
+            self.segmentation_class_names = {i: name for i, name in enumerate(class_names)}
+        else:
+            self.segmentation_class_names = class_names
+        
+        # 초기 가시성 설정 (모두 보이게)
+        self.segmentation_class_visibility = {cls_id: True for cls_id in self.segmentation_class_names.keys()}
+        
+        # 전체 RGBA 이미지 미리 생성 (ROI 마스킹 포함)
+        self._create_segmentation_rgba_image()
+        
+        # 오버레이 업데이트
+        self.update_segmentation_overlay()
+    
+    def _create_segmentation_rgba_image(self):
+        """Segmentation 마스크를 RGBA 이미지로 미리 변환 (ROI 마스킹 포함)"""
+        import numpy as np
+        
+        if self.segmentation_mask is None:
+            self.segmentation_rgba_cache = None
+            return
+        
+        mask = self.segmentation_mask
+        mask_h, mask_w = mask.shape
+        
+        # 컬러 맵
+        seg_colors_rgb = {
+            0: (0, 0, 0, 0),          # Background - 투명
+            1: (255, 0, 0, 128),      # Stroma - 반투명 빨강
+            2: (0, 255, 0, 128),      # Non_Tumor - 반투명 초록
+            3: (0, 0, 255, 128)       # Tumor - 반투명 파랑
+        }
+        
+        # RGBA 이미지 생성 (전체 투명으로 초기화)
+        rgba_image = np.zeros((mask_h, mask_w, 4), dtype=np.uint8)
+        
+        # ROI polygon이 있으면 polygon 내부만 표시
+        if self.segmentation_roi_polygons:
+            import cv2
+            
+            region_offset = self.segmentation_metadata.get('region_offset', (0, 0))
+            offset_x, offset_y = region_offset
+            
+            wsi_mpp = self.segmentation_metadata.get('wsi_mpp', 0.25)
+            output_mpp = self.segmentation_metadata.get('output_mpp', 8.0)
+            scale_factor = wsi_mpp / output_mpp
+            
+            # 모든 polygon들을 합친 binary mask 생성
+            polygon_mask = np.zeros((mask_h, mask_w), dtype=np.uint8)
+            
+            for polygon_coords in self.segmentation_roi_polygons:
+                # WSI 좌표를 mask 좌표로 변환
+                mask_coords = []
+                for x, y in polygon_coords:
+                    mask_x = int((x - offset_x) * scale_factor)
+                    mask_y = int((y - offset_y) * scale_factor)
+                    mask_coords.append([mask_x, mask_y])
+                
+                # Polygon 채우기
+                pts = np.array(mask_coords, dtype=np.int32)
+                cv2.fillPoly(polygon_mask, [pts], 1)
+            
+            # Polygon 내부에만 컬러 적용
+            for cls_id, color in seg_colors_rgb.items():
+                # 해당 클래스이면서 polygon 내부인 픽셀
+                class_mask = (mask == cls_id) & (polygon_mask == 1)
+                rgba_image[class_mask] = color
+        
+        elif self.segmentation_roi_bounds:
+            # ROI bounds만 있으면 사각형 영역 처리
+            roi_x_min, roi_y_min, roi_x_max, roi_y_max = self.segmentation_roi_bounds
+            
+            region_offset = self.segmentation_metadata.get('region_offset', (0, 0))
+            offset_x, offset_y = region_offset
+            
+            wsi_mpp = self.segmentation_metadata.get('wsi_mpp', 0.25)
+            output_mpp = self.segmentation_metadata.get('output_mpp', 8.0)
+            scale_factor = wsi_mpp / output_mpp
+            
+            # ROI를 mask 좌표로 변환
+            roi_mask_x_min = int((roi_x_min - offset_x) * scale_factor)
+            roi_mask_y_min = int((roi_y_min - offset_y) * scale_factor)
+            roi_mask_x_max = int((roi_x_max - offset_x) * scale_factor)
+            roi_mask_y_max = int((roi_y_max - offset_y) * scale_factor)
+            
+            # Boundary check
+            roi_mask_x_min = max(0, min(roi_mask_x_min, mask_w))
+            roi_mask_y_min = max(0, min(roi_mask_y_min, mask_h))
+            roi_mask_x_max = max(0, min(roi_mask_x_max, mask_w))
+            roi_mask_y_max = max(0, min(roi_mask_y_max, mask_h))
+            
+            # ROI 영역만 컬러 적용
+            roi_mask = mask[roi_mask_y_min:roi_mask_y_max, roi_mask_x_min:roi_mask_x_max]
+            for cls_id, color in seg_colors_rgb.items():
+                mask_indices = (roi_mask == cls_id)
+                rgba_image[roi_mask_y_min:roi_mask_y_max, roi_mask_x_min:roi_mask_x_max][mask_indices] = color
+        else:
+            # 전체 영역 컬러 적용
+            for cls_id, color in seg_colors_rgb.items():
+                mask_indices = (mask == cls_id)
+                rgba_image[mask_indices] = color
+        
+        self.segmentation_rgba_cache = rgba_image
+    
+    def update_segmentation_overlay(self):
+        """Segmentation 오버레이 업데이트 (미리 만들어진 RGBA 이미지 사용)"""
+        if self.segmentation_mask is None or not hasattr(self, 'segmentation_rgba_cache') or self.segmentation_rgba_cache is None:
+            return
+        
+        # 기존 오버레이 제거
+        if self.segmentation_overlay_item:
+            try:
+                self.scene.removeItem(self.segmentation_overlay_item)
+            except RuntimeError:
+                pass
+            self.segmentation_overlay_item = None
+        
+        import numpy as np
+        from PyQt5.QtGui import QImage, QPixmap
+        
+        # 가시성 필터링된 RGBA 이미지 생성
+        rgba_filtered = self.segmentation_rgba_cache.copy()
+        
+        # 숨김 처리된 클래스는 투명하게
+        for cls_id, visible in self.segmentation_class_visibility.items():
+            if not visible:
+                mask_indices = (self.segmentation_mask == cls_id)
+                rgba_filtered[mask_indices] = [0, 0, 0, 0]  # 투명
+        
+        # QPixmap으로 변환
+        h, w = rgba_filtered.shape[:2]
+        bytes_per_line = 4 * w
+        qimage = QImage(rgba_filtered.data, w, h, bytes_per_line, QImage.Format_RGBA8888)
+        pixmap = QPixmap.fromImage(qimage)
+        
+        # 실제 WSI 좌표 계산
+        region_offset = self.segmentation_metadata.get('region_offset', (0, 0))
+        offset_x, offset_y = region_offset
+        
+        wsi_mpp = self.segmentation_metadata.get('wsi_mpp', 0.25)
+        output_mpp = self.segmentation_metadata.get('output_mpp', 8.0)
+        scale_factor = wsi_mpp / output_mpp
+        actual_scale = 1.0 / scale_factor
+        
+        # 오버레이 아이템 생성
+        self.segmentation_overlay_item = QGraphicsPixmapItem(pixmap)
+        self.segmentation_overlay_item.setPos(offset_x, offset_y)
+        self.segmentation_overlay_item.setScale(actual_scale)
+        self.segmentation_overlay_item.setZValue(45)  # Detection 오버레이보다 아래
+        
+        self.scene.addItem(self.segmentation_overlay_item)
+    
+    def set_segmentation_class_visibility(self, cls_id, visible):
+        """Segmentation 클래스 가시성 설정"""
+        if self.segmentation_class_visibility is not None:
+            self.segmentation_class_visibility[cls_id] = visible
+            self.update_segmentation_overlay()
+    
+    def clear_segmentation_overlay(self):
+        """Segmentation 오버레이 제거"""
+        if self.segmentation_overlay_item:
+            try:
+                self.scene.removeItem(self.segmentation_overlay_item)
+            except RuntimeError:
+                pass
+            self.segmentation_overlay_item = None
+        
+        self.segmentation_mask = None
+        self.segmentation_metadata = None
+        self.segmentation_class_names = None
+        self.segmentation_class_visibility = {}
+        self.segmentation_roi_bounds = None
+
         self.detection_cells = []
     
     def set_detection_class_visibility(self, cls_id, visible):
