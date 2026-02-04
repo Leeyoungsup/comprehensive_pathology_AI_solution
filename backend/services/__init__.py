@@ -6,5 +6,11 @@ UI와 비즈니스 로직을 분리하는 서비스 클래스들
 from .detection_service import DetectionService
 from .slide_service import SlideService
 from .annotation_service import AnnotationService
+from .epithelial_classification_service import EpithelialClassificationService
 
-__all__ = ['DetectionService', 'SlideService', 'AnnotationService']
+__all__ = [
+    'DetectionService',
+    'SlideService',
+    'AnnotationService',
+    'EpithelialClassificationService'
+]
