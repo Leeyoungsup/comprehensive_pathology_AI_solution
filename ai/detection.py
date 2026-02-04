@@ -81,13 +81,12 @@ def wh2xy(x):
     return y
 
 
-def non_max_suppression(outputs, confidence_threshold=0.001, iou_threshold=0.85, class_thresholds=None):
+def non_max_suppression(outputs, confidence_threshold=0.001, iou_threshold=0.35, class_thresholds=None):
     """
     빠른 클래스별 NMS - 성능 최적화 버전
     """
     max_wh = 7680
-    max_det = 300
-    max_nms = 30000
+
 
     bs = outputs.shape[0]
     nc = outputs.shape[1] - 4
@@ -132,7 +131,7 @@ def non_max_suppression(outputs, confidence_threshold=0.001, iou_threshold=0.85,
             continue
             
         # confidence로 정렬하고 상위 max_nms개만 유지
-        x = x[x[:, 4].argsort(descending=True)[:max_nms]]
+        x = x[x[:, 4].argsort(descending=True)]
         
         # 빠른 NMS - PyTorch 내장 함수 사용
         c = x[:, 5:6] * max_wh  # 클래스별 offset
@@ -186,11 +185,11 @@ class DetectionWorker(QThread):
         self.original_size = int(self.image_size * self.output_mpp / self.origin_mpp)
         self.magnification = self.original_size / self.image_size
         
-        # 클래스별 confidence threshold (더 엄격하게)
+        # 클래스별 confidence threshold (Lymphocyte 더 낮춤)
         self.class_thresholds = {
             0: 0.05,  # Neutrophil
             1: 0.05,  # Epithelial
-            2: 0.005,  # Lymphocyte
+            2: 0.01,  # Lymphocyte - 밀집 영역 검출 향상
             3: 0.05,  # Plasma
             4: 0.05,  # Eosinophil
             5: 0.05   # Connective tissue
@@ -408,7 +407,7 @@ class DetectionWorker(QThread):
                     pred = self.model(torch_patch)
                 
                 results = non_max_suppression(pred, confidence_threshold=0.005,
-                                             iou_threshold=0.85,
+                                             iou_threshold=0.3,
                                              class_thresholds=self.class_thresholds)
                 
                 if len(results[0]) > 0:
@@ -507,7 +506,7 @@ class DetectionWorker(QThread):
                 seg_model = WSISegmentationModel(
                     model_path=str(model_path),
                     model_mpp=1.0,
-                    output_mpp=8.0,
+                    output_mpp=4.0,
                     device=self.device
                 )
                 print("Segmentation 모델 로드 성공!")
@@ -515,6 +514,30 @@ class DetectionWorker(QThread):
                 print(f"Segmentation 모델 로드 실패: {e}")
                 self.status.emit(f"Segmentation 모델 로드 실패, 재분류 건너뜀: {str(e)}")
                 return cells
+
+            # ROI bounds 계산 (ROI가 있으면)
+            roi_bounds = None
+            if self.roi_polygons:
+                # 모든 ROI polygon의 bounding box 계산
+                min_x = float('inf')
+                min_y = float('inf')
+                max_x = float('-inf')
+                max_y = float('-inf')
+                
+                for polygon in self.roi_polygons:
+                    # Annotation 객체는 coordinates 속성 사용
+                    coords = polygon.coordinates
+                    xs = [p[0] for p in coords]
+                    ys = [p[1] for p in coords]
+                    min_x = min(min_x, min(xs))
+                    min_y = min(min_y, min(ys))
+                    max_x = max(max_x, max(xs))
+                    max_y = max(max_y, max(ys))
+                
+                roi_bounds = (int(min_x), int(min_y), int(max_x), int(max_y))
+                print(f"ROI bounds: {roi_bounds}")
+            else:
+                print("ROI 없음, 전체 WSI Segmentation 실행")
 
             # WSI Segmentation 실행
             print("WSI Segmentation 실행 중...")
@@ -532,20 +555,26 @@ class DetectionWorker(QThread):
                 patch_size=512,
                 overlap_ratio=0.4,
                 batch_size=8,
-                progress_callback=progress_callback
+                progress_callback=progress_callback,
+                roi_bounds=roi_bounds
             )
 
             self.status.emit("Epithelial 세포 재분류 중...")
             self.progress.emit(92)
 
-            # MPP 정보
+            # MPP 정보 및 ROI offset
             wsi_mpp = self.origin_mpp
             output_mpp = seg_model.output_mpp
             scale_factor = wsi_mpp / output_mpp
+            
+            # ROI offset 가져오기
+            region_offset_x = metadata.get('region_offset', (0, 0))[0]
+            region_offset_y = metadata.get('region_offset', (0, 0))[1]
 
             # Epithelial cells 재분류
             print(f"Scale factor: {scale_factor} (wsi_mpp={wsi_mpp}, output_mpp={output_mpp})")
             print(f"Prediction mask shape: {prediction_mask.shape}")
+            print(f"Region offset: ({region_offset_x}, {region_offset_y})")
 
             epithelial_count = sum(1 for cell in cells if cell.get('cls_id') == 1)
             print(f"Epithelial cells to reclassify: {epithelial_count}")
@@ -555,9 +584,12 @@ class DetectionWorker(QThread):
 
             for cell in cells:
                 if cell.get('cls_id') == 1:  # Epithelial
-                    # Level 0 좌표 → Segmentation mask 좌표
-                    mask_x = int(cell['x'] * scale_factor)
-                    mask_y = int(cell['y'] * scale_factor)
+                    # Level 0 좌표 → Segmentation mask 좌표 (ROI offset 고려)
+                    cell_x_in_region = cell['x'] - region_offset_x
+                    cell_y_in_region = cell['y'] - region_offset_y
+                    
+                    mask_x = int(cell_x_in_region * scale_factor)
+                    mask_y = int(cell_y_in_region * scale_factor)
 
                     # Boundary check
                     if 0 <= mask_x < prediction_mask.shape[1] and 0 <= mask_y < prediction_mask.shape[0]:
@@ -903,7 +935,7 @@ class TiledDetectionOverlay:
         self.cells = []  # 전체 세포 리스트
         self.class_visibility = {cls_id: True for cls_id in CLASS_NAMES.keys()}
         self.point_radius = 16  # 원 반지름 증가
-        self.alpha = 180
+        self.alpha = 1804
     
     def set_cells(self, cells):
         """검출된 세포 리스트 설정"""
