@@ -124,6 +124,13 @@
                 </widget>
                </item>
                <item>
+                <widget class="QPushButton" name="btnTumorSegmentation">
+                 <property name="text">
+                  <string>Tumor Segmentation</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
                 <widget class="QPushButton" name="btnSegmentation">
                  <property name="enabled">
                   <bool>false</bool>
