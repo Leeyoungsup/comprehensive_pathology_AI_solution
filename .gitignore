@@ -1,4 +1,5 @@
 model/HnE_detection.pt
+model/HnE_ST_segmentation.pt
 dist/
 build/
 PathologyAIViewer_Portable/
