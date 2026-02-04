@@ -397,11 +397,15 @@ class WSIViewWidget(QGraphicsView):
         
         # 기존 오버레이 제거
         if self.detection_overlay_item:
-            if isinstance(self.detection_overlay_item, list):
-                for item in self.detection_overlay_item:
-                    self.scene.removeItem(item)
-            else:
-                self.scene.removeItem(self.detection_overlay_item)
+            try:
+                if isinstance(self.detection_overlay_item, list):
+                    for item in self.detection_overlay_item:
+                        self.scene.removeItem(item)
+                else:
+                    self.scene.removeItem(self.detection_overlay_item)
+            except RuntimeError:
+                # 이미 삭제된 객체는 무시
+                pass
             self.detection_overlay_item = None
         
         # 현재 뷰 영역 가져오기
