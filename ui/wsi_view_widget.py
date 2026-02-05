@@ -652,7 +652,10 @@ class WSIViewWidget(QGraphicsView):
         self.segmentation_class_visibility = {}
         self.segmentation_roi_bounds = None
 
-        self.detection_cells = []
+        if hasattr(self, 'segmentation_rgba_cache'):
+            self.segmentation_rgba_cache = None
+        if hasattr(self, 'segmentation_roi_polygons'):
+            self.segmentation_roi_polygons = None
     
     def set_detection_class_visibility(self, cls_id, visible):
         """특정 클래스의 가시성 설정"""
