@@ -412,6 +412,7 @@ class PathologyViewer(QMainWindow):
             return
         
         # 기존 Detection 결과 제거
+        self.current_detection_result = None
         self.wsi_viewer.clear_detection_overlay()
         # ResultList 완전 초기화
         self.resultList.clear()
@@ -825,37 +826,44 @@ class PathologyViewer(QMainWindow):
         self.save_detection_results()
     
     def clear_results(self):
-        """검출 결과 지우기"""
-        if not self.current_detection_result:
+        """검출/세그멘테이션 결과 지우기"""
+        if not self.current_detection_result and not self.current_segmentation_result:
             self.statusbar.showMessage("지울 결과가 없습니다")
             return
-        
+
         reply = QMessageBox.question(
-            self, 
-            "결과 지우기", 
-            "검출 결과를 지우시겠습니까?",
+            self,
+            "결과 지우기",
+            "AI 분석 결과를 지우시겠습니까?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No
         )
-        
+
         if reply == QMessageBox.Yes:
-            # 결과 데이터 초기화
+            # Detection 결과 초기화
             self.current_detection_result = None
-            
-            # 오버레이 제거
             self.wsi_viewer.clear_detection_results()
-            
+
+            # Segmentation 결과 초기화
+            self.current_segmentation_result = None
+            self.wsi_viewer.clear_segmentation_overlay()
+
             # 결과 리스트 초기화
             self.resultList.clear()
-            
+
             # Progress 초기화
             self.progressBar.setValue(0)
             self.progressLabel.setText("AI Progress")
-            
-            self.statusbar.showMessage("검출 결과가 지워졌습니다")
+
+            self.statusbar.showMessage("분석 결과가 지워졌습니다")
     
     def save_detection_results(self):
-        """검출 결과를 JSON 파일로 저장"""
+        """AI 결과를 JSON 파일로 저장 (Detection 또는 Segmentation)"""
+        # Segmentation 결과가 있으면 Segmentation 저장으로 분기
+        if self.current_segmentation_result is not None:
+            self.save_segmentation_results()
+            return
+
         if not self.current_detection_result:
             QMessageBox.information(self, "알림", "저장할 결과가 없습니다.")
             return
@@ -905,7 +913,93 @@ class PathologyViewer(QMainWindow):
                 self.statusbar.showMessage(f"결과 저장 완료: {Path(file_path).name}")
             except Exception as e:
                 QMessageBox.critical(self, "오류", f"결과 저장 실패:\n{str(e)}")
-    
+
+    def save_segmentation_results(self):
+        """Segmentation 결과를 Polygon JSON으로 저장"""
+        if not self.current_segmentation_result:
+            QMessageBox.information(self, "알림", "저장할 Segmentation 결과가 없습니다.")
+            return
+
+        default_filename = ""
+        if self.current_image_path:
+            wsi_filename = Path(self.current_image_path).stem
+            default_filename = f"{wsi_filename}_segmentation_result.json"
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Segmentation 결과 저장",
+            default_filename,
+            "JSON Files (*.json);;All Files (*)"
+        )
+
+        if not file_path:
+            return
+
+        try:
+            import json
+            from datetime import datetime
+            from utils.coordinate_utils import mask_to_polygons
+
+            self.statusbar.showMessage("Segmentation 결과 변환 중...")
+            from PyQt5.QtWidgets import QApplication
+            QApplication.processEvents()
+
+            seg_result = self.current_segmentation_result
+            mask = seg_result['mask']
+            metadata = seg_result['metadata']
+            class_names_raw = seg_result['class_names']
+
+            # class_names를 list로 통일
+            if isinstance(class_names_raw, dict):
+                class_names_list = [class_names_raw.get(i, f"Class_{i}") for i in range(max(class_names_raw.keys()) + 1)]
+            else:
+                class_names_list = list(class_names_raw)
+
+            # mask → polygon 변환
+            class_polygons = mask_to_polygons(
+                mask, metadata, class_names_list,
+                simplify_epsilon=2.0, min_area=10
+            )
+
+            # JSON 구조 생성
+            result_with_meta = {
+                "metadata": {
+                    "model_type": "segmentation",
+                    "model_name": "HnE_Segmentation",
+                    "version": "1.0",
+                    "timestamp": datetime.now().isoformat(),
+                    "image_path": str(self.current_image_path) if self.current_image_path else None,
+                    "image_name": Path(self.current_image_path).name if self.current_image_path else None,
+                    "tissue_type": self.current_tissue_type
+                },
+                "result": {
+                    "segmentation_metadata": {
+                        "wsi_dimensions": list(metadata.get('wsi_dimensions', [0, 0])),
+                        "wsi_mpp": metadata.get('wsi_mpp', 0.25),
+                        "model_mpp": metadata.get('model_mpp', 1.0),
+                        "output_mpp": metadata.get('output_mpp', 4.0),
+                        "mask_shape": list(metadata.get('mask_shape', mask.shape)),
+                        "class_names": class_names_list,
+                        "region_offset": list(metadata.get('region_offset', (0, 0)))
+                    },
+                    "roi_bounds": list(seg_result['roi_bounds']) if seg_result.get('roi_bounds') else None,
+                    "roi_polygons": seg_result.get('roi_polygons'),
+                    "class_polygons": class_polygons,
+                    "polygon_coordinate_system": "wsi_level0",
+                    "simplification_epsilon": 2.0
+                }
+            }
+
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(result_with_meta, f, indent=2, ensure_ascii=False)
+
+            self.statusbar.showMessage(f"Segmentation 결과 저장 완료: {Path(file_path).name}")
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(self, "오류", f"Segmentation 결과 저장 실패:\n{str(e)}")
+
     def load_detection_results(self):
         """저장된 AI 결과 불러오기 (모델 타입별 처리)"""
         file_path, _ = QFileDialog.getOpenFileName(
@@ -935,8 +1029,8 @@ class PathologyViewer(QMainWindow):
                         self._load_detection_result(result, metadata)
                         self.statusbar.showMessage(f"불러오기 완료: {model_name} - {result.get('num_cells', 0):,}개 세포")
                     elif model_type == "segmentation":
-                        # 향후 구현
-                        QMessageBox.information(self, "알림", f"{model_name} 결과는 아직 지원되지 않습니다.")
+                        self._load_segmentation_result(result, metadata)
+                        self.statusbar.showMessage(f"불러오기 완료: {model_name} - Segmentation")
                     elif model_type == "classification":
                         # 향후 구현
                         QMessageBox.information(self, "알림", f"{model_name} 결과는 아직 지원되지 않습니다.")
@@ -981,7 +1075,57 @@ class PathologyViewer(QMainWindow):
             self.progressLabel.setText(f"로드 완료: {model_info}")
         else:
             self.progressLabel.setText("결과 로드 완료")
-    
+
+    def _load_segmentation_result(self, result, metadata=None):
+        """Segmentation 결과 로드 처리 (polygon JSON → mask 복원 → overlay 표시)"""
+        from utils.coordinate_utils import polygons_to_mask
+
+        self.statusbar.showMessage("Segmentation 결과 복원 중...")
+        from PyQt5.QtWidgets import QApplication
+        QApplication.processEvents()
+
+        seg_metadata = result.get('segmentation_metadata', {})
+        class_polygons = result.get('class_polygons', {})
+        roi_bounds = result.get('roi_bounds')
+        roi_polygons = result.get('roi_polygons')
+        class_names = seg_metadata.get('class_names', ["Background", "Stroma", "Non_Tumor", "Tumor"])
+
+        # polygon → mask 복원
+        mask = polygons_to_mask(class_polygons, seg_metadata)
+
+        # current_segmentation_result 설정
+        self.current_segmentation_result = {
+            'mask': mask,
+            'metadata': seg_metadata,
+            'class_names': class_names,
+            'roi_bounds': tuple(roi_bounds) if roi_bounds else None,
+            'roi_polygons': roi_polygons
+        }
+
+        # 기존 오버레이 제거
+        self.current_detection_result = None
+        self.wsi_viewer.clear_detection_results()
+        self.wsi_viewer.clear_segmentation_overlay()
+
+        # 오버레이 표시
+        self.wsi_viewer.set_segmentation_overlay(
+            mask, seg_metadata, class_names,
+            tuple(roi_bounds) if roi_bounds else None,
+            roi_polygons
+        )
+
+        # 결과 리스트 업데이트
+        self.resultList.clear()
+        self.update_segmentation_result_list()
+
+        # Progress
+        self.progressBar.setValue(100)
+        if metadata:
+            model_info = f"{metadata.get('model_name', 'Unknown')} v{metadata.get('version', '?')}"
+            self.progressLabel.setText(f"로드 완료: {model_info}")
+        else:
+            self.progressLabel.setText("Segmentation 결과 로드 완료")
+
     # === Annotation 기능 ===
     
     def toggle_draw_polygon(self, checked):
