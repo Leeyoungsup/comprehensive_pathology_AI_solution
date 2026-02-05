@@ -7,12 +7,16 @@ from .coordinate_utils import (
     CoordinateConverter,
     calculate_tile_range,
     is_rect_overlapping,
-    clamp
+    clamp,
+    mask_to_polygons,
+    polygons_to_mask
 )
 
 __all__ = [
     'CoordinateConverter',
     'calculate_tile_range',
     'is_rect_overlapping',
-    'clamp'
+    'clamp',
+    'mask_to_polygons',
+    'polygons_to_mask'
 ]

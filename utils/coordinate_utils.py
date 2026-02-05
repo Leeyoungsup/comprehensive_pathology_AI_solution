@@ -4,6 +4,8 @@ WSI 이미지의 다양한 좌표계 간 변환을 지원
 """
 
 from PyQt5.QtCore import QPointF, QRectF
+import numpy as np
+import cv2
 
 
 class CoordinateConverter:
@@ -219,3 +221,149 @@ def clamp(value, min_value, max_value):
         제한된 값
     """
     return max(min_value, min(max_value, value))
+
+
+def mask_to_polygons(mask, metadata, class_names, simplify_epsilon=2.0, min_area=10):
+    """
+    Segmentation mask를 클래스별 polygon 윤곽선으로 변환 (WSI level-0 좌표계)
+
+    Args:
+        mask: numpy.ndarray, shape (H, W), dtype uint8, 값 0~N (클래스 ID)
+        metadata: dict - wsi_mpp, output_mpp, region_offset 포함
+        class_names: list 또는 dict - 클래스 이름
+        simplify_epsilon: cv2.approxPolyDP epsilon (mask 픽셀 단위)
+        min_area: 최소 contour 면적 (mask 픽셀 단위, 이보다 작으면 제거)
+
+    Returns:
+        dict: {cls_id_str: {"class_name": str, "polygons": [{"exterior": [[x,y],...], "interiors": [...]}]}}
+    """
+    wsi_mpp = metadata.get('wsi_mpp', 0.25)
+    output_mpp = metadata.get('output_mpp', 4.0)
+    region_offset = metadata.get('region_offset', (0, 0))
+    offset_x, offset_y = region_offset
+    scale = output_mpp / wsi_mpp  # mask pixel → WSI level-0 pixels
+
+    if isinstance(class_names, dict):
+        names = class_names
+    else:
+        names = {i: name for i, name in enumerate(class_names)}
+
+    result = {}
+
+    for cls_id in range(1, max(names.keys()) + 1):  # Background(0) 제외
+        if cls_id not in names:
+            continue
+
+        class_binary = (mask == cls_id).astype(np.uint8)
+        contours, hierarchy = cv2.findContours(
+            class_binary, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE
+        )
+
+        if not contours or hierarchy is None:
+            continue
+
+        hierarchy = hierarchy[0]  # shape: (N, 4) — [next, prev, child, parent]
+
+        polygons = []
+        idx = 0
+        while idx >= 0 and idx < len(hierarchy):
+            # top-level contour (exterior)만 처리
+            if hierarchy[idx][3] != -1:
+                idx = hierarchy[idx][0]
+                continue
+
+            contour = contours[idx]
+            if cv2.contourArea(contour) < min_area:
+                idx = hierarchy[idx][0]
+                continue
+
+            if simplify_epsilon > 0:
+                contour = cv2.approxPolyDP(contour, simplify_epsilon, True)
+
+            if len(contour) < 3:
+                idx = hierarchy[idx][0]
+                continue
+
+            # mask 좌표 → WSI level-0 좌표
+            exterior = []
+            for pt in contour:
+                mx, my = float(pt[0][0]), float(pt[0][1])
+                wsi_x = mx * scale + offset_x
+                wsi_y = my * scale + offset_y
+                exterior.append([round(wsi_x, 1), round(wsi_y, 1)])
+
+            # hole contour (children) 수집
+            interiors = []
+            child_idx = hierarchy[idx][2]
+            while child_idx >= 0:
+                hole_contour = contours[child_idx]
+                if simplify_epsilon > 0:
+                    hole_contour = cv2.approxPolyDP(hole_contour, simplify_epsilon, True)
+                if len(hole_contour) >= 3:
+                    interior = []
+                    for pt in hole_contour:
+                        mx, my = float(pt[0][0]), float(pt[0][1])
+                        wsi_x = mx * scale + offset_x
+                        wsi_y = my * scale + offset_y
+                        interior.append([round(wsi_x, 1), round(wsi_y, 1)])
+                    interiors.append(interior)
+                child_idx = hierarchy[child_idx][0]
+
+            polygons.append({"exterior": exterior, "interiors": interiors})
+            idx = hierarchy[idx][0]
+
+        if polygons:
+            result[str(cls_id)] = {
+                "class_name": names[cls_id],
+                "polygons": polygons
+            }
+
+    return result
+
+
+def polygons_to_mask(class_polygons, metadata):
+    """
+    Polygon 윤곽선에서 segmentation mask를 복원
+
+    Args:
+        class_polygons: mask_to_polygons 출력 형식의 dict
+        metadata: dict - mask_shape, wsi_mpp, output_mpp, region_offset 포함
+
+    Returns:
+        numpy.ndarray: 복원된 mask, shape metadata['mask_shape'], dtype uint8
+    """
+    mask_shape = tuple(metadata['mask_shape'])  # (H, W)
+    wsi_mpp = metadata.get('wsi_mpp', 0.25)
+    output_mpp = metadata.get('output_mpp', 4.0)
+    region_offset = metadata.get('region_offset', (0, 0))
+    offset_x, offset_y = region_offset
+    inv_scale = wsi_mpp / output_mpp  # WSI level-0 → mask pixels
+
+    mask = np.zeros(mask_shape, dtype=np.uint8)
+
+    # 클래스 순서대로 처리 (높은 ID가 나중에 덮어씀)
+    for cls_id_str in sorted(class_polygons.keys(), key=int):
+        cls_id = int(cls_id_str)
+        cls_data = class_polygons[cls_id_str]
+
+        for polygon in cls_data["polygons"]:
+            # exterior 채우기
+            exterior_pts = np.array([
+                [int((x - offset_x) * inv_scale), int((y - offset_y) * inv_scale)]
+                for x, y in polygon["exterior"]
+            ], dtype=np.int32)
+
+            if len(exterior_pts) >= 3:
+                cv2.fillPoly(mask, [exterior_pts], cls_id)
+
+            # hole 복원 (Background로)
+            for interior in polygon.get("interiors", []):
+                interior_pts = np.array([
+                    [int((x - offset_x) * inv_scale), int((y - offset_y) * inv_scale)]
+                    for x, y in interior
+                ], dtype=np.int32)
+
+                if len(interior_pts) >= 3:
+                    cv2.fillPoly(mask, [interior_pts], 0)
+
+    return mask
