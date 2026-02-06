@@ -223,12 +223,16 @@ class PathologyViewer(QMainWindow):
             self.current_image_path = file_path
             file_name = Path(file_path).name
 
+            # 그리기 모드 종료 (버튼 상태, 커서 복원)
+            self.stop_drawing()
+
             # 이전 결과 모두 초기화
             self.current_detection_result = None
             self.current_segmentation_result = None
             self.wsi_viewer.clear_detection_results()  # Detection overlay 제거
             self.wsi_viewer.clear_segmentation_overlay()  # Segmentation overlay 제거
             self.wsi_viewer.clear_annotations()        # Annotation/Polygon 제거
+            self.annotation_panel.clear_annotations()  # Annotation 패널 테이블 초기화
             self.resultList.clear()                    # 결과 리스트 초기화
 
             # Progress 초기화
@@ -481,7 +485,12 @@ class PathologyViewer(QMainWindow):
                     max_y = max(max_y, max(ys))
                 
                 roi_bounds = (int(min_x), int(min_y), int(max_x), int(max_y))
-            
+
+            # ROI 좌표 수집 완료 후 annotation 시각적 제거
+            if roi_polygons:
+                self.wsi_viewer.clear_annotations()
+                self.annotation_panel.clear_annotations()
+
             # Segmentation 실행
             prediction_mask, metadata = seg_model.predict_wsi(
                 slide,
@@ -1102,10 +1111,12 @@ class PathologyViewer(QMainWindow):
             'roi_polygons': roi_polygons
         }
 
-        # 기존 오버레이 제거
+        # 기존 오버레이 및 annotation 제거
         self.current_detection_result = None
         self.wsi_viewer.clear_detection_results()
         self.wsi_viewer.clear_segmentation_overlay()
+        self.wsi_viewer.clear_annotations()
+        self.annotation_panel.clear_annotations()
 
         # 오버레이 표시
         self.wsi_viewer.set_segmentation_overlay(
