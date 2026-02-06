@@ -920,135 +920,149 @@ class DetectionOverlay:
         self.add_cells(cells, alpha)
 
 
+class SpatialGrid:
+    """
+    공간 격자 인덱스 — 셀 좌표를 격자(grid)에 미리 분류하여
+    특정 영역의 셀을 O(1)에 조회 (전체 순회 O(N) 제거)
+    """
+
+    def __init__(self, grid_size=2048):
+        self.grid_size = grid_size
+        self.grid = {}  # (gx, gy) -> [cell, ...]
+
+    def build(self, cells):
+        """셀 리스트로 격자 인덱스 구축"""
+        self.grid.clear()
+        gs = self.grid_size
+        for cell in cells:
+            gx = int(cell['x']) // gs
+            gy = int(cell['y']) // gs
+            key = (gx, gy)
+            if key not in self.grid:
+                self.grid[key] = []
+            self.grid[key].append(cell)
+
+    def clear(self):
+        self.grid.clear()
+
+    def query(self, x_min, y_min, x_max, y_max):
+        """영역 내 셀 리스트 반환 (격자 단위로 빠르게 필터링)"""
+        gs = self.grid_size
+        gx_min = int(x_min) // gs
+        gy_min = int(y_min) // gs
+        gx_max = int(x_max) // gs
+        gy_max = int(y_max) // gs
+
+        result = []
+        for gx in range(gx_min, gx_max + 1):
+            for gy in range(gy_min, gy_max + 1):
+                bucket = self.grid.get((gx, gy))
+                if bucket:
+                    for cell in bucket:
+                        cx, cy = cell['x'], cell['y']
+                        if x_min <= cx < x_max and y_min <= cy < y_max:
+                            result.append(cell)
+        return result
+
+
 class TiledDetectionOverlay:
     """
     타일 기반 검출 결과 오버레이
     대용량 이미지에서 현재 뷰에 해당하는 영역만 마스크 생성
+    SpatialGrid를 이용한 공간 인덱싱으로 대량 셀에서도 빠른 렌더링
     """
-    
+
     def __init__(self, tile_size=512):
-        """
-        Args:
-            tile_size: 타일 크기 (기본 512)
-        """
         self.tile_size = tile_size
-        self.cells = []  # 전체 세포 리스트
+        self.cells = []
+        self.spatial_grid = SpatialGrid(grid_size=2048)
         self.class_visibility = {cls_id: True for cls_id in CLASS_NAMES.keys()}
-        self.point_radius = 16  # 원 반지름 증가
-        self.alpha = 1804
-    
+        self.point_radius = 16
+        self.alpha = 180
+
     def set_cells(self, cells):
-        """검출된 세포 리스트 설정"""
+        """검출된 세포 리스트 설정 및 공간 인덱스 구축"""
         self.cells = cells
-    
+        self.spatial_grid.build(cells)
+
     def clear_cells(self):
         """세포 리스트 초기화"""
         self.cells = []
-    
+        self.spatial_grid.clear()
+
     def set_class_visibility(self, cls_id, visible):
         """특정 클래스의 가시성 설정"""
         self.class_visibility[cls_id] = visible
-    
+
     def create_tile_mask(self, tile_x, tile_y, tile_width, tile_height, downsample=1):
         """
-        특정 타일 영역의 마스크 생성
-        
-        Args:
-            tile_x, tile_y: 타일 시작 좌표 (레벨 0 기준)
-            tile_width, tile_height: 타일 크기
-            downsample: 다운샘플 비율
-        
-        Returns:
-            numpy array (RGBA) 또는 None
+        특정 타일 영역의 마스크 생성 (SpatialGrid로 영역 내 셀만 빠르게 조회)
         """
-        # 마스크 크기
         mask_width = tile_width // downsample
         mask_height = tile_height // downsample
-        
-        # 빈 RGBA 마스크
-        mask = np.zeros((mask_height, mask_width, 4), dtype=np.uint8)
-        
-        # 타일 영역 내의 세포 필터링
+
         tile_end_x = tile_x + tile_width
         tile_end_y = tile_y + tile_height
-        
-        # 줌 레벨에 맞춰 원 크기 조정 (화면에서 일정한 크기로 보이도록)
+
+        # 공간 인덱스로 뷰 영역 내 셀만 조회
+        visible_cells = self.spatial_grid.query(tile_x, tile_y, tile_end_x, tile_end_y)
+
+        if not visible_cells:
+            return None
+
+        # 빈 RGBA 마스크
+        mask = np.zeros((mask_height, mask_width, 4), dtype=np.uint8)
+
         adjusted_radius = max(2, int(self.point_radius / downsample))
-        line_thickness = max(2, int(5 // downsample))  # 선 두께 증가
-        
+        line_thickness = max(2, int(5 // downsample))
+
         cell_count = 0
-        for cell in self.cells:
-            # 가시성 체크
+        for cell in visible_cells:
             cls_id = cell.get('cls_id', 0)
             if not self.class_visibility.get(cls_id, True):
                 continue
-            
+
             cell_x = cell['x']
             cell_y = cell['y']
-            
-            # 타일 영역 내에 있는지 체크
-            if tile_x <= cell_x < tile_end_x and tile_y <= cell_y < tile_end_y:
-                # 마스크 좌표로 변환
-                mask_x = int((cell_x - tile_x) / downsample)
-                mask_y = int((cell_y - tile_y) / downsample)
-                
-                # 범위 체크
-                if 0 <= mask_x < mask_width and 0 <= mask_y < mask_height:
-                    color = CLASS_COLORS_RGB.get(cls_id, (255, 255, 255))
-                    # 테두리만 있는 원 그리기 (속이 빈 원)
-                    cv2.circle(mask, (mask_x, mask_y), adjusted_radius,
-                              (color[0], color[1], color[2], self.alpha), line_thickness)
-                    cell_count += 1
-        
+
+            mask_x = int((cell_x - tile_x) / downsample)
+            mask_y = int((cell_y - tile_y) / downsample)
+
+            if 0 <= mask_x < mask_width and 0 <= mask_y < mask_height:
+                color = CLASS_COLORS_RGB.get(cls_id, (255, 255, 255))
+                cv2.circle(mask, (mask_x, mask_y), adjusted_radius,
+                          (color[0], color[1], color[2], self.alpha), line_thickness)
+                cell_count += 1
+
         if cell_count == 0:
             return None
-        
+
         return mask
-    
+
     def create_view_mask(self, view_rect, downsample=1):
-        """
-        현재 뷰 영역의 마스크 생성
-        
-        Args:
-            view_rect: QRectF (레벨 0 좌표)
-            downsample: 다운샘플 비율
-        
-        Returns:
-            (QPixmap, x, y) 또는 (None, 0, 0)
-        """
+        """현재 뷰 영역의 마스크 생성"""
         from PyQt5.QtGui import QImage, QPixmap
-        
+
         x = int(view_rect.x())
         y = int(view_rect.y())
         width = int(view_rect.width())
         height = int(view_rect.height())
-        
+
         mask = self.create_tile_mask(x, y, width, height, downsample)
-        
+
         if mask is None:
             return None, x, y
-        
-        # QPixmap으로 변환
+
         h, w, c = mask.shape
         bytes_per_line = c * w
         qimage = QImage(mask.data, w, h, bytes_per_line, QImage.Format_RGBA8888)
         pixmap = QPixmap.fromImage(qimage)
-        
+
         return pixmap, x, y
-    
+
     def get_cells_in_region(self, x, y, width, height):
         """특정 영역 내의 세포 리스트 반환"""
-        result = []
-        end_x = x + width
-        end_y = y + height
-        
-        for cell in self.cells:
-            cell_x = cell['x']
-            cell_y = cell['y']
-            if x <= cell_x < end_x and y <= cell_y < end_y:
-                result.append(cell)
-        
-        return result
+        return self.spatial_grid.query(x, y, x + width, y + height)
 
 
 # 기존 호환성을 위한 별칭
