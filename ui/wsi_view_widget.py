@@ -121,6 +121,12 @@ class WSIViewWidget(QGraphicsView):
             if self.tile_manager:
                 self.tile_manager.close()
             
+            # 그리기 상태 초기화 (scene.clear() 전에 참조 해제)
+            self.current_drawing = None
+            self.is_drawing_drag = False
+            self.drag_start_pos = None
+            self.annotation_mode = AnnotationMode.NONE
+
             # Scene 초기화
             self.scene.clear()
             self.tile_items.clear()
@@ -337,13 +343,19 @@ class WSIViewWidget(QGraphicsView):
                 if tx < start_tile_x - 2 or tx > end_tile_x + 2 or \
                    ty < start_tile_y - 2 or ty > end_tile_y + 2:
                     item = self.tile_items[key]
-                    self.scene.removeItem(item)
+                    try:
+                        self.scene.removeItem(item)
+                    except RuntimeError:
+                        pass
                     keys_to_remove.append(key)
             # 다른 레벨이면: 현재 레벨 타일로 덮인 영역만 제거
             else:
                 if self._is_tile_covered(tx, ty, lv, start_tile_x, start_tile_y, end_tile_x, end_tile_y, level, tile_size, level_downsample):
                     item = self.tile_items[key]
-                    self.scene.removeItem(item)
+                    try:
+                        self.scene.removeItem(item)
+                    except RuntimeError:
+                        pass
                     keys_to_remove.append(key)
         
         for key in keys_to_remove:
@@ -459,7 +471,10 @@ class WSIViewWidget(QGraphicsView):
     def clear_detection_overlay(self):
         """검출 결과 오버레이 제거"""
         if self.detection_overlay_item:
-            self.scene.removeItem(self.detection_overlay_item)
+            try:
+                self.scene.removeItem(self.detection_overlay_item)
+            except RuntimeError:
+                pass
             self.detection_overlay_item = None
         
         self.detection_cells = []
@@ -703,24 +718,32 @@ class WSIViewWidget(QGraphicsView):
                 
                 # 시작점 근처 체크 (최소 2점 이후, 즉 3번째 클릭부터)
                 # 2점 + 현재 클릭 = 3점이므로 유효한 polygon
-                if self.current_drawing and len(self.current_drawing.points) >= 2:
-                    start_point = self.current_drawing.get_start_point()
-                    if start_point:
-                        # 화면 좌표 기준으로 거리 계산
-                        start_view_pos = self.mapFromScene(start_point)
-                        current_view_pos = event.pos()
-                        view_distance = ((current_view_pos.x() - start_view_pos.x()) ** 2 + 
-                                        (current_view_pos.y() - start_view_pos.y()) ** 2) ** 0.5
-                        
-                        # 시작점 근처(20픽셀)면 자동 완성 (점 추가 없이)
-                        if view_distance < 20:
-                            self.finish_drawing_polygon()
-                            event.accept()
-                            return
+                try:
+                    if self.current_drawing and len(self.current_drawing.points) >= 2:
+                        start_point = self.current_drawing.get_start_point()
+                        if start_point:
+                            # 화면 좌표 기준으로 거리 계산
+                            start_view_pos = self.mapFromScene(start_point)
+                            current_view_pos = event.pos()
+                            view_distance = ((current_view_pos.x() - start_view_pos.x()) ** 2 +
+                                            (current_view_pos.y() - start_view_pos.y()) ** 2) ** 0.5
+
+                            # 시작점 근처(20픽셀)면 자동 완성 (점 추가 없이)
+                            if view_distance < 20:
+                                self.finish_drawing_polygon()
+                                event.accept()
+                                return
+                except RuntimeError:
+                    self.current_drawing = None
+                    return
                 
                 # 점 추가
                 if self.current_drawing:
-                    self.current_drawing.add_point(scene_pos.x(), scene_pos.y())
+                    try:
+                        self.current_drawing.add_point(scene_pos.x(), scene_pos.y())
+                    except RuntimeError:
+                        self.current_drawing = None
+                        return
                 
                 # 드래그 시작 (화면 좌표 저장)
                 self.is_drawing_drag = True
@@ -812,48 +835,52 @@ class WSIViewWidget(QGraphicsView):
         
         # Annotation 그리기 모드
         if self.annotation_mode == AnnotationMode.DRAWING_POLYGON and self.current_drawing:
-            scene_pos = self.mapToScene(event.pos())
-            
-            # 시작점 근처에 있는지 확인 (화면 좌표 기준으로 체크)
-            is_near_start = False
-            if len(self.current_drawing.points) >= 3:
-                start_point = self.current_drawing.get_start_point()
-                if start_point:
-                    # Scene 좌표를 화면 좌표로 변환
-                    start_view_pos = self.mapFromScene(start_point)
-                    current_view_pos = event.pos()
-                    
-                    # 화면 좌표 기준으로 거리 계산 (20픽셀)
-                    view_distance = ((current_view_pos.x() - start_view_pos.x()) ** 2 + 
-                                    (current_view_pos.y() - start_view_pos.y()) ** 2) ** 0.5
-                    is_near_start = view_distance < 20
-            
-            # 시작점 근처면 커서 변경
-            if is_near_start:
-                self.setCursor(Qt.PointingHandCursor)
-            else:
-                self.setCursor(Qt.CrossCursor)
-            
-            if self.is_drawing_drag:
-                # 드래그 중: 화면 좌표 기준으로 일정 거리마다 점 추가
-                if self.last_view_pos:
-                    current_view_pos = event.pos()
-                    # 화면 좌표 기준 거리 계산
-                    view_distance = ((current_view_pos.x() - self.last_view_pos.x()) ** 2 + 
-                                    (current_view_pos.y() - self.last_view_pos.y()) ** 2) ** 0.5
-                    
-                    # 10픽셀 이상 이동 시 새 점 추가
-                    if view_distance > 10:
-                        # 시작점 근찄면 자동 완성
-                        if is_near_start:
-                            self.finish_drawing_polygon()
-                            return
-                        
-                        self.current_drawing.add_point(scene_pos.x(), scene_pos.y())
-                        self.last_view_pos = current_view_pos
-            else:
-                # 드래그 중이 아닐 때: 마우스를 따라다니는 선 업데이트
-                self.current_drawing.update_last_point(scene_pos.x(), scene_pos.y())
+            try:
+                scene_pos = self.mapToScene(event.pos())
+
+                # 시작점 근처에 있는지 확인 (화면 좌표 기준으로 체크)
+                is_near_start = False
+                if len(self.current_drawing.points) >= 3:
+                    start_point = self.current_drawing.get_start_point()
+                    if start_point:
+                        # Scene 좌표를 화면 좌표로 변환
+                        start_view_pos = self.mapFromScene(start_point)
+                        current_view_pos = event.pos()
+
+                        # 화면 좌표 기준으로 거리 계산 (20픽셀)
+                        view_distance = ((current_view_pos.x() - start_view_pos.x()) ** 2 +
+                                        (current_view_pos.y() - start_view_pos.y()) ** 2) ** 0.5
+                        is_near_start = view_distance < 20
+
+                # 시작점 근처면 커서 변경
+                if is_near_start:
+                    self.setCursor(Qt.PointingHandCursor)
+                else:
+                    self.setCursor(Qt.CrossCursor)
+
+                if self.is_drawing_drag:
+                    # 드래그 중: 화면 좌표 기준으로 일정 거리마다 점 추가
+                    if self.last_view_pos:
+                        current_view_pos = event.pos()
+                        # 화면 좌표 기준 거리 계산
+                        view_distance = ((current_view_pos.x() - self.last_view_pos.x()) ** 2 +
+                                        (current_view_pos.y() - self.last_view_pos.y()) ** 2) ** 0.5
+
+                        # 10픽셀 이상 이동 시 새 점 추가
+                        if view_distance > 10:
+                            # 시작점 근찄면 자동 완성
+                            if is_near_start:
+                                self.finish_drawing_polygon()
+                                return
+
+                            self.current_drawing.add_point(scene_pos.x(), scene_pos.y())
+                            self.last_view_pos = current_view_pos
+                else:
+                    # 드래그 중이 아닐 때: 마우스를 따라다니는 선 업데이트
+                    self.current_drawing.update_last_point(scene_pos.x(), scene_pos.y())
+            except RuntimeError:
+                self.current_drawing = None
+                return
             
             event.accept()
             return
@@ -986,8 +1013,11 @@ class WSIViewWidget(QGraphicsView):
         else:
             self.setCursor(Qt.ArrowCursor)
             # 편집 모드 종료
-            for item in self.annotation_items.values():
-                item.stop_editing()
+            for item in list(self.annotation_items.values()):
+                try:
+                    item.stop_editing()
+                except RuntimeError:
+                    pass
     
     def start_drawing_polygon(self):
         """Polygon 그리기 시작"""
@@ -998,44 +1028,50 @@ class WSIViewWidget(QGraphicsView):
     
     def finish_drawing_polygon(self):
         """Polygon 그리기 완료"""
-        if self.current_drawing and self.current_drawing.is_valid():
-            # 시작점 표시 제거
-            self.current_drawing.remove_start_point_indicator()
-            
-            # Annotation 생성
-            self.annotation_counter += 1
-            annotation = Annotation(
-                name=f"ROI_{self.annotation_counter}",
-                type=AnnotationType.POLYGON,
-                coordinates=self.current_drawing.get_coordinates(),
-                color=(self.annotation_color.red(), 
-                       self.annotation_color.green(), 
-                       self.annotation_color.blue())
-            )
-            
-            # AnnotationList에 추가
-            self.annotation_list.add_annotation(annotation)
-            
-            # 그래픽 아이템 생성
-            self.add_annotation_item(annotation)
-            
-            # 방금 생성한 annotation을 선택 상태로 설정 (제어점은 선택 시에만 표시됨)
-            self.select_annotation(annotation)
-            
-            # 시그널 발생
-            self.annotationAdded.emit(annotation)
+        try:
+            if self.current_drawing and self.current_drawing.is_valid():
+                # 시작점 표시 제거
+                self.current_drawing.remove_start_point_indicator()
+
+                # Annotation 생성
+                self.annotation_counter += 1
+                annotation = Annotation(
+                    name=f"ROI_{self.annotation_counter}",
+                    type=AnnotationType.POLYGON,
+                    coordinates=self.current_drawing.get_coordinates(),
+                    color=(self.annotation_color.red(),
+                           self.annotation_color.green(),
+                           self.annotation_color.blue())
+                )
+
+                # AnnotationList에 추가
+                self.annotation_list.add_annotation(annotation)
+
+                # 그래픽 아이템 생성
+                self.add_annotation_item(annotation)
+
+                # 방금 생성한 annotation을 선택 상태로 설정 (제어점은 선택 시에만 표시됨)
+                self.select_annotation(annotation)
+
+                # 시그널 발생
+                self.annotationAdded.emit(annotation)
+        except RuntimeError:
+            self.current_drawing = None
         
         # 그리기 아이템 제거
         if self.current_drawing:
-            self.current_drawing.remove_start_point_indicator()
-            self.scene.removeItem(self.current_drawing)
+            try:
+                self.current_drawing.remove_start_point_indicator()
+                self.scene.removeItem(self.current_drawing)
+            except RuntimeError:
+                pass
             self.current_drawing = None
-        
+
         # 드래그 상태 초기화
         self.is_drawing_drag = False
         self.drag_start_pos = None
         self.last_view_pos = None
-        
+
         # 지속 그리기 모드라면 같은 모드 유지하여 다음 그리기를 바로 시작할 수 있게 함
         if self.keep_drawing and self.annotation_mode == AnnotationMode.DRAWING_POLYGON:
             # 새 그리기 아이템 생성
@@ -1047,10 +1083,13 @@ class WSIViewWidget(QGraphicsView):
     def cancel_drawing(self):
         """그리기 취소"""
         if self.current_drawing:
-            # 시작점 표시 제거 (polygon만 해당)
-            if hasattr(self.current_drawing, 'remove_start_point_indicator'):
-                self.current_drawing.remove_start_point_indicator()
-            self.scene.removeItem(self.current_drawing)
+            try:
+                # 시작점 표시 제거 (polygon만 해당)
+                if hasattr(self.current_drawing, 'remove_start_point_indicator'):
+                    self.current_drawing.remove_start_point_indicator()
+                self.scene.removeItem(self.current_drawing)
+            except RuntimeError:
+                pass
             self.current_drawing = None
         
         # 드래그 상태 초기화
@@ -1073,33 +1112,39 @@ class WSIViewWidget(QGraphicsView):
     
     def finish_drawing_rectangle(self):
         """Rectangle 그리기 완료"""
-        if self.current_drawing and isinstance(self.current_drawing, DrawingRectangleItem) and self.current_drawing.is_valid():
-            # Annotation 생성
-            self.annotation_counter += 1
-            annotation = Annotation(
-                name=f"Rectangle_{self.annotation_counter}",
-                type=AnnotationType.RECTANGLE,
-                coordinates=self.current_drawing.get_coordinates(),
-                color=(self.annotation_color.red(), 
-                       self.annotation_color.green(), 
-                       self.annotation_color.blue())
-            )
-            
-            # AnnotationList에 추가
-            self.annotation_list.add_annotation(annotation)
-            
-            # 그래픽 아이템 생성
-            self.add_annotation_item(annotation)
-            
-            # 방금 생성한 annotation을 선택 상태로 설정 (제어점은 선택 시에만 표시됨)
-            self.select_annotation(annotation)
-            
-            # 시그널 발생
-            self.annotationAdded.emit(annotation)
-        
+        try:
+            if self.current_drawing and isinstance(self.current_drawing, DrawingRectangleItem) and self.current_drawing.is_valid():
+                # Annotation 생성
+                self.annotation_counter += 1
+                annotation = Annotation(
+                    name=f"Rectangle_{self.annotation_counter}",
+                    type=AnnotationType.RECTANGLE,
+                    coordinates=self.current_drawing.get_coordinates(),
+                    color=(self.annotation_color.red(),
+                           self.annotation_color.green(),
+                           self.annotation_color.blue())
+                )
+
+                # AnnotationList에 추가
+                self.annotation_list.add_annotation(annotation)
+
+                # 그래픽 아이템 생성
+                self.add_annotation_item(annotation)
+
+                # 방금 생성한 annotation을 선택 상태로 설정 (제어점은 선택 시에만 표시됨)
+                self.select_annotation(annotation)
+
+                # 시그널 발생
+                self.annotationAdded.emit(annotation)
+        except RuntimeError:
+            self.current_drawing = None
+
         # 그리기 아이템 제거
         if self.current_drawing:
-            self.scene.removeItem(self.current_drawing)
+            try:
+                self.scene.removeItem(self.current_drawing)
+            except RuntimeError:
+                pass
             self.current_drawing = None
         
         # 드래그 상태 초기화
@@ -1178,7 +1223,10 @@ class WSIViewWidget(QGraphicsView):
                 item.stop_editing()
             except Exception:
                 pass
-            self.scene.removeItem(item)
+            try:
+                self.scene.removeItem(item)
+            except RuntimeError:
+                pass
             del self.annotation_items[annotation.id]
         
         # AnnotationList에서 제거
@@ -1228,7 +1276,10 @@ class WSIViewWidget(QGraphicsView):
                 item.stop_editing()
             except Exception:
                 pass
-            self.scene.removeItem(item)
+            try:
+                self.scene.removeItem(item)
+            except RuntimeError:
+                pass
         self.annotation_items.clear()
         
         # AnnotationList 초기화
