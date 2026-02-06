@@ -106,10 +106,13 @@ class AnnotationGraphicsItem(QGraphicsPolygonItem):
     def stop_editing(self):
         """편집 모드 종료 - 제어점 숨김"""
         self.is_editing = False
-        
+
         for cp in self.control_points:
-            if cp.scene():
-                cp.scene().removeItem(cp)
+            try:
+                if cp.scene():
+                    cp.scene().removeItem(cp)
+            except RuntimeError:
+                pass
         self.control_points.clear()
     
     def update_coordinate(self, index: int, x: float, y: float):
