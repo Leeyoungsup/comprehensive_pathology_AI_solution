@@ -5,8 +5,6 @@ WSI segmentation과 cell detection을 조합하여
 Epithelial cell을 조직 영역별로 재분류하는 서비스
 """
 
-import torch
-
 
 class EpithelialClassificationService:
     """
@@ -94,6 +92,7 @@ class EpithelialClassificationService:
             self._model_loaded = False
 
         # Force garbage collection
+        import torch
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
@@ -105,6 +104,7 @@ class EpithelialClassificationService:
         Returns:
             dict: Model information (loaded status, device, etc.)
         """
+        import torch
         info = {
             'loaded': self._model_loaded,
             'device': 'cuda' if torch.cuda.is_available() else 'cpu',
