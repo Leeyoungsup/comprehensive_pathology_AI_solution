@@ -861,24 +861,26 @@ class DetectionOverlay:
     각 세포를 개별 포인트로 그리는 대신 마스크 이미지를 사용하여 리소스 절약
     """
     
-    def __init__(self, image_width, image_height, downsample=64):
+    def __init__(self, image_width, image_height, downsample=64, color_map=None):
         """
         Args:
             image_width: 원본 이미지 너비 (레벨 0)
             image_height: 원본 이미지 높이 (레벨 0)
             downsample: 다운샘플 비율 (기본 64배 축소)
+            color_map: 커스텀 색상맵 (None이면 CLASS_COLORS_RGB 사용)
         """
         self.image_width = image_width
         self.image_height = image_height
         self.downsample = downsample
-        
+        self.color_map = color_map
+
         # 마스크 크기 계산
         self.mask_width = image_width // downsample
         self.mask_height = image_height // downsample
-        
+
         # RGBA 마스크 이미지 (투명 배경)
         self.mask = np.zeros((self.mask_height, self.mask_width, 4), dtype=np.uint8)
-        
+
         # 클래스별 가시성
         self.class_visibility = {cls_id: True for cls_id in CLASS_NAMES.keys()}
         
@@ -911,8 +913,9 @@ class DetectionOverlay:
             # 범위 체크
             if 0 <= mask_x < self.mask_width and 0 <= mask_y < self.mask_height:
                 # 색상 가져오기
-                color = CLASS_COLORS_RGB.get(cls_id, (255, 255, 255))
-                
+                active_colors = self.color_map if self.color_map else CLASS_COLORS_RGB
+                color = active_colors.get(cls_id, (255, 255, 255))
+
                 # 원 그리기 (RGBA) - 테두리만 (속이 빈 원)
                 cv2.circle(self.mask, (mask_x, mask_y), self.point_radius,
                           (color[0], color[1], color[2], alpha), 3)  # 3 = 선 두께
@@ -1007,18 +1010,22 @@ class TiledDetectionOverlay:
     SpatialGrid를 이용한 공간 인덱싱으로 대량 셀에서도 빠른 렌더링
     """
 
-    def __init__(self, tile_size=512):
+    def __init__(self, tile_size=512, color_map=None):
         self.tile_size = tile_size
         self.cells = []
         self.spatial_grid = SpatialGrid(grid_size=2048)
         self.class_visibility = {cls_id: True for cls_id in CLASS_NAMES.keys()}
+        self.color_map = color_map  # 커스텀 색상맵 (None이면 CLASS_COLORS_RGB 사용)
         self.point_radius = 16
         self.alpha = 180
 
-    def set_cells(self, cells):
+    def set_cells(self, cells, color_map=None):
         """검출된 세포 리스트 설정 및 공간 인덱스 구축"""
         self.cells = cells
         self.spatial_grid.build(cells)
+        if color_map is not None:
+            self.color_map = color_map
+            self.class_visibility = {cls_id: True for cls_id in color_map.keys()}
 
     def clear_cells(self):
         """세포 리스트 초기화"""
@@ -1064,7 +1071,8 @@ class TiledDetectionOverlay:
             mask_y = int((cell_y - tile_y) / downsample)
 
             if 0 <= mask_x < mask_width and 0 <= mask_y < mask_height:
-                color = CLASS_COLORS_RGB.get(cls_id, (255, 255, 255))
+                active_colors = self.color_map if self.color_map else CLASS_COLORS_RGB
+                color = active_colors.get(cls_id, (255, 255, 255))
                 cv2.circle(mask, (mask_x, mask_y), adjusted_radius,
                           (color[0], color[1], color[2], self.alpha), line_thickness)
                 cell_count += 1
