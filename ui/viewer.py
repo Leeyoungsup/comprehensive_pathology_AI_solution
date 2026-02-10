@@ -54,6 +54,11 @@ class PathologyViewer(QMainWindow):
         self.tissue_classification = None
         self.is_detection_running = False  # 검출 진행 상태
 
+        # PD-L1 검출 모듈
+        self.pdl1_detection = None
+        self.is_pdl1_running = False
+        self.current_pdl1_result = None
+
         # 클래스별 검출 결과 캐시
         self.current_detection_result = None
         
@@ -179,6 +184,7 @@ class PathologyViewer(QMainWindow):
         self.btnClassification.clicked.connect(self.run_classification)
         self.btnHneCellDetection.clicked.connect(self.run_detection)
         self.btnTumorSegmentation.clicked.connect(self.run_tumor_segmentation)
+        self.btnPDL1Detection.clicked.connect(self.run_pdl1_detection)
 
         # 조직 타입 Radio button
         self.radioBreast.toggled.connect(self.on_tissue_type_changed)
@@ -544,6 +550,198 @@ class PathologyViewer(QMainWindow):
             self.btnTumorSegmentation.setText("Tumor Segmentation")
             self.is_segmentation_running = False
     
+    def run_pdl1_detection(self):
+        """PD-L1 Detection 실행 또는 중단"""
+        if self.is_pdl1_running:
+            self.btnPDL1Detection.setText("PD-L1 Detection")
+            self.is_pdl1_running = False
+            if self.pdl1_detection:
+                self.pdl1_detection.cancel()
+            self.statusbar.showMessage("PD-L1 검출이 중단되었습니다.")
+            return
+
+        if not self.current_image_path:
+            self.statusbar.showMessage("먼저 이미지를 로드해주세요.")
+            return
+
+        # 기존 결과 제거
+        self.wsi_viewer.clear_segmentation_overlay()
+        self.current_segmentation_result = None
+        self.current_detection_result = None
+        self.wsi_viewer.clear_detection_results()
+        self.resultList.clear()
+
+        # 버튼 상태 변경
+        self.btnPDL1Detection.setText("⏸ 중단")
+        self.is_pdl1_running = True
+
+        self.progressBar.setValue(0)
+        self.progressLabel.setText("PD-L1 초기화 중...")
+
+        from PyQt5.QtWidgets import QApplication
+        QApplication.processEvents()
+
+        # PD-L1 모듈 초기화
+        if self.pdl1_detection is None:
+            from ai.pdl1_detection import PDL1Detection
+            self.pdl1_detection = PDL1Detection()
+            self.pdl1_detection.detectionComplete.connect(self.on_pdl1_detection_complete)
+            self.pdl1_detection.detectionProgress.connect(self.on_ai_progress)
+            self.pdl1_detection.detectionStatus.connect(self.on_detection_status)
+            self.pdl1_detection.detectionError.connect(self.on_ai_error)
+
+        # 모델 로드
+        if not self.pdl1_detection.is_model_loaded():
+            self.statusbar.showMessage("PD-L1 모델 로딩 중...")
+            QApplication.processEvents()
+            if not self.pdl1_detection.load_model():
+                self.statusbar.showMessage("PD-L1 모델 로드 실패")
+                QMessageBox.critical(self, "오류", "PD-L1 모델 로드 실패")
+                self.btnPDL1Detection.setText("PD-L1 Detection")
+                self.is_pdl1_running = False
+                return
+
+        self.statusbar.showMessage("PD-L1 검출 실행 중...")
+
+        # ROI 가져오기
+        roi_polygons = None
+        if self.wsi_viewer.annotation_list.annotations:
+            roi_polygons = self.wsi_viewer.annotation_list.annotations
+
+        try:
+            import openslide
+            slide = openslide.OpenSlide(self.current_image_path)
+            self.pdl1_detection.run_detection(slide, roi_polygons)
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"PD-L1 검출 실패:\n{str(e)}")
+            self.btnPDL1Detection.setText("PD-L1 Detection")
+            self.is_pdl1_running = False
+
+    def on_pdl1_detection_complete(self, result):
+        """PD-L1 검출 완료"""
+        self.is_pdl1_running = False
+        self.btnPDL1Detection.setText("PD-L1 Detection")
+
+        num_cells = result.get('num_cells', 0)
+        tps = result.get('tps', 0.0)
+        class_counts = result.get('class_counts', {})
+
+        # 결과 캐시
+        self.current_pdl1_result = result
+        # detection result로도 저장 (오버레이 표시용)
+        self.current_detection_result = result
+
+        self.progressBar.setValue(100)
+        self.progressLabel.setText("PD-L1 검출 완료")
+
+        # 오버레이 표시 (PD-L1 클래스 색상 사용)
+        from ai.pdl1_detection import PDL1_CLASS_COLORS_RGB
+        cells = result.get('cells', [])
+        if cells:
+            self.wsi_viewer.set_detection_results(cells, color_map=PDL1_CLASS_COLORS_RGB)
+
+        # 결과 리스트 업데이트 (PD-L1 전용)
+        self._update_pdl1_result_list(result)
+
+        # GPU 해제
+        self.pdl1_detection.unload_model()
+
+        # 자동저장
+        if self.chkAutoSave.isChecked():
+            self._auto_save_pdl1_result()
+
+        tps_category = self._get_tps_category(tps)
+        self.statusbar.showMessage(f"PD-L1 검출 완료 - TPS: {tps:.1f}% ({tps_category})")
+
+    def _get_tps_category(self, tps):
+        """TPS 값에 따른 판정 카테고리"""
+        if tps < 1:
+            return "Negative (<1%)"
+        elif tps < 50:
+            return f"Low positive (1-49%)"
+        else:
+            return f"High positive (≥50%)"
+
+    def _update_pdl1_result_list(self, result):
+        """PD-L1 결과를 리스트에 표시"""
+        from PyQt5.QtWidgets import QListWidgetItem
+        from PyQt5.QtCore import Qt
+        from PyQt5.QtGui import QPixmap, QColor, QIcon
+        from ai.pdl1_detection import PDL1_CLASS_NAMES, PDL1_CLASS_COLORS_RGB
+
+        self.resultList.blockSignals(True)
+        self.resultList.clear()
+
+        num_cells = result.get('num_cells', 0)
+        tps = result.get('tps', 0.0)
+        class_counts = result.get('class_counts', {})
+
+        # TPS 헤더
+        tps_item = QListWidgetItem(f"TPS: {tps:.1f}% ({self._get_tps_category(tps)})")
+        tps_item.setData(Qt.UserRole, None)
+        font = tps_item.font()
+        font.setBold(True)
+        tps_item.setFont(font)
+        self.resultList.addItem(tps_item)
+
+        # 총 세포 수
+        total_item = QListWidgetItem(f"전체: {num_cells:,}개")
+        total_item.setData(Qt.UserRole, None)
+        total_item.setFlags(total_item.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+        total_item.setCheckState(Qt.Checked)
+        total_item.setToolTip("전체 클래스 표시/숨김")
+        self.resultList.addItem(total_item)
+
+        # 클래스별 카운트
+        for cls_id, cls_name in PDL1_CLASS_NAMES.items():
+            count = class_counts.get(cls_name, 0)
+            item = QListWidgetItem(f"  {cls_name}: {count:,}개")
+            item.setData(Qt.UserRole, cls_id)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+            item.setCheckState(Qt.Checked)
+
+            # 색상 아이콘
+            color = PDL1_CLASS_COLORS_RGB.get(cls_id, (255, 255, 255))
+            pixmap = QPixmap(16, 16)
+            pixmap.fill(QColor(color[0], color[1], color[2]))
+            item.setIcon(QIcon(pixmap))
+
+            self.resultList.addItem(item)
+
+        self.resultList.blockSignals(False)
+
+    def _auto_save_pdl1_result(self):
+        """PD-L1 결과를 WSI 파일 위치에 자동 저장"""
+        if not self.current_pdl1_result or not self.current_image_path:
+            return
+        try:
+            import json
+            from datetime import datetime
+
+            wsi_dir = Path(self.current_image_path).parent
+            wsi_stem = Path(self.current_image_path).stem
+            save_path = wsi_dir / f"{wsi_stem}_pdl1_result.json"
+
+            result_with_meta = {
+                "metadata": {
+                    "model_type": "pdl1_detection",
+                    "model_name": "YOLOv11x_PDL1",
+                    "version": "1.0",
+                    "timestamp": datetime.now().isoformat(),
+                    "image_path": str(self.current_image_path),
+                    "image_name": Path(self.current_image_path).name
+                },
+                "result": self.current_pdl1_result
+            }
+
+            with open(str(save_path), 'w', encoding='utf-8') as f:
+                json.dump(result_with_meta, f, indent=2, ensure_ascii=False)
+
+            self.statusbar.showMessage(f"자동저장 완료: {save_path.name}")
+            print(f"PD-L1 자동저장 완료: {save_path}")
+        except Exception as e:
+            print(f"PD-L1 자동저장 실패: {e}")
+
     def update_segmentation_result_list(self):
         """Segmentation 결과를 리스트에 표시"""
         if not self.current_segmentation_result:
