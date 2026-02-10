@@ -579,31 +579,66 @@ class DetectionWorker(QThread):
             epithelial_count = sum(1 for cell in cells if cell.get('cls_id') == 1)
             print(f"Epithelial cells to reclassify: {epithelial_count}")
 
-            reclassified_count = 0
-            class_distribution = {6: 0, 7: 0}  # Tumor(Invasive), Benign
+            # 1단계: Epithelial 세포별 seg_class 수집
+            epi_indices = []   # cells 리스트 내 인덱스
+            epi_coords = []    # [[x, y], ...]
+            epi_seg_classes = []  # 각 세포의 원본 seg_class
 
-            for cell in cells:
+            for i, cell in enumerate(cells):
                 if cell.get('cls_id') == 1:  # Epithelial
-                    # Level 0 좌표 → Segmentation mask 좌표 (ROI offset 고려)
                     cell_x_in_region = cell['x'] - region_offset_x
                     cell_y_in_region = cell['y'] - region_offset_y
-                    
+
                     mask_x = int(cell_x_in_region * scale_factor)
                     mask_y = int(cell_y_in_region * scale_factor)
 
-                    # Boundary check
                     if 0 <= mask_x < prediction_mask.shape[1] and 0 <= mask_y < prediction_mask.shape[0]:
-                        seg_class = prediction_mask[mask_y, mask_x]
+                        seg_class = int(prediction_mask[mask_y, mask_x])
+                    else:
+                        seg_class = 0  # Out of bounds → Background
 
-                        # 재분류
-                        if seg_class == 2:  # Non_Tumor 영역
-                            cell['cls_id'] = 7  # benign epithelial
-                            class_distribution[7] += 1
-                        else:  # Tumor (3), Stroma (1), Background (0) → 모두 침습성으로 간주
-                            cell['cls_id'] = 6  # tumor epithelial(Invasive)
-                            class_distribution[6] += 1
+                    epi_indices.append(i)
+                    epi_coords.append([cell['x'], cell['y']])
+                    epi_seg_classes.append(seg_class)
 
-                        reclassified_count += 1
+            # 2단계: DBSCAN 클러스터링 (관 단위 그룹핑)
+            if len(epi_coords) > 0:
+                from sklearn.cluster import DBSCAN
+                from collections import Counter
+
+                coords_arr = np.array(epi_coords)
+                clustering = DBSCAN(eps=100, min_samples=3).fit(coords_arr)
+                labels = clustering.labels_
+                n_clusters = len(set(labels) - {-1})
+                print(f"DBSCAN 클러스터링: {n_clusters}개 클러스터, {sum(labels == -1)}개 노이즈")
+
+                # 3단계: 클러스터별 Tumor 존재 판정 (10% 이상이면 Tumor 관)
+                TUMOR_RATIO_THRESHOLD = 0.1
+                for cluster_id in set(labels):
+                    if cluster_id == -1:
+                        continue  # 노이즈 세포는 개별 판정 유지
+                    cluster_mask = (labels == cluster_id)
+                    cluster_seg = [epi_seg_classes[j] for j in range(len(labels)) if cluster_mask[j]]
+                    tumor_count = sum(1 for s in cluster_seg if s == 3)  # Tumor 픽셀
+                    tumor_ratio = tumor_count / len(cluster_seg)
+                    # Tumor 비율이 10% 이상이면 관 전체를 Tumor로 판정
+                    assign_class = 3 if tumor_ratio >= TUMOR_RATIO_THRESHOLD else 2
+                    for j in range(len(labels)):
+                        if cluster_mask[j]:
+                            epi_seg_classes[j] = assign_class
+
+            # 4단계: 최종 cls_id 할당
+            reclassified_count = 0
+            class_distribution = {6: 0, 7: 0}
+
+            for k, idx in enumerate(epi_indices):
+                if epi_seg_classes[k] == 2:  # Non_Tumor 영역
+                    cells[idx]['cls_id'] = 7  # benign epithelial
+                    class_distribution[7] += 1
+                else:  # Tumor (3), Stroma (1), Background (0)
+                    cells[idx]['cls_id'] = 6  # tumor epithelial(Invasive)
+                    class_distribution[6] += 1
+                reclassified_count += 1
 
             print(f"재분류 완료: {reclassified_count}개")
             print(f"  - tumor epithelial(Invasive): {class_distribution[6]}")
