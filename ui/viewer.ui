@@ -164,6 +164,25 @@
               </attribute>
               <layout class="QVBoxLayout" name="verticalLayout_pdl1">
                <item>
+                <widget class="QGroupBox" name="pdl1TissueTypeGroup">
+                 <property name="title">
+                  <string>조직 타입</string>
+                 </property>
+                 <layout class="QVBoxLayout" name="verticalLayout_pdl1_tissue">
+                  <item>
+                   <widget class="QRadioButton" name="radioLung">
+                    <property name="text">
+                     <string>Lung</string>
+                    </property>
+                    <property name="checked">
+                     <bool>true</bool>
+                    </property>
+                   </widget>
+                  </item>
+                 </layout>
+                </widget>
+               </item>
+               <item>
                 <widget class="QPushButton" name="btnPDL1Detection">
                  <property name="text">
                   <string>PD-L1 Detection</string>
