@@ -466,52 +466,82 @@ class EpithelialClassificationWorker(QThread):
 
     def _reclassify_epithelial_cells(self, cells, prediction_mask, wsi_mpp, output_mpp):
         """
-        Reclassify epithelial cells based on segmentation mask
+        Reclassify epithelial cells based on segmentation mask + DBSCAN clustering
 
-        Coordinate transformation:
-        - Cells have (x, y) in level 0 coordinates
-        - Mask is at output_mpp resolution
-        - Transform: level0 → mask coordinates
+        DBSCAN으로 인접 epithelial 세포를 관(gland) 단위로 묶은 뒤,
+        클러스터 내 segmentation 결과의 다수결로 통일하여 관 내 일관성 보장.
         """
-        reclassified = []
-        scale_factor = wsi_mpp / output_mpp  # e.g., 0.25 / 8.0 = 0.03125
+        import numpy as np
+        from sklearn.cluster import DBSCAN
+        from collections import Counter
 
+        scale_factor = wsi_mpp / output_mpp
         mask_h, mask_w = prediction_mask.shape
 
-        epithelial_count = 0
+        # 1단계: 모든 셀 복사 + epithelial 세포별 seg_class 수집
+        reclassified = []
+        epi_indices = []     # reclassified 리스트 내 인덱스
+        epi_coords = []      # [[x, y], ...]
+        epi_seg_classes = []  # 각 세포의 원본 seg_class
+
         for cell in cells:
             cell_copy = cell.copy()
             cls_id = cell['cls_id']
 
-            # Only reclassify Epithelial cells (cls_id == 1)
-            if cls_id == 1:
-                epithelial_count += 1
-                # Transform to mask coordinates
+            if cls_id == 1:  # Epithelial
                 mask_x = int(cell['x'] * scale_factor)
                 mask_y = int(cell['y'] * scale_factor)
 
-                # Boundary check
                 if 0 <= mask_x < mask_w and 0 <= mask_y < mask_h:
-                    seg_class = prediction_mask[mask_y, mask_x]
-
-                    # Reclassify based on segmentation result
-                    if seg_class == 3:  # Tumor region
-                        cell_copy['cls_id'] = 6  # Tumor-epithelial
-                        cell_copy['seg_region'] = 'Tumor'
-                    elif seg_class == 2:  # Non_Tumor region
-                        cell_copy['cls_id'] = 7  # NT-epithelial
-                        cell_copy['seg_region'] = 'Non_Tumor'
-                    else:  # Stroma (1) or Background (0)
-                        cell_copy['cls_id'] = 8  # Stroma-epithelial
-                        cell_copy['seg_region'] = 'Stroma/Background'
+                    seg_class = int(prediction_mask[mask_y, mask_x])
                 else:
-                    # Out of bounds - classify as Stroma-epithelial
-                    cell_copy['cls_id'] = 8
-                    cell_copy['seg_region'] = 'OutOfBounds'
+                    seg_class = 0  # Out of bounds → Background
+
+                epi_indices.append(len(reclassified))
+                epi_coords.append([cell['x'], cell['y']])
+                epi_seg_classes.append(seg_class)
 
             reclassified.append(cell_copy)
 
-        print(f"Reclassified {epithelial_count} Epithelial cells")
+        epithelial_count = len(epi_indices)
+        print(f"Epithelial cells to reclassify: {epithelial_count}")
+
+        # 2단계: DBSCAN 클러스터링 (관 단위 그룹핑)
+        if epithelial_count > 0:
+            coords_arr = np.array(epi_coords)
+            clustering = DBSCAN(eps=100, min_samples=3).fit(coords_arr)
+            labels = clustering.labels_
+            n_clusters = len(set(labels) - {-1})
+            print(f"DBSCAN clustering: {n_clusters} clusters, {sum(labels == -1)} noise points")
+
+            # 3단계: 클러스터별 Tumor 존재 판정 (10% 이상이면 Tumor 관)
+            TUMOR_RATIO_THRESHOLD = 0.1
+            for cluster_id in set(labels):
+                if cluster_id == -1:
+                    continue
+                cluster_mask = (labels == cluster_id)
+                cluster_seg = [epi_seg_classes[j] for j in range(len(labels)) if cluster_mask[j]]
+                tumor_count = sum(1 for s in cluster_seg if s == 3)  # Tumor 픽셀
+                tumor_ratio = tumor_count / len(cluster_seg)
+                assign_class = 3 if tumor_ratio >= TUMOR_RATIO_THRESHOLD else 2
+                for j in range(len(labels)):
+                    if cluster_mask[j]:
+                        epi_seg_classes[j] = assign_class
+
+        # 4단계: 최종 cls_id 할당
+        for k, idx in enumerate(epi_indices):
+            seg_class = epi_seg_classes[k]
+            if seg_class == 3:  # Tumor region
+                reclassified[idx]['cls_id'] = 6
+                reclassified[idx]['seg_region'] = 'Tumor'
+            elif seg_class == 2:  # Non_Tumor region
+                reclassified[idx]['cls_id'] = 7
+                reclassified[idx]['seg_region'] = 'Non_Tumor'
+            else:  # Stroma (1) or Background (0)
+                reclassified[idx]['cls_id'] = 8
+                reclassified[idx]['seg_region'] = 'Stroma/Background'
+
+        print(f"Reclassified {epithelial_count} Epithelial cells (DBSCAN clustering applied)")
         return reclassified
 
     def _calculate_statistics(self, cells):
