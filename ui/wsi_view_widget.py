@@ -388,23 +388,24 @@ class WSIViewWidget(QGraphicsView):
     
     # ============== 검출 결과 오버레이 ==============
     
-    def set_detection_results(self, cells):
+    def set_detection_results(self, cells, color_map=None):
         """
         검출 결과 설정 및 오버레이 표시
-        
+
         Args:
             cells: 검출된 세포 리스트 [{'x': x, 'y': y, 'cls_id': cls_id, 'confidence': conf}, ...]
+            color_map: 커스텀 색상맵 (None이면 기본 CLASS_COLORS_RGB 사용)
         """
         from ai.detection import TiledDetectionOverlay
-        
+
         self.detection_cells = cells
-        
+
         # TiledDetectionOverlay 초기화
         if self.detection_overlay is None:
-            self.detection_overlay = TiledDetectionOverlay()
-        
-        self.detection_overlay.set_cells(cells)
-        
+            self.detection_overlay = TiledDetectionOverlay(color_map=color_map)
+
+        self.detection_overlay.set_cells(cells, color_map=color_map)
+
         # 오버레이 업데이트
         self.schedule_overlay_update()
     
