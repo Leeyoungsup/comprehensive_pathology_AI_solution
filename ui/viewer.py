@@ -114,9 +114,14 @@ class PathologyViewer(QMainWindow):
     
     def setup_ui_additions(self):
         """추가 UI 요소 설정 (프로그래밍 방식으로 버튼 추가 등)"""
-        # Cell Detection이 자동으로 Epithelial 재분류를 수행하므로
-        # 별도의 재분류 버튼은 필요하지 않음
-        pass
+        from PyQt5.QtWidgets import QCheckBox
+
+        # 자동저장 체크박스 추가 (AI 분석 그룹 하단)
+        self.chkAutoSave = QCheckBox("결과 자동저장")
+        self.chkAutoSave.setChecked(False)
+        self.chkAutoSave.setToolTip("체크 시 AI 분석 결과를 WSI 파일 위치에 자동 저장합니다")
+        # AI 분석 그룹(groupBox) 레이아웃에 추가
+        self.groupBox.layout().addWidget(self.chkAutoSave)
 
     def setup_ai_modules(self):
         """
@@ -239,6 +244,7 @@ class PathologyViewer(QMainWindow):
             self.progressBar.setValue(0)
             self.progressLabel.setText("AI Progress")
 
+            self.setWindowTitle(f"병리 이미지 분석 시스템 - [{file_name}]")
             self.statusbar.showMessage(f"이미지 로드 완료: {file_name}")
         else:
             self.statusbar.showMessage("이미지 로드 실패")
@@ -486,11 +492,6 @@ class PathologyViewer(QMainWindow):
                 
                 roi_bounds = (int(min_x), int(min_y), int(max_x), int(max_y))
 
-            # ROI 좌표 수집 완료 후 annotation 시각적 제거
-            if roi_polygons:
-                self.wsi_viewer.clear_annotations()
-                self.annotation_panel.clear_annotations()
-
             # Segmentation 실행
             prediction_mask, metadata = seg_model.predict_wsi(
                 slide,
@@ -519,7 +520,11 @@ class PathologyViewer(QMainWindow):
             self.progressBar.setValue(100)
             self.progressLabel.setText("Segmentation 완료")
             self.statusbar.showMessage("Tumor Segmentation 완료")
-            
+
+            # 자동저장
+            if self.chkAutoSave.isChecked():
+                self._auto_save_segmentation_result()
+
             # GPU 메모리 정리
             del seg_model
             import torch
@@ -698,6 +703,10 @@ class PathologyViewer(QMainWindow):
         # GPU 리소스 해제
         self.detection_service.unload_model()
         
+        # 자동저장
+        if self.chkAutoSave.isChecked():
+            self._auto_save_detection_result()
+
         # 버튼 상태 복원
         self.btnHneCellDetection.setText("(통합)Cell Detection")
         self.is_detection_running = False
@@ -866,6 +875,104 @@ class PathologyViewer(QMainWindow):
 
             self.statusbar.showMessage("분석 결과가 지워졌습니다")
     
+    def _auto_save_detection_result(self):
+        """Detection 결과를 WSI 파일 위치에 자동 저장"""
+        if not self.current_detection_result or not self.current_image_path:
+            return
+        try:
+            import json
+            from datetime import datetime
+
+            wsi_dir = Path(self.current_image_path).parent
+            wsi_stem = Path(self.current_image_path).stem
+            save_path = wsi_dir / f"{wsi_stem}_detection_result.json"
+
+            result_with_meta = {
+                "metadata": {
+                    "model_type": "detection",
+                    "model_name": "YOLOv11m",
+                    "version": "1.0",
+                    "timestamp": datetime.now().isoformat(),
+                    "image_path": str(self.current_image_path),
+                    "image_name": Path(self.current_image_path).name
+                },
+                "result": self.current_detection_result
+            }
+
+            with open(str(save_path), 'w', encoding='utf-8') as f:
+                json.dump(result_with_meta, f, indent=2, ensure_ascii=False)
+
+            self.statusbar.showMessage(f"자동저장 완료: {save_path.name}")
+            print(f"자동저장 완료: {save_path}")
+        except Exception as e:
+            print(f"자동저장 실패: {e}")
+            self.statusbar.showMessage(f"자동저장 실패: {e}")
+
+    def _auto_save_segmentation_result(self):
+        """Segmentation 결과를 WSI 파일 위치에 자동 저장"""
+        if not self.current_segmentation_result or not self.current_image_path:
+            return
+        try:
+            import json
+            from datetime import datetime
+            from utils.coordinate_utils import mask_to_polygons
+
+            wsi_dir = Path(self.current_image_path).parent
+            wsi_stem = Path(self.current_image_path).stem
+            save_path = wsi_dir / f"{wsi_stem}_segmentation_result.json"
+
+            seg_result = self.current_segmentation_result
+            mask = seg_result['mask']
+            metadata = seg_result['metadata']
+            class_names_raw = seg_result['class_names']
+
+            if isinstance(class_names_raw, dict):
+                class_names_list = [class_names_raw.get(i, f"Class_{i}") for i in range(max(class_names_raw.keys()) + 1)]
+            else:
+                class_names_list = list(class_names_raw)
+
+            class_polygons = mask_to_polygons(
+                mask, metadata, class_names_list,
+                simplify_epsilon=2.0, min_area=10
+            )
+
+            result_with_meta = {
+                "metadata": {
+                    "model_type": "segmentation",
+                    "model_name": "HnE_Segmentation",
+                    "version": "1.0",
+                    "timestamp": datetime.now().isoformat(),
+                    "image_path": str(self.current_image_path),
+                    "image_name": Path(self.current_image_path).name,
+                    "tissue_type": self.current_tissue_type
+                },
+                "result": {
+                    "segmentation_metadata": {
+                        "wsi_dimensions": list(metadata.get('wsi_dimensions', [0, 0])),
+                        "wsi_mpp": metadata.get('wsi_mpp', 0.25),
+                        "model_mpp": metadata.get('model_mpp', 1.0),
+                        "output_mpp": metadata.get('output_mpp', 4.0),
+                        "mask_shape": list(metadata.get('mask_shape', mask.shape)),
+                        "class_names": class_names_list,
+                        "region_offset": list(metadata.get('region_offset', (0, 0)))
+                    },
+                    "roi_bounds": list(seg_result['roi_bounds']) if seg_result.get('roi_bounds') else None,
+                    "roi_polygons": seg_result.get('roi_polygons'),
+                    "class_polygons": class_polygons,
+                    "polygon_coordinate_system": "wsi_level0",
+                    "simplification_epsilon": 2.0
+                }
+            }
+
+            with open(str(save_path), 'w', encoding='utf-8') as f:
+                json.dump(result_with_meta, f, indent=2, ensure_ascii=False)
+
+            self.statusbar.showMessage(f"자동저장 완료: {save_path.name}")
+            print(f"자동저장 완료: {save_path}")
+        except Exception as e:
+            print(f"Segmentation 자동저장 실패: {e}")
+            self.statusbar.showMessage(f"자동저장 실패: {e}")
+
     def save_detection_results(self):
         """AI 결과를 JSON 파일로 저장 (Detection 또는 Segmentation)"""
         # Segmentation 결과가 있으면 Segmentation 저장으로 분기
@@ -1111,12 +1218,10 @@ class PathologyViewer(QMainWindow):
             'roi_polygons': roi_polygons
         }
 
-        # 기존 오버레이 및 annotation 제거
+        # 기존 오버레이 제거
         self.current_detection_result = None
         self.wsi_viewer.clear_detection_results()
         self.wsi_viewer.clear_segmentation_overlay()
-        self.wsi_viewer.clear_annotations()
-        self.annotation_panel.clear_annotations()
 
         # 오버레이 표시
         self.wsi_viewer.set_segmentation_overlay(
@@ -1404,6 +1509,10 @@ class PathologyViewer(QMainWindow):
         # Update UI - reuse existing detection result display
         self.wsi_viewer.set_detection_results(result['cells'])
         self.update_result_list(result)
+
+        # 자동저장
+        if self.chkAutoSave.isChecked():
+            self._auto_save_detection_result()
 
         # Show detailed message
         msg = self.format_epithelial_classification_result(result)
