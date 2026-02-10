@@ -33,7 +33,7 @@ def wh2xy(x):
     return y
 
 
-def non_max_suppression(outputs, confidence_threshold=0.001, iou_threshold=0.35, class_thresholds=None):
+def non_max_suppression(outputs, confidence_threshold=0.201, iou_threshold=0.6, class_thresholds=None):
     """PD-L1용 클래스별 NMS (3 classes)"""
     max_wh = 7680
     bs = outputs.shape[0]
@@ -83,17 +83,23 @@ def non_max_suppression(outputs, confidence_threshold=0.001, iou_threshold=0.35,
 PDL1_CLASS_NAMES = {
     0: "PD-L1 Negative Tumor",
     1: "PD-L1 Positive Tumor",
+}
+
+# 내부 카운팅용 (Non-Tumor 포함)
+_PDL1_ALL_CLASS_NAMES = {
+    0: "PD-L1 Negative Tumor",
+    1: "PD-L1 Positive Tumor",
     2: "Non-Tumor Cell",
 }
 
 PDL1_CLASS_COLORS = {
-    0: "#FF0000",  # Negative - 빨간색
-    1: "#0000FF",  # Positive - 파란색
+    0: "#0000FF",  # Negative - 파란색
+    1: "#FF0000",  # Positive - 빨간색
 }
 
 PDL1_CLASS_COLORS_RGB = {
-    0: (255, 0, 0),    # Negative - 빨간색
-    1: (0, 0, 255),    # Positive - 파란색
+    0: (0, 0, 255),    # Negative - 파란색
+    1: (255, 0, 0),    # Positive - 빨간색
 }
 
 
@@ -163,7 +169,7 @@ class PDL1DetectionWorker(QThread):
             self.status.emit(f"조직 마스크 생성 완료 ({mask_time:.2f}s)")
             self.progress.emit(5)
 
-            total_patches = (width // self.image_size) * (height // self.image_size)
+            total_patches = (width // self.original_size) * (height // self.original_size)
             processed_patches = 0
             detected_cells_count = 0
             tissue_patches = 0
@@ -174,26 +180,26 @@ class PDL1DetectionWorker(QThread):
 
             self.status.emit(f"PD-L1 세포 검출 중... (총 {total_patches}개 패치)")
 
-            for patch_row in range(width // self.image_size - 1):
+            for patch_row in range(width // self.original_size - 1):
                 if self.is_cancelled:
                     break
-                for patch_col in range(height // self.image_size - 1):
+                for patch_col in range(height // self.original_size - 1):
                     if self.is_cancelled:
                         break
 
                     # 마스크 체크 (조직 영역인지)
-                    mask_x = (patch_row * self.image_size) // 64
-                    mask_y = (patch_col * self.image_size) // 64
-                    mask_region = thumb_mask[mask_y:mask_y + self.image_size // 64,
-                                            mask_x:mask_x + self.image_size // 64]
+                    mask_x = (patch_row * self.original_size) // 64
+                    mask_y = (patch_col * self.original_size) // 64
+                    mask_region = thumb_mask[mask_y:mask_y + self.original_size // 64,
+                                            mask_x:mask_x + self.original_size // 64]
 
                     if np.sum(mask_region) == 0:
                         processed_patches += 1
                         continue
 
                     tissue_patches += 1
-                    patch_x = patch_row * self.image_size
-                    patch_y = patch_col * self.image_size
+                    patch_x = patch_row * self.original_size
+                    patch_y = patch_col * self.original_size
 
                     # ROI 체크
                     if self.roi_polygons and not self._is_in_roi(patch_x, patch_y):
@@ -230,18 +236,21 @@ class PDL1DetectionWorker(QThread):
             self.status.emit(f"결과 정리 중... ({detected_cells_count}개 검출)")
             self.progress.emit(95)
 
-            # TPS 계산
+            # TPS 계산 (Non-Tumor 포함 전체 세포로 계산)
             class_counts = self._count_by_class(all_cells)
             tps = self._calculate_tps(all_cells)
+
+            # Non-Tumor Cell 제거 (표시 및 결과에서 제외)
+            tumor_cells = [c for c in all_cells if c['cls_id'] != 2]
 
             total_time = time.time() - start_total
             result = {
                 'status': 'success',
-                'cells': all_cells,
-                'num_cells': len(all_cells),
+                'cells': tumor_cells,
+                'num_cells': len(tumor_cells),
                 'class_counts': class_counts,
                 'tps': tps,
-                'message': f'PD-L1 검출 완료: {len(all_cells)}개 세포, TPS={tps:.1f}% ({total_time:.1f}s)'
+                'message': f'PD-L1 검출 완료: {len(tumor_cells)}개 종양세포, TPS={tps:.1f}% ({total_time:.1f}s)'
             }
 
             self.progress.emit(100)
@@ -284,13 +293,13 @@ class PDL1DetectionWorker(QThread):
 
         patch_corners = [
             (patch_x, patch_y),
-            (patch_x + self.image_size, patch_y),
-            (patch_x + self.image_size, patch_y + self.image_size),
-            (patch_x, patch_y + self.image_size)
+            (patch_x + self.original_size, patch_y),
+            (patch_x + self.original_size, patch_y + self.original_size),
+            (patch_x, patch_y + self.original_size)
         ]
 
-        patch_center_x = patch_x + self.image_size // 2
-        patch_center_y = patch_y + self.image_size // 2
+        patch_center_x = patch_x + self.original_size // 2
+        patch_center_y = patch_y + self.original_size // 2
 
         for polygon in self.roi_polygons:
             if polygon.contains_point(patch_center_x, patch_center_y):
@@ -305,11 +314,11 @@ class PDL1DetectionWorker(QThread):
         cells = []
         try:
             patch = self.slide.read_region((start_x, start_y), 0,
-                                           (self.image_size, self.image_size))
+                                           (self.original_size, self.original_size))
             patch = np.array(patch)[:, :, :3]
 
-            # 리사이즈 (HnE detection과 동일한 방식)
-            patch = cv2.resize(patch, (512, 512))
+            # 리사이즈 (original_size → model input size)
+            patch = cv2.resize(patch, (self.image_size, self.image_size))
 
             # 텐서 변환
             torch_patch = torch.from_numpy(patch).permute(2, 0, 1).unsqueeze(0).float() / 255.
@@ -322,7 +331,7 @@ class PDL1DetectionWorker(QThread):
                     pred = self.model(torch_patch)
 
                 results = non_max_suppression(pred, confidence_threshold=0.3,
-                                             iou_threshold=0.3,
+                                             iou_threshold=0.6,
                                              class_thresholds=self.class_thresholds)
 
                 if len(results[0]) > 0:
@@ -335,9 +344,9 @@ class PDL1DetectionWorker(QThread):
                     centers_x = (xyxy[:, 0] + xyxy[:, 2]) / 2
                     centers_y = (xyxy[:, 1] + xyxy[:, 3]) / 2
 
-                    # 실제 좌표 계산
-                    actual_x = start_x + centers_x * self.magnification
-                    actual_y = start_y + centers_y * self.magnification
+                    # 실제 좌표 계산 (모델 출력 512 → original_size로 스케일)
+                    actual_x = start_x + centers_x * (self.original_size / self.image_size)
+                    actual_y = start_y + centers_y * (self.original_size / self.image_size)
 
                     for i in range(len(detections)):
                         cell_x = actual_x[i].item()
@@ -363,9 +372,9 @@ class PDL1DetectionWorker(QThread):
 
     def _count_by_class(self, cells):
         """클래스별 세포 수 카운트"""
-        counts = {name: 0 for name in PDL1_CLASS_NAMES.values()}
+        counts = {name: 0 for name in _PDL1_ALL_CLASS_NAMES.values()}
         for cell in cells:
-            cls_name = PDL1_CLASS_NAMES.get(cell['cls_id'], 'Unknown')
+            cls_name = _PDL1_ALL_CLASS_NAMES.get(cell['cls_id'], 'Unknown')
             counts[cls_name] = counts.get(cls_name, 0) + 1
         return counts
 
