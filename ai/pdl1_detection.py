@@ -330,7 +330,7 @@ class PDL1DetectionWorker(QThread):
                 with torch.amp.autocast('cuda'):
                     pred = self.model(torch_patch)
 
-                results = non_max_suppression(pred, confidence_threshold=0.3,
+                results = non_max_suppression(pred, confidence_threshold=0.35,
                                              iou_threshold=0.6,
                                              class_thresholds=self.class_thresholds)
 
