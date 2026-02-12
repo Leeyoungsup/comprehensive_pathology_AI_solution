@@ -195,7 +195,13 @@ class PathologyViewer(QMainWindow):
         self.resultList.itemClicked.connect(self.on_result_list_item_clicked)
         # 체크박스 변경 시그널 (가시성 토글 처리)
         self.resultList.itemChanged.connect(self.on_result_list_item_changed)
-        
+
+        # 전체 raw cells 저장 (confidence 슬라이더용, 재추론 없이 필터링)
+        self.all_raw_cells = []
+        self.current_class_thresholds = {}  # {cls_id: threshold}
+        self.current_color_map = None
+        self.is_pdl1_mode = False
+
         # 결과 관리 버튼
         self.btnClearResults.clicked.connect(self.clear_results)
         self.btnSaveResults.clicked.connect(self.save_detection_results)
@@ -628,20 +634,29 @@ class PathologyViewer(QMainWindow):
 
         # 결과 캐시
         self.current_pdl1_result = result
-        # detection result로도 저장 (오버레이 표시용)
         self.current_detection_result = result
+
+        # Raw cells 저장 (슬라이더용)
+        from ai.pdl1_detection import PDL1_CLASS_NAMES, PDL1_CLASS_COLORS_RGB
+        cells = result.get('cells', [])
+        self.all_raw_cells = cells
+        self.current_class_thresholds = {c['cls_id']: 5 for c in cells}
+        self.current_color_map = PDL1_CLASS_COLORS_RGB
+        self.is_pdl1_mode = True
 
         self.progressBar.setValue(100)
         self.progressLabel.setText("PD-L1 검출 완료")
 
-        # 오버레이 표시 (PD-L1 클래스 색상 사용)
-        from ai.pdl1_detection import PDL1_CLASS_COLORS_RGB
-        cells = result.get('cells', [])
+        # 오버레이 표시
         if cells:
             self.wsi_viewer.set_detection_results(cells, color_map=PDL1_CLASS_COLORS_RGB)
 
-        # 결과 리스트 업데이트 (PD-L1 전용)
-        self._update_pdl1_result_list(result)
+        # 결과 리스트 업데이트 (슬라이더 포함)
+        self._update_result_list_with_sliders(
+            class_names=PDL1_CLASS_NAMES,
+            class_colors=PDL1_CLASS_COLORS_RGB,
+            is_pdl1=True
+        )
 
         # GPU 해제
         self.pdl1_detection.unload_model()
@@ -661,54 +676,6 @@ class PathologyViewer(QMainWindow):
             return f"Low positive (1-49%)"
         else:
             return f"High positive (≥50%)"
-
-    def _update_pdl1_result_list(self, result):
-        """PD-L1 결과를 리스트에 표시"""
-        from PyQt5.QtWidgets import QListWidgetItem
-        from PyQt5.QtCore import Qt
-        from PyQt5.QtGui import QPixmap, QColor, QIcon
-        from ai.pdl1_detection import PDL1_CLASS_NAMES, PDL1_CLASS_COLORS_RGB
-
-        self.resultList.blockSignals(True)
-        self.resultList.clear()
-
-        num_cells = result.get('num_cells', 0)
-        tps = result.get('tps', 0.0)
-        class_counts = result.get('class_counts', {})
-
-        # TPS 헤더
-        tps_item = QListWidgetItem(f"TPS: {tps:.1f}% ({self._get_tps_category(tps)})")
-        tps_item.setData(Qt.UserRole, None)
-        font = tps_item.font()
-        font.setBold(True)
-        tps_item.setFont(font)
-        self.resultList.addItem(tps_item)
-
-        # 총 세포 수
-        total_item = QListWidgetItem(f"전체: {num_cells:,}개")
-        total_item.setData(Qt.UserRole, None)
-        total_item.setFlags(total_item.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
-        total_item.setCheckState(Qt.Checked)
-        total_item.setToolTip("전체 클래스 표시/숨김")
-        self.resultList.addItem(total_item)
-
-        # 클래스별 카운트
-        for cls_id, cls_name in PDL1_CLASS_NAMES.items():
-            count = class_counts.get(cls_name, 0)
-            item = QListWidgetItem(f"  {cls_name}: {count:,}개")
-            item.setData(Qt.UserRole, cls_id)
-            item.setFlags(item.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
-            item.setCheckState(Qt.Checked)
-
-            # 색상 아이콘
-            color = PDL1_CLASS_COLORS_RGB.get(cls_id, (255, 255, 255))
-            pixmap = QPixmap(16, 16)
-            pixmap.fill(QColor(color[0], color[1], color[2]))
-            item.setIcon(QIcon(pixmap))
-
-            self.resultList.addItem(item)
-
-        self.resultList.blockSignals(False)
 
     def _auto_save_pdl1_result(self):
         """PD-L1 결과를 WSI 파일 위치에 자동 저장"""
@@ -879,22 +846,28 @@ class PathologyViewer(QMainWindow):
         """병변 검출 완료"""
         num_cells = result.get('num_cells', 0)
         class_counts = result.get('class_counts', {})
-        
+
         # 결과 캐시 저장
         self.current_detection_result = result
-        
+
+        # Raw cells 저장 (슬라이더용)
+        cells = result.get('cells', [])
+        self.all_raw_cells = cells
+        self.current_class_thresholds = {c['cls_id']: 5 for c in cells}
+        self.current_color_map = None
+        self.is_pdl1_mode = False
+
         # Progress 초기화
         self.progressBar.setValue(100)
         self.progressLabel.setText("검출 완료")
-        
+
         # 상태바 업데이트
         self.statusbar.showMessage(f"세포 검출 완료 - {num_cells:,}개 검출 (GPU 해제됨)")
-        
-        # 결과 리스트 업데이트
+
+        # 결과 리스트 업데이트 (슬라이더 포함)
         self.update_result_list(class_counts, num_cells)
-        
+
         # 검출 결과를 오버레이로 표시
-        cells = result.get('cells', [])
         if cells:
             self.wsi_viewer.set_detection_results(cells)
         
@@ -910,18 +883,49 @@ class PathologyViewer(QMainWindow):
         self.is_detection_running = False
     
     def update_result_list(self, class_counts, total_cells):
-        """검출 결과를 리스트에 표시 (가시성 향상: 체크박스, 색상 아이콘, 툴팁)"""
-        from PyQt5.QtWidgets import QListWidgetItem
-        from PyQt5.QtCore import Qt
-        from PyQt5.QtGui import QIcon, QPixmap, QColor
+        """검출 결과를 리스트에 표시 (클래스별 confidence 슬라이더 포함)"""
         from ai.detection import CLASS_NAMES, CLASS_COLORS_RGB
+        self._update_result_list_with_sliders(
+            class_names=CLASS_NAMES,
+            class_colors=CLASS_COLORS_RGB,
+            is_pdl1=False
+        )
 
-        # 업데이트 중에는 시그널 차단
+    def _update_result_list_with_sliders(self, class_names, class_colors, is_pdl1=False):
+        """클래스별 confidence 슬라이더를 포함한 결과 리스트 생성"""
+        from PyQt5.QtWidgets import QListWidgetItem, QWidget, QHBoxLayout, QLabel, QSlider, QCheckBox
+        from PyQt5.QtCore import Qt
+        from PyQt5.QtGui import QPixmap, QColor, QIcon
+        from functools import partial
+
         self.resultList.blockSignals(True)
         self.resultList.clear()
 
-        # 총 세포 수 아이템 (체크박스: 체크=표시, 언체크=숨김)
-        total_item = QListWidgetItem(f"전체: {total_cells:,}개")
+        # 현재 threshold로 필터링된 셀 계산
+        filtered_cells = self._get_filtered_cells()
+        total_filtered = len(filtered_cells)
+
+        # 클래스별 카운트
+        class_cell_counts = {}
+        for cell in filtered_cells:
+            cls_id = cell['cls_id']
+            class_cell_counts[cls_id] = class_cell_counts.get(cls_id, 0) + 1
+
+        # PD-L1이면 TPS 헤더
+        if is_pdl1:
+            positive = sum(1 for c in filtered_cells if c['cls_id'] == 1)
+            negative = sum(1 for c in filtered_cells if c['cls_id'] == 0)
+            total_tumor = positive + negative
+            tps = (positive / total_tumor * 100) if total_tumor > 0 else 0.0
+            tps_item = QListWidgetItem(f"TPS: {tps:.1f}% ({self._get_tps_category(tps)})")
+            tps_item.setData(Qt.UserRole, None)
+            font = tps_item.font()
+            font.setBold(True)
+            tps_item.setFont(font)
+            self.resultList.addItem(tps_item)
+
+        # 전체 행
+        total_item = QListWidgetItem(f"전체: {total_filtered:,}개")
         total_item.setData(Qt.UserRole, None)
         total_item.setFlags(total_item.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
         total_item.setCheckState(Qt.Checked)
@@ -931,28 +935,134 @@ class PathologyViewer(QMainWindow):
         total_item.setToolTip("전체 클래스 표시/숨김")
         self.resultList.addItem(total_item)
 
-        # 클래스별 아이템
-        for cls_id, cls_name in CLASS_NAMES.items():
-            count = class_counts.get(cls_name, 0)
-            if count > 0:
-                color_rgb = CLASS_COLORS_RGB.get(cls_id, (255, 255, 255))
+        # 클래스별 행 + 미니 슬라이더
+        # raw cells에서 존재하는 클래스만 표시
+        raw_class_ids = set(c['cls_id'] for c in self.all_raw_cells)
 
-                # 컬러 아이콘 생성
-                pix = QPixmap(16, 16)
-                pix.fill(QColor(*color_rgb))
-                icon = QIcon(pix)
+        for cls_id, cls_name in class_names.items():
+            if cls_id not in raw_class_ids:
+                continue
 
-                item = QListWidgetItem(icon, f"{cls_name}: {count:,}개")
-                item.setData(Qt.UserRole, cls_id)
-                item.setFlags(item.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
-                item.setCheckState(Qt.Checked)
-                # 텍스트 색상은 검은색으로 고정
-                item.setForeground(QColor(0, 0, 0))
-                item.setToolTip(f"{cls_name}: {count:,}개")
-                self.resultList.addItem(item)
+            count = class_cell_counts.get(cls_id, 0)
+            color_rgb = class_colors.get(cls_id, (255, 255, 255))
 
-        # 시그널 복원
+            # 빈 아이템 (커스텀 위젯용)
+            item = QListWidgetItem()
+            item.setData(Qt.UserRole, cls_id)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+            item.setCheckState(Qt.Checked)
+            item.setSizeHint(QListWidgetItem().sizeHint())
+
+            # 커스텀 위젯: [색상] [이름: 개수] [슬라이더] [값]
+            widget = QWidget()
+            layout = QHBoxLayout(widget)
+            layout.setContentsMargins(4, 1, 4, 1)
+            layout.setSpacing(4)
+
+            # 색상 아이콘
+            color_label = QLabel()
+            pix = QPixmap(12, 12)
+            pix.fill(QColor(*color_rgb))
+            color_label.setPixmap(pix)
+            color_label.setFixedWidth(14)
+            layout.addWidget(color_label)
+
+            # 클래스명 + 카운트
+            count_label = QLabel(f"{cls_name}: {count:,}")
+            count_label.setMinimumWidth(80)
+            count_label.setObjectName(f"countLabel_{cls_id}")
+            layout.addWidget(count_label)
+
+            # 미니 슬라이더
+            slider = QSlider(Qt.Horizontal)
+            slider.setMinimum(5)
+            slider.setMaximum(99)
+            current_threshold = self.current_class_thresholds.get(cls_id, 5)
+            slider.setValue(current_threshold)
+            slider.setFixedHeight(16)
+            slider.setToolTip(f"{cls_name} confidence threshold")
+            layout.addWidget(slider)
+
+            # 값 표시
+            val_label = QLabel(f"{current_threshold / 100:.2f}")
+            val_label.setFixedWidth(30)
+            val_label.setObjectName(f"valLabel_{cls_id}")
+            layout.addWidget(val_label)
+
+            self.resultList.addItem(item)
+            item.setSizeHint(widget.sizeHint())
+            self.resultList.setItemWidget(item, widget)
+
+            # 슬라이더 시그널 연결
+            slider.valueChanged.connect(partial(self._on_class_confidence_changed, cls_id))
+
         self.resultList.blockSignals(False)
+
+    def _get_filtered_cells(self):
+        """현재 class threshold 설정에 따라 필터링된 셀 반환"""
+        if not self.all_raw_cells:
+            return []
+        filtered = []
+        for cell in self.all_raw_cells:
+            threshold = self.current_class_thresholds.get(cell['cls_id'], 5) / 100.0
+            if cell['confidence'] >= threshold:
+                filtered.append(cell)
+        return filtered
+
+    def _on_class_confidence_changed(self, cls_id, value):
+        """클래스별 confidence threshold 슬라이더 변경"""
+        from PyQt5.QtWidgets import QLabel
+
+        self.current_class_thresholds[cls_id] = value
+
+        # 전체 필터링된 셀 재계산
+        filtered_cells = self._get_filtered_cells()
+
+        # UI 라벨 업데이트 (리스트 재생성 없이)
+        for i in range(self.resultList.count()):
+            item = self.resultList.item(i)
+            widget = self.resultList.itemWidget(item)
+            if widget is None:
+                continue
+
+            val_label = widget.findChild(QLabel, f"valLabel_{cls_id}")
+            if val_label:
+                val_label.setText(f"{value / 100:.2f}")
+
+            count_label = widget.findChild(QLabel, f"countLabel_{cls_id}")
+            if count_label:
+                cls_count = sum(1 for c in filtered_cells if c['cls_id'] == cls_id)
+                # class_names에서 이름 가져오기
+                label_text = count_label.text()
+                cls_name = label_text.split(":")[0]
+                count_label.setText(f"{cls_name}: {cls_count:,}")
+
+        # 전체 카운트 업데이트
+        from PyQt5.QtCore import Qt
+        for i in range(self.resultList.count()):
+            item = self.resultList.item(i)
+            if item.data(Qt.UserRole) is None and "전체:" in item.text():
+                item.setText(f"전체: {len(filtered_cells):,}개")
+                break
+
+        # PD-L1 TPS 업데이트
+        if self.is_pdl1_mode:
+            positive = sum(1 for c in filtered_cells if c['cls_id'] == 1)
+            negative = sum(1 for c in filtered_cells if c['cls_id'] == 0)
+            total_tumor = positive + negative
+            tps = (positive / total_tumor * 100) if total_tumor > 0 else 0.0
+            for i in range(self.resultList.count()):
+                item = self.resultList.item(i)
+                if item.data(Qt.UserRole) is None and "TPS:" in item.text():
+                    item.setText(f"TPS: {tps:.1f}% ({self._get_tps_category(tps)})")
+                    break
+            self.statusbar.showMessage(f"TPS: {tps:.1f}% ({self._get_tps_category(tps)}) | {len(filtered_cells)}개")
+
+        # 오버레이 갱신
+        if filtered_cells:
+            self.wsi_viewer.set_detection_results(filtered_cells, color_map=self.current_color_map)
+        else:
+            self.wsi_viewer.clear_detection_overlay()
     
     def on_result_list_item_clicked(self, item):
         """리스트 클릭 시 체크박스 토글(버튼/마우스 클릭 친화적)"""
@@ -1063,6 +1173,12 @@ class PathologyViewer(QMainWindow):
             # Segmentation 결과 초기화
             self.current_segmentation_result = None
             self.wsi_viewer.clear_segmentation_overlay()
+
+            # PD-L1 / 슬라이더 관련 초기화
+            self.current_pdl1_result = None
+            self.all_raw_cells = []
+            self.current_class_thresholds = {}
+            self.is_pdl1_mode = False
 
             # 결과 리스트 초기화
             self.resultList.clear()
