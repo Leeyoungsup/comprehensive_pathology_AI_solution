@@ -34,40 +34,31 @@ from nets import nn
 
 # 클래스 설정
 CLASS_NAMES = {
-    0: "Neutrophil",
-    1: "Epithelial",  # Legacy (재분류 전)
+    0: "Epithelial",
+    1: "Stromal",
     2: "Lymphocyte",
     3: "Plasma",
-    4: "Eosinophil",
-    5: "Connective tissue",
-    6: "tumor epithelial(Invasive)",  # NEW: Tumor + Stromal 영역의 상피세포 (침습성)
-    7: "benign epithelial",           # NEW: Non_Tumor 영역의 상피세포 (정상)
-    8: "stromal epithelial"           # UNUSED: Class 6에 통합됨
+    4: "Neutrophil",
+    5: "Eosinophil"
 }
 
 CLASS_COLORS = {
-    0: "#FF4500",  # Neutrophil - 붉은 주황색 (OrangeRed)
-    1: "#00FF00",  # Epithelial - 밝은 녹색 (legacy)
+    0: "#00FF00",  # Epithelial - 밝은 녹색
+    1: "#808080",  # Stromal - 회색
     2: "#0000FF",  # Lymphocyte - 파란색
     3: "#FFFF00",  # Plasma - 밝은 노란색
-    4: "#8A2BE2",  # Eosinophil - 청보라
-    5: "#808080",  # Connective tissue - 회색
-    6: "#FF0000",  # tumor epithelial(Invasive) - 빨간색 (가장 중요!)
-    7: "#00FF00",  # benign epithelial - 밝은 녹색 (정상)
-    8: "#00BFFF"   # stromal epithelial - 진한 하늘색 (UNUSED)
+    4: "#FF4500",  # Neutrophil - 붉은 주황색
+    5: "#8A2BE2"   # Eosinophil - 청보라
 }
 
 # RGB 색상 (마스크 생성용)
 CLASS_COLORS_RGB = {
-    0: (255, 69, 0),     # Neutrophil - 붉은 주황색 (OrangeRed)
-    1: (0, 255, 0),      # Epithelial - 밝은 녹색 (legacy)
+    0: (0, 255, 0),      # Epithelial - 밝은 녹색
+    1: (128, 128, 128),  # Stromal - 회색
     2: (0, 0, 255),      # Lymphocyte - 파란색
     3: (255, 255, 0),    # Plasma - 밝은 노란색
-    4: (138, 43, 226),   # Eosinophil - 청보라
-    5: (128, 128, 128),  # Connective tissue - 회색
-    6: (255, 0, 0),      # tumor epithelial(Invasive) - 빨간색 (가장 중요!)
-    7: (0, 255, 0),      # benign epithelial - 밝은 녹색 (정상)
-    8: (0, 191, 255)     # stromal epithelial - 진한 하늘색 (UNUSED)
+    4: (255, 69, 0),     # Neutrophil - 붉은 주황색
+    5: (138, 43, 226)    # Eosinophil - 청보라
 }
 
 
@@ -81,7 +72,7 @@ def wh2xy(x):
     return y
 
 
-def non_max_suppression(outputs, confidence_threshold=0.001, iou_threshold=0.35, class_thresholds=None):
+def non_max_suppression(outputs, confidence_threshold=0.1, iou_threshold=0.35, class_thresholds=None):
     """
     빠른 클래스별 NMS - 성능 최적화 버전
     """
@@ -185,14 +176,14 @@ class DetectionWorker(QThread):
         self.original_size = int(self.image_size * self.output_mpp / self.origin_mpp)
         self.magnification = self.original_size / self.image_size
         
-        # 클래스별 confidence threshold (Lymphocyte 더 낮춤)
+        # 클래스별 confidence threshold
         self.class_thresholds = {
-            0: 0.05,  # Neutrophil
-            1: 0.05,  # Epithelial
-            2: 0.01,  # Lymphocyte - 밀집 영역 검출 향상
-            3: 0.05,  # Plasma
-            4: 0.05,  # Eosinophil
-            5: 0.05   # Connective tissue
+            0: 0.1,  # Epithelial
+            1: 0.1,  # Stromal
+            2: 0.1,  # Lymphocyte - 밀집 영역 검출 향상
+            3: 0.1,  # Plasma
+            4: 0.1,  # Neutrophil
+            5: 0.1   # Eosinophil
         }
     
     def run(self):
@@ -406,7 +397,7 @@ class DetectionWorker(QThread):
                 with torch.amp.autocast('cuda'):
                     pred = self.model(torch_patch)
                 
-                results = non_max_suppression(pred, confidence_threshold=0.005,
+                results = non_max_suppression(pred, confidence_threshold=0.1,
                                              iou_threshold=0.3,
                                              class_thresholds=self.class_thresholds)
                 
