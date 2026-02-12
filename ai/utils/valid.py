@@ -87,12 +87,12 @@ def visualize_ground_truth_and_prediction_separately(model, dataset, idx=0, conf
     # Subplot 1: Ground Truth (실제 라벨)
     ax1.imshow(img.permute(1, 2, 0).cpu().numpy())
     class_names = {
-            0: "Neutrophil",
-            1: "Epithelial",
+            0: "Epithelial",
+            1: "Stromal",
             2: "Lymphocyte",
             3: "Plasma",
-            4: "Eosinophil",
-            5: "Connective tissue"
+            4: "Neutrophil",
+            5: "Eosinophil"
         }
     for i in range(len(cls)):
         class_id = cls[i].item()
