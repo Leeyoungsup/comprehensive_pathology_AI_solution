@@ -34,31 +34,37 @@ from nets import nn
 
 # 클래스 설정
 CLASS_NAMES = {
-    0: "Epithelial",
-    1: "Stromal",
+    0: "Neutrophil",
+    1: "Epithelial",
     2: "Lymphocyte",
     3: "Plasma",
-    4: "Neutrophil",
-    5: "Eosinophil"
+    4: "Eosinophil",
+    5: "Connective tissue",
+    6: "Tumor Epithelial",
+    7: "Benign Epithelial",
 }
 
 CLASS_COLORS = {
-    0: "#00FF00",  # Epithelial - 밝은 녹색
-    1: "#808080",  # Stromal - 회색
+    0: "#FF4500",  # Neutrophil - 붉은 주황색
+    1: "#00FF00",  # Epithelial - 밝은 녹색
     2: "#0000FF",  # Lymphocyte - 파란색
     3: "#FFFF00",  # Plasma - 밝은 노란색
-    4: "#FF4500",  # Neutrophil - 붉은 주황색
-    5: "#8A2BE2"   # Eosinophil - 청보라
+    4: "#8A2BE2",  # Eosinophil - 청보라
+    5: "#808080",  # Connective tissue - 회색
+    6: "#FF0000",  # Tumor Epithelial - 빨간색
+    7: "#00BFFF",  # Benign Epithelial - 하늘색
 }
 
 # RGB 색상 (마스크 생성용)
 CLASS_COLORS_RGB = {
-    0: (0, 255, 0),      # Epithelial - 밝은 녹색
-    1: (128, 128, 128),  # Stromal - 회색
+    0: (255, 69, 0),     # Neutrophil - 붉은 주황색
+    1: (0, 255, 0),      # Epithelial - 밝은 녹색
     2: (0, 0, 255),      # Lymphocyte - 파란색
     3: (255, 255, 0),    # Plasma - 밝은 노란색
-    4: (255, 69, 0),     # Neutrophil - 붉은 주황색
-    5: (138, 43, 226)    # Eosinophil - 청보라
+    4: (138, 43, 226),   # Eosinophil - 청보라
+    5: (128, 128, 128),  # Connective tissue - 회색
+    6: (255, 0, 0),      # Tumor Epithelial - 빨간색
+    7: (0, 191, 255),    # Benign Epithelial - 하늘색
 }
 
 
@@ -72,7 +78,7 @@ def wh2xy(x):
     return y
 
 
-def non_max_suppression(outputs, confidence_threshold=0.1, iou_threshold=0.35, class_thresholds=None):
+def non_max_suppression(outputs, confidence_threshold=0.01, iou_threshold=0.35, class_thresholds=None):
     """
     빠른 클래스별 NMS - 성능 최적화 버전
     """
@@ -178,12 +184,12 @@ class DetectionWorker(QThread):
         
         # 클래스별 confidence threshold
         self.class_thresholds = {
-            0: 0.1,  # Epithelial
-            1: 0.1,  # Stromal
-            2: 0.1,  # Lymphocyte - 밀집 영역 검출 향상
-            3: 0.1,  # Plasma
-            4: 0.1,  # Neutrophil
-            5: 0.1   # Eosinophil
+            0: 0.05,  # Neutrophil
+            1: 0.05,  # Epithelial
+            2: 0.01,  # Lymphocyte
+            3: 0.05,  # Plasma
+            4: 0.05,  # Eosinophil
+            5: 0.05   # Connective tissue
         }
     
     def run(self):
@@ -397,7 +403,7 @@ class DetectionWorker(QThread):
                 with torch.amp.autocast('cuda'):
                     pred = self.model(torch_patch)
                 
-                results = non_max_suppression(pred, confidence_threshold=0.1,
+                results = non_max_suppression(pred, confidence_threshold=0.01,
                                              iou_threshold=0.3,
                                              class_thresholds=self.class_thresholds)
                 
