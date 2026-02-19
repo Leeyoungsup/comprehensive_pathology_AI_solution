@@ -640,7 +640,7 @@ class PathologyViewer(QMainWindow):
         from ai.pdl1_detection import PDL1_CLASS_NAMES, PDL1_CLASS_COLORS_RGB
         cells = result.get('cells', [])
         self.all_raw_cells = cells
-        self.current_class_thresholds = {c['cls_id']: 5 for c in cells}
+        self.current_class_thresholds = {c['cls_id']: 1 for c in cells}
         self.current_color_map = PDL1_CLASS_COLORS_RGB
         self.is_pdl1_mode = True
 
@@ -853,7 +853,7 @@ class PathologyViewer(QMainWindow):
         # Raw cells 저장 (슬라이더용)
         cells = result.get('cells', [])
         self.all_raw_cells = cells
-        self.current_class_thresholds = {c['cls_id']: 5 for c in cells}
+        self.current_class_thresholds = {c['cls_id']: 1 for c in cells}
         self.current_color_map = None
         self.is_pdl1_mode = False
 
@@ -975,9 +975,9 @@ class PathologyViewer(QMainWindow):
 
             # 미니 슬라이더
             slider = QSlider(Qt.Horizontal)
-            slider.setMinimum(5)
-            slider.setMaximum(99)
-            current_threshold = self.current_class_thresholds.get(cls_id, 5)
+            slider.setMinimum(1)
+            slider.setMaximum(100)
+            current_threshold = self.current_class_thresholds.get(cls_id, 1)
             slider.setValue(current_threshold)
             slider.setFixedHeight(16)
             slider.setToolTip(f"{cls_name} confidence threshold")
@@ -1004,7 +1004,7 @@ class PathologyViewer(QMainWindow):
             return []
         filtered = []
         for cell in self.all_raw_cells:
-            threshold = self.current_class_thresholds.get(cell['cls_id'], 5) / 100.0
+            threshold = self.current_class_thresholds.get(cell['cls_id'], 1) / 100.0
             if cell['confidence'] >= threshold:
                 filtered.append(cell)
         return filtered
