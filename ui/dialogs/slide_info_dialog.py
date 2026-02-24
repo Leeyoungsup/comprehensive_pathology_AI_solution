@@ -152,4 +152,6 @@ def show_slide_info_dialog(tile_manager, parent=None):
         return None
     
     dialog = SlideInfoDialog(slide_info, parent)
-    return dialog.exec_()
+    dialog.setWindowModality(Qt.NonModal)
+    dialog.show()
+    return dialog
