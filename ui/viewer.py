@@ -270,22 +270,36 @@ class PathologyViewer(QMainWindow):
         pass
     
     def show_slide_info(self):
-        """슬라이드 정보 표시"""
+        """슬라이드 정보 표시 (싱글턴 - 기존 창 닫고 열기)"""
+        if hasattr(self, '_slide_info_dialog') and self._slide_info_dialog and self._slide_info_dialog.isVisible():
+            self._slide_info_dialog.close()
         tile_manager = self.wsi_viewer.get_tile_manager()
         self._slide_info_dialog = show_slide_info_dialog(tile_manager, self)
 
     def show_detection_visualization(self):
-        """HnE 검출 결과 시각화 창 표시"""
+        """HnE 검출 결과 시각화 창 표시 (싱글턴 - 기존 창 닫고 열기)"""
         if not self.all_raw_cells:
             from PyQt5.QtWidgets import QMessageBox
             QMessageBox.information(self, "알림", "표시할 검출 결과가 없습니다.")
             return
 
+        if hasattr(self, '_visualization_dialog') and self._visualization_dialog and self._visualization_dialog.isVisible():
+            self._visualization_dialog.close()
+
         from ui.dialogs.detection_visualization_dialog import show_detection_visualization
+        import numpy as np
         tile_manager = self.wsi_viewer.get_tile_manager()
-        slide_dimensions = tile_manager.slide.dimensions if tile_manager and tile_manager.slide else None
+        slide_dimensions = None
+        thumbnail_np = None
+        if tile_manager and tile_manager.slide:
+            slide_dimensions = tile_manager.slide.dimensions
+            try:
+                thumb = tile_manager.slide.get_thumbnail((600, 600))
+                thumbnail_np = np.array(thumb.convert('RGB'))
+            except Exception:
+                thumbnail_np = None
         self._visualization_dialog = show_detection_visualization(
-            self.all_raw_cells, slide_dimensions, self
+            self.all_raw_cells, slide_dimensions, thumbnail_np, self
         )
     
     # === AI 기능 ===
@@ -898,6 +912,10 @@ class PathologyViewer(QMainWindow):
         self.btnHneCellDetection.setText("(통합)Cell Detection")
         self.btnVisualization.setEnabled(True)
         self.is_detection_running = False
+
+        # 자동 시각화
+        if self.chkAutoVisualize.isChecked():
+            self.show_detection_visualization()
     
     def update_result_list(self, class_counts, total_cells):
         """검출 결과를 리스트에 표시 (클래스별 confidence 슬라이더 포함)"""
