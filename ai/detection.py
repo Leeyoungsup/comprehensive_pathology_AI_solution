@@ -621,7 +621,7 @@ class DetectionWorker(QThread):
                     # Tumor 비율이 10% 이상이면 관 전체를 Tumor로 판정
                     assign_class = 3 if tumor_ratio >= TUMOR_RATIO_THRESHOLD else 2
                     for j in range(len(labels)):
-                        if cluster_mask[j]:
+                        if cluster_mask[j] and epi_seg_classes[j] == 2:  # Non-Tumor 세포만 클러스터 판정 적용
                             epi_seg_classes[j] = assign_class
 
             # 4단계: 최종 cls_id 할당
