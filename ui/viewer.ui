@@ -131,6 +131,16 @@
                 </widget>
                </item>
                <item>
+                <widget class="QPushButton" name="btnVisualization">
+                 <property name="enabled">
+                  <bool>false</bool>
+                 </property>
+                 <property name="text">
+                  <string>결과 시각화</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
                 <widget class="QPushButton" name="btnSegmentation">
                  <property name="enabled">
                   <bool>false</bool>
