@@ -184,6 +184,7 @@ class PathologyViewer(QMainWindow):
         self.btnClassification.clicked.connect(self.run_classification)
         self.btnHneCellDetection.clicked.connect(self.run_detection)
         self.btnTumorSegmentation.clicked.connect(self.run_tumor_segmentation)
+        self.btnVisualization.clicked.connect(self.show_detection_visualization)
         self.btnPDL1Detection.clicked.connect(self.run_pdl1_detection)
 
         # 조직 타입 Radio button
@@ -251,6 +252,7 @@ class PathologyViewer(QMainWindow):
             self.wsi_viewer.clear_annotations()        # Annotation/Polygon 제거
             self.annotation_panel.clear_annotations()  # Annotation 패널 테이블 초기화
             self.resultList.clear()                    # 결과 리스트 초기화
+            self.btnVisualization.setEnabled(False)    # 시각화 버튼 비활성화
 
             # Progress 초기화
             self.progressBar.setValue(0)
@@ -270,7 +272,21 @@ class PathologyViewer(QMainWindow):
     def show_slide_info(self):
         """슬라이드 정보 표시"""
         tile_manager = self.wsi_viewer.get_tile_manager()
-        show_slide_info_dialog(tile_manager, self)
+        self._slide_info_dialog = show_slide_info_dialog(tile_manager, self)
+
+    def show_detection_visualization(self):
+        """HnE 검출 결과 시각화 창 표시"""
+        if not self.all_raw_cells:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.information(self, "알림", "표시할 검출 결과가 없습니다.")
+            return
+
+        from ui.dialogs.detection_visualization_dialog import show_detection_visualization
+        tile_manager = self.wsi_viewer.get_tile_manager()
+        slide_dimensions = tile_manager.slide.dimensions if tile_manager and tile_manager.slide else None
+        self._visualization_dialog = show_detection_visualization(
+            self.all_raw_cells, slide_dimensions, self
+        )
     
     # === AI 기능 ===
     
@@ -880,6 +896,7 @@ class PathologyViewer(QMainWindow):
 
         # 버튼 상태 복원
         self.btnHneCellDetection.setText("(통합)Cell Detection")
+        self.btnVisualization.setEnabled(True)
         self.is_detection_running = False
     
     def update_result_list(self, class_counts, total_cells):
@@ -1498,7 +1515,8 @@ class PathologyViewer(QMainWindow):
         
         # Progress 완료 상태로
         self.progressBar.setValue(100)
-        
+        self.btnVisualization.setEnabled(True)
+
         # 메타데이터가 있으면 표시
         if metadata:
             model_info = f"{metadata.get('model_name', 'Unknown')} v{metadata.get('version', '?')}"
