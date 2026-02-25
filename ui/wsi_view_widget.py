@@ -455,18 +455,24 @@ class WSIViewWidget(QGraphicsView):
         else:
             downsample = 1
         
-        # 마스크 생성 (원 크기 자동 보정됨)
-        pixmap, mask_x, mask_y = self.detection_overlay.create_view_mask(view_rect, downsample)
-        
+        # LOD: L0/L1(zoom>=0.03)은 circle, L2/L3(zoom<0.03)는 히트맵
+        use_heatmap = self.zoom_level < 0.03
+
+        if use_heatmap:
+            pixmap, mask_x, mask_y, scale = self.detection_overlay.create_heatmap_mask(view_rect)
+        else:
+            pixmap, mask_x, mask_y = self.detection_overlay.create_view_mask(view_rect, downsample)
+            scale = downsample
+
         if pixmap is None:
             return
-        
+
         # 새 오버레이 아이템 생성
         self.detection_overlay_item = QGraphicsPixmapItem(pixmap)
         self.detection_overlay_item.setPos(mask_x, mask_y)
-        self.detection_overlay_item.setScale(downsample)
+        self.detection_overlay_item.setScale(scale)
         self.detection_overlay_item.setZValue(50)
-        
+
         self.scene.addItem(self.detection_overlay_item)
     
     def clear_detection_overlay(self):
