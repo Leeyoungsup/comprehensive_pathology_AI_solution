@@ -67,7 +67,8 @@ class DetectionService:
             return None, f"슬라이드 열기 실패: {str(e)}"
     
     def start_detection(self, slide: openslide.OpenSlide, roi_polygons: Optional[List] = None,
-                        auto_classify_epithelial: bool = True, tissue_type: str = "Stomach"):
+                        auto_classify_epithelial: bool = True, tissue_type: str = "Stomach",
+                        image_path: Optional[str] = None):
         """
         검출 시작
 
@@ -76,6 +77,7 @@ class DetectionService:
             roi_polygons: ROI 폴리곤 리스트 (없으면 전체 영역)
             auto_classify_epithelial: Epithelial 자동 재분류 여부 (기본값: True)
             tissue_type: 조직 타입 (Breast, Stomach, Other)
+            image_path: WSI 파일 경로 (병렬 I/O 활성화)
         """
         detection = self._ensure_detection_module()
 
@@ -84,7 +86,8 @@ class DetectionService:
 
         detection.run_detection(slide, roi_polygons,
                                 auto_classify_epithelial=auto_classify_epithelial,
-                                tissue_type=tissue_type)
+                                tissue_type=tissue_type,
+                                image_path=image_path)
     
     def cancel_detection(self):
         """진행 중인 검출 취소"""
