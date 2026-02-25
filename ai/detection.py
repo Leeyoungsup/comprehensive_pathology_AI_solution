@@ -388,15 +388,21 @@ class DetectionWorker(QThread):
                     self.status.emit("Epithelial 세포가 없어 재분류를 건너뜁니다.")
 
             # 결과 정리
+            class_counts = self._count_by_class(all_cells)
+
+            # 시각화 다이얼로그용 plot 배열 사전 계산 (워커 스레드에서 처리 → 메인 스레드 O(N) 루프 제거)
+            plot_arrays = self._build_plot_arrays(all_cells, class_counts)
+
             result = {
                 'status': 'success',
                 'cells': all_cells,
                 'num_cells': len(all_cells),
-                'class_counts': self._count_by_class(all_cells),
+                'class_counts': class_counts,
                 'message': f'총 {len(all_cells)}개 세포 검출 완료 (재분류 포함)',
                 'seg_mask': getattr(self, 'last_prediction_mask', None),
                 'seg_metadata': getattr(self, 'last_seg_metadata', None),
                 'seg_class_names': getattr(self, 'last_seg_class_names', None),
+                'plot_arrays': plot_arrays,
             }
 
             self.progress.emit(100)
@@ -653,6 +659,109 @@ class DetectionWorker(QThread):
             print(f"경고: 카운트 불일치! 차이={len(cells) - total_from_classes}")
 
         return counts
+
+    def _build_plot_arrays(self, cells, class_counts):
+        """
+        시각화 다이얼로그용 numpy 배열 사전 계산 (워커 스레드에서 1회 수행)
+
+        반환:
+            {
+                'all_x':          np.ndarray (float32) - 전체 x 좌표
+                'all_y':          np.ndarray (float32) - 전체 y 좌표
+                'xs_by_class':    {cls_id: np.ndarray} - 클래스별 x 좌표
+                'ys_by_class':    {cls_id: np.ndarray} - 클래스별 y 좌표
+                'confs_by_class': {cls_id: np.ndarray} - 클래스별 confidence
+                'counts_by_id':   {cls_id: int}        - 클래스별 셀 수 (int 키)
+                'thumbnail':      np.ndarray | None    - RGB 썸네일 (HxWx3 uint8)
+                'thumb_roi_bounds': tuple | None       - 썸네일에 해당하는 WSI ROI (x0,y0,x1,y1)
+            }
+        """
+        n = len(cells)
+        if n == 0:
+            empty = np.empty(0, dtype=np.float32)
+            thumbnail, thumb_roi = self._generate_thumbnail_for_plot()
+            return {
+                'all_x': empty, 'all_y': empty,
+                'xs_by_class': {}, 'ys_by_class': {}, 'confs_by_class': {},
+                'counts_by_id': {},
+                'thumbnail': thumbnail, 'thumb_roi_bounds': thumb_roi,
+            }
+
+        # 전체 배열 1회 추출
+        all_x    = np.fromiter((c['x']                   for c in cells), dtype=np.float32, count=n)
+        all_y    = np.fromiter((c['y']                   for c in cells), dtype=np.float32, count=n)
+        all_cls  = np.fromiter((c.get('cls_id', 0)       for c in cells), dtype=np.int32,   count=n)
+        all_conf = np.fromiter((c.get('confidence', 0.0) for c in cells), dtype=np.float32, count=n)
+
+        # 클래스별 분리 (numpy boolean indexing)
+        unique_cls = np.unique(all_cls).tolist()
+        xs_by_class    = {}
+        ys_by_class    = {}
+        confs_by_class = {}
+        counts_by_id   = {}
+        for cls_id in unique_cls:
+            mask = all_cls == cls_id
+            xs_by_class[cls_id]    = all_x[mask]
+            ys_by_class[cls_id]    = all_y[mask]
+            confs_by_class[cls_id] = all_conf[mask]
+            counts_by_id[cls_id]   = int(mask.sum())
+
+        # 썸네일 생성 (best level 사용 → level-0 전체 읽기 병목 제거)
+        thumbnail, thumb_roi = self._generate_thumbnail_for_plot()
+
+        return {
+            'all_x':            all_x,
+            'all_y':            all_y,
+            'xs_by_class':      xs_by_class,
+            'ys_by_class':      ys_by_class,
+            'confs_by_class':   confs_by_class,
+            'counts_by_id':     counts_by_id,
+            'thumbnail':        thumbnail,
+            'thumb_roi_bounds': thumb_roi,
+        }
+
+    def _generate_thumbnail_for_plot(self, target_size=600):
+        """
+        슬라이드 썸네일 생성 — get_best_level_for_downsample 을 사용해
+        level-0 전체 읽기 없이 적절한 피라미드 레벨에서 직접 읽는다.
+
+        Returns:
+            (thumbnail_np, roi_bounds) 또는 (None, None)
+            thumbnail_np: uint8 RGB ndarray (H, W, 3)
+            roi_bounds:   (x0, y0, x1, y1) | None
+        """
+        try:
+            if self.roi_polygons:
+                all_coords = [p for ann in self.roi_polygons for p in ann.coordinates]
+                xs_c = [float(p[0]) for p in all_coords]
+                ys_c = [float(p[1]) for p in all_coords]
+                rx0, ry0 = int(min(xs_c)), int(min(ys_c))
+                rx1, ry1 = int(max(xs_c)), int(max(ys_c))
+                region_w, region_h = rx1 - rx0, ry1 - ry0
+                if region_w <= 0 or region_h <= 0:
+                    raise ValueError("Invalid ROI dimensions")
+
+                scale        = min(target_size / region_w, target_size / region_h)
+                downsample   = 1.0 / scale
+                best_level   = self.slide.get_best_level_for_downsample(downsample)
+                level_ds     = self.slide.level_downsamples[best_level]
+
+                lw = max(1, round(region_w / level_ds))
+                lh = max(1, round(region_h / level_ds))
+
+                region = self.slide.read_region((rx0, ry0), best_level, (lw, lh))
+                arr    = np.array(region)[:, :, :3]
+
+                new_w = max(1, int(region_w * scale))
+                new_h = max(1, int(region_h * scale))
+                thumbnail = cv2.resize(arr, (new_w, new_h))
+                return thumbnail, (rx0, ry0, rx1, ry1)
+            else:
+                thumb = self.slide.get_thumbnail((target_size, target_size))
+                return np.array(thumb.convert('RGB')), None
+        except Exception as e:
+            print(f"썸네일 생성 실패: {e}")
+            return None, None
 
     def _run_epithelial_classification(self, cells):
         """
