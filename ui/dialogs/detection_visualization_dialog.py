@@ -4,7 +4,7 @@ AI 검출 결과 시각화 다이얼로그
 """
 
 import numpy as np
-from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QTabWidget,
+from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QTabWidget,
                               QWidget, QPushButton, QLabel, QSizePolicy)
 from PyQt5.QtCore import Qt
 
@@ -12,6 +12,19 @@ import matplotlib
 matplotlib.use('Qt5Agg')
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
+import matplotlib.font_manager as fm
+
+# 한글 폰트 설정 (Windows: 맑은 고딕, fallback: 시스템 한글 폰트)
+def _setup_korean_font():
+    korean_fonts = ['Malgun Gothic', 'NanumGothic', 'NanumBarunGothic', 'AppleGothic', 'UnDotum']
+    available = {f.name for f in fm.fontManager.ttflist}
+    for font in korean_fonts:
+        if font in available:
+            matplotlib.rcParams['font.family'] = font
+            break
+    matplotlib.rcParams['axes.unicode_minus'] = False
+
+_setup_korean_font()
 
 # 클래스 정보 (detection.py와 동일)
 CLASS_NAMES = {
@@ -36,28 +49,45 @@ CLASS_COLORS_HEX = {
     7: "#00BFFF",
 }
 
-BG = '#2b2b2b'
-PANEL = '#1e1e1e'
-SPINE = '#555555'
+BG      = 'white'
+PANEL   = '#f7f7f7'
+SPINE   = '#cccccc'
+TEXT    = '#222222'
+SUBTEXT = '#666666'
+
+A4_LANDSCAPE = (11.69, 8.27)  # inches
 
 
 class DetectionVisualizationDialog(QDialog):
     """AI 검출 결과 시각화 다이얼로그"""
 
-    def __init__(self, cells, slide_dimensions=None, parent=None):
+    def __init__(self, cells, slide_dimensions=None, thumbnail=None, roi_bounds=None,
+                 seg_prob_map=None, seg_class_names=None, roi_polygons=None,
+                 slide_path=None, parent=None):
         """
         Args:
             cells: 검출 세포 리스트 [{'x', 'y', 'cls_id', 'confidence'}, ...]
             slide_dimensions: (width, height) WSI 원본 크기
+            thumbnail: numpy RGB 배열 (슬라이드 썸네일, ROI인 경우 크롭됨)
+            roi_bounds: (x0, y0, x1, y1) ROI 영역 (없으면 전체 슬라이드)
+            seg_prob_map: numpy (num_classes, H, W) 클래스별 확률 맵 (None이면 세포 밀도 사용)
+            seg_class_names: 클래스 이름 리스트 ['Background','Stroma','Non_Tumor','Tumor']
+            slide_path: WSI 파일 경로 (PDF 기본 파일명에 사용)
             parent: 부모 위젯
         """
         super().__init__(parent)
         self.cells = cells
         self.slide_dimensions = slide_dimensions
+        self.thumbnail = thumbnail
+        self.roi_bounds = roi_bounds
+        self.seg_prob_map = seg_prob_map
+        self.seg_class_names = seg_class_names or ['Background', 'Stroma', 'Non_Tumor', 'Tumor']
+        self.roi_polygons = roi_polygons or []
+        self.slide_path = slide_path
         self.setWindowTitle("AI 검출 결과 시각화")
         self.setMinimumSize(950, 680)
         self.setWindowModality(Qt.NonModal)
-        self.setStyleSheet("background-color: #2b2b2b; color: white;")
+        self.setStyleSheet("background-color: white; color: #222222;")
         self._init_ui()
 
     def _init_ui(self):
@@ -66,22 +96,41 @@ class DetectionVisualizationDialog(QDialog):
 
         self.tab_widget = QTabWidget()
         self.tab_widget.setStyleSheet("""
-            QTabWidget::pane { border: 1px solid #555; }
-            QTabBar::tab { background: #3b3b3b; color: white; padding: 6px 14px; }
-            QTabBar::tab:selected { background: #555; }
+            QTabWidget::pane { border: 1px solid #cccccc; background: white; }
+            QTabBar::tab { background: #f0f0f0; color: #444444; padding: 6px 16px;
+                           border: 1px solid #cccccc; border-bottom: none; margin-right: 2px; }
+            QTabBar::tab:selected { background: white; color: #111111; font-weight: bold; }
+            QTabBar::tab:hover { background: #e0e8ff; }
         """)
         layout.addWidget(self.tab_widget)
 
         self.tab_widget.addTab(self._create_class_distribution_tab(), "클래스 분포")
         self.tab_widget.addTab(self._create_tumor_analysis_tab(), "Tumor 분석")
-        self.tab_widget.addTab(self._create_spatial_heatmap_tab(), "공간 히트맵")
+        if self.seg_prob_map is not None:
+            self.tab_widget.addTab(self._create_spatial_heatmap_tab(), "공간 히트맵")
         self.tab_widget.addTab(self._create_confidence_tab(), "Confidence 분포")
+
+        btn_layout = QHBoxLayout()
+
+        pdf_btn = QPushButton("PDF 내보내기")
+        pdf_btn.setFixedHeight(32)
+        pdf_btn.setStyleSheet(
+            "background:#1a56a0; color:white; border:none; border-radius:4px;"
+            "padding: 0 18px; font-weight:bold;"
+        )
+        pdf_btn.clicked.connect(self._export_pdf)
+        btn_layout.addWidget(pdf_btn)
+        btn_layout.addStretch()
 
         close_btn = QPushButton("닫기")
         close_btn.setFixedHeight(32)
-        close_btn.setStyleSheet("background:#444; color:white; border-radius:4px;")
+        close_btn.setStyleSheet(
+            "background:#e8e8e8; color:#222; border:1px solid #bbb; border-radius:4px;"
+            "padding: 0 16px;"
+        )
         close_btn.clicked.connect(self.close)
-        layout.addWidget(close_btn)
+        btn_layout.addWidget(close_btn)
+        layout.addLayout(btn_layout)
 
     def _get_class_counts(self):
         counts = {cls_id: 0 for cls_id in CLASS_NAMES}
@@ -93,7 +142,7 @@ class DetectionVisualizationDialog(QDialog):
 
     def _styled_ax(self, ax):
         ax.set_facecolor(PANEL)
-        ax.tick_params(colors='#cccccc', labelsize=8)
+        ax.tick_params(colors=TEXT, labelsize=8)
         for spine in ax.spines.values():
             spine.set_color(SPINE)
         ax.spines['top'].set_visible(False)
@@ -114,7 +163,7 @@ class DetectionVisualizationDialog(QDialog):
         if not active:
             ax = fig.add_subplot(111)
             ax.set_facecolor(PANEL)
-            ax.text(0.5, 0.5, '검출 데이터 없음', ha='center', va='center', color='white', fontsize=14)
+            ax.text(0.5, 0.5, '검출 데이터 없음', ha='center', va='center', color=TEXT, fontsize=14)
             layout.addWidget(canvas)
             return widget
 
@@ -125,14 +174,14 @@ class DetectionVisualizationDialog(QDialog):
 
         ax1 = fig.add_subplot(1, 2, 1)
         self._styled_ax(ax1)
-        bars = ax1.barh(names, values, color=colors, height=0.6)
-        ax1.set_xlabel('세포 수', color='#cccccc', fontsize=9)
-        ax1.set_title('클래스별 세포 수', color='white', fontsize=11, pad=8)
+        bars = ax1.barh(names, values, color=colors, height=0.6, edgecolor='#cccccc', linewidth=0.5)
+        ax1.set_xlabel('세포 수', color=SUBTEXT, fontsize=9)
+        ax1.set_title('클래스별 세포 수', color=TEXT, fontsize=11, pad=8)
         ax1.spines['left'].set_visible(True)
         ax1.spines['bottom'].set_visible(True)
         for bar, val in zip(bars, values):
             ax1.text(val + max_v * 0.01, bar.get_y() + bar.get_height() / 2,
-                     f'{val:,}', va='center', color='white', fontsize=8)
+                     f'{val:,}', va='center', color=TEXT, fontsize=8)
 
         ax2 = fig.add_subplot(1, 2, 2)
         ax2.set_facecolor(BG)
@@ -140,16 +189,17 @@ class DetectionVisualizationDialog(QDialog):
             values, labels=None, colors=colors,
             autopct=lambda p: f'{p:.1f}%' if p > 3 else '',
             pctdistance=0.72, startangle=90,
-            wedgeprops={'linewidth': 0.5, 'edgecolor': '#444'}
+            wedgeprops={'linewidth': 0.8, 'edgecolor': 'white'}
         )
         for t in autotexts:
-            t.set_color('white')
+            t.set_color('#111')
             t.set_fontsize(8)
-        ax2.set_title(f'비율  (총 {len(self.cells):,}개)', color='white', fontsize=11, pad=8)
+            t.set_fontweight('bold')
+        ax2.set_title(f'비율  (총 {len(self.cells):,}개)', color=TEXT, fontsize=11, pad=8)
         ax2.legend(wedges, [f'{n}  ({v:,})' for n, v in zip(names, values)],
                    loc='lower center', bbox_to_anchor=(0.5, -0.22),
-                   ncol=2, fontsize=8, labelcolor='white',
-                   facecolor='#3b3b3b', edgecolor=SPINE)
+                   ncol=2, fontsize=8, labelcolor=TEXT,
+                   facecolor='white', edgecolor=SPINE)
 
         layout.addWidget(canvas)
         return widget
@@ -174,21 +224,22 @@ class DetectionVisualizationDialog(QDialog):
 
         if total_epi > 0:
             pie_data = [tumor, benign]
-            pie_colors = ['#FF3333', '#00BFFF']
+            pie_colors = ['#E84040', '#2196F3']
             pie_labels = [f'Tumor Epithelial\n({tumor:,}개)', f'Benign Epithelial\n({benign:,}개)']
-            wedges, texts, autotexts = ax1.pie(
+            _, _, autotexts = ax1.pie(
                 pie_data, labels=pie_labels, colors=pie_colors,
                 autopct='%1.1f%%', startangle=90,
-                textprops={'color': 'white', 'fontsize': 10},
-                wedgeprops={'linewidth': 0.8, 'edgecolor': '#444'}
+                textprops={'color': TEXT, 'fontsize': 10},
+                wedgeprops={'linewidth': 1.2, 'edgecolor': 'white'}
             )
             for t in autotexts:
                 t.set_fontsize(12)
                 t.set_fontweight('bold')
+                t.set_color('white')
         else:
             ax1.text(0.5, 0.5, 'Epithelial 세포 없음', ha='center', va='center',
-                     color='#aaa', fontsize=13, transform=ax1.transAxes)
-        ax1.set_title('Tumor vs Benign Epithelial', color='white', fontsize=11, pad=8)
+                     color=SUBTEXT, fontsize=13, transform=ax1.transAxes)
+        ax1.set_title('Tumor vs Benign Epithelial', color=TEXT, fontsize=11, pad=8)
 
         # Gauge bar
         ax2 = fig.add_subplot(1, 2, 2)
@@ -199,18 +250,18 @@ class DetectionVisualizationDialog(QDialog):
         ax2.spines['right'].set_visible(False)
         ax2.spines['left'].set_visible(False)
 
-        ax2.barh(0.5, 100, height=0.25, color='#444', left=0)
-        bar_color = '#FF3333' if tumor_ratio >= 50 else '#FF8C00' if tumor_ratio >= 20 else '#FFA07A'
+        ax2.barh(0.5, 100, height=0.25, color='#e0e0e0', left=0)
+        bar_color = '#E84040' if tumor_ratio >= 50 else '#FF8C00' if tumor_ratio >= 20 else '#FFB347'
         ax2.barh(0.5, tumor_ratio, height=0.25, color=bar_color, left=0)
 
-        ax2.text(50, 0.82, 'Tumor 비율', ha='center', color='#cccccc', fontsize=11)
-        ax2.text(50, 0.22, f'{tumor_ratio:.1f}%', ha='center', color='white',
+        ax2.text(50, 0.82, 'Tumor 비율', ha='center', color=SUBTEXT, fontsize=11)
+        ax2.text(50, 0.22, f'{tumor_ratio:.1f}%', ha='center', color=bar_color,
                  fontsize=28, fontweight='bold')
         ax2.set_xticks([0, 25, 50, 75, 100])
-        ax2.set_xticklabels(['0%', '25%', '50%', '75%', '100%'], color='#cccccc')
+        ax2.set_xticklabels(['0%', '25%', '50%', '75%', '100%'], color=SUBTEXT)
         ax2.set_yticks([])
         ax2.set_title(f'Tumor / (Tumor + Benign)  [{total_epi:,}개 기준]',
-                      color='white', fontsize=10, pad=8)
+                      color=TEXT, fontsize=10, pad=8)
 
         layout.addWidget(canvas)
 
@@ -220,72 +271,176 @@ class DetectionVisualizationDialog(QDialog):
             f"Tumor 비율: {tumor_ratio:.1f}%"
         )
         summary.setStyleSheet(
-            "color: white; background: #3b3b3b; padding: 6px 10px; border-radius: 4px;"
+            f"color: {TEXT}; background: #f0f0f0; padding: 6px 10px;"
+            "border-radius: 4px; border: 1px solid #ddd;"
         )
         layout.addWidget(summary)
         return widget
 
     def _create_spatial_heatmap_tab(self):
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(4, 4, 4, 4)
+        from PyQt5.QtWidgets import QScrollArea
+        import matplotlib.colors as mcolors
+        import cv2
 
-        fig = Figure(facecolor=BG, tight_layout=True)
-        canvas = FigureCanvas(fig)
-        canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        outer = QWidget()
+        outer_layout = QVBoxLayout(outer)
+        outer_layout.setContentsMargins(4, 4, 4, 4)
 
-        if not self.cells or not self.slide_dimensions:
-            ax = fig.add_subplot(111)
-            ax.set_facecolor(PANEL)
-            ax.text(0.5, 0.5, '슬라이드 크기 정보 없음', ha='center', va='center',
-                    color='white', fontsize=13)
-            layout.addWidget(canvas)
-            return widget
+        if not self.slide_dimensions:
+            label = QLabel('슬라이드 크기 정보 없음')
+            label.setStyleSheet(f'color: {SUBTEXT}; font-size: 13px;')
+            outer_layout.addWidget(label)
+            return outer
 
-        w, h = self.slide_dimensions
-        bins_x = 80
-        bins_y = max(10, int(bins_x * h / w))
+        use_prob = self.seg_prob_map is not None
 
-        all_x = np.array([c['x'] for c in self.cells])
-        all_y = np.array([c['y'] for c in self.cells])
-        tumor_cells = [c for c in self.cells if c.get('cls_id') == 6]
-        tumor_x = np.array([c['x'] for c in tumor_cells])
-        tumor_y = np.array([c['y'] for c in tumor_cells])
+        panel_h, panel_w = 3.2, 3.5
+        cols = 3
 
-        ax1 = fig.add_subplot(1, 2, 1)
-        ax1.set_facecolor('#111')
-        ax1.set_title('전체 세포 밀도', color='white', fontsize=11, pad=8)
-        if len(all_x) > 0:
-            h2d, xedges, yedges = np.histogram2d(all_x, all_y, bins=(bins_x, bins_y),
-                                                   range=[[0, w], [0, h]])
-            im1 = ax1.imshow(h2d.T, origin='upper', aspect='auto',
-                             extent=[0, w, h, 0], cmap='hot', interpolation='gaussian')
-            fig.colorbar(im1, ax=ax1, label='밀도', fraction=0.046, pad=0.04)
-        ax1.set_xticks([])
-        ax1.set_yticks([])
+        if use_prob:
+            # 썸네일 크기
+            if self.thumbnail is not None:
+                th, tw = self.thumbnail.shape[:2]
+            else:
+                tw = 300
+                th = int(300 * self.slide_dimensions[1] / self.slide_dimensions[0])
 
-        ax2 = fig.add_subplot(1, 2, 2)
-        ax2.set_facecolor('#111')
-        ax2.set_title('Tumor Epithelial 밀도', color='white', fontsize=11, pad=8)
-        if len(tumor_x) > 0:
-            h2d_t, _, _ = np.histogram2d(tumor_x, tumor_y, bins=(bins_x, bins_y),
-                                          range=[[0, w], [0, h]])
-            im2 = ax2.imshow(h2d_t.T, origin='upper', aspect='auto',
-                             extent=[0, w, h, 0], cmap='Reds', interpolation='gaussian')
-            fig.colorbar(im2, ax=ax2, label='밀도', fraction=0.046, pad=0.04)
+            # Background(0) 제외한 클래스 목록
+            active_panels = [
+                (cls_id, cls_name)
+                for cls_id, cls_name in enumerate(self.seg_class_names)
+                if cls_id != 0
+            ]
+
+            rows = max(1, (len(active_panels) + cols - 1) // cols)
+            fig = Figure(figsize=(panel_w * cols, panel_h * rows), facecolor=BG)
+            fig.subplots_adjust(hspace=0.45, wspace=0.2, left=0.02, right=0.98,
+                                top=0.91, bottom=0.03)
+            canvas = FigureCanvas(fig)
+            canvas.setMinimumHeight(int(panel_h * rows * 96))
+            canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+            for i, (cls_id, cls_name) in enumerate(active_panels):
+                ax = fig.add_subplot(rows, cols, i + 1)
+                ax.set_facecolor('#e8e8e8')
+                ax.set_title(cls_name, color=TEXT, fontsize=9, pad=5, fontweight='bold')
+                ax.set_xticks([])
+                ax.set_yticks([])
+                for sp in ax.spines.values():
+                    sp.set_color(SPINE)
+
+                if self.thumbnail is not None:
+                    ax.imshow(self.thumbnail, aspect='auto', origin='upper', zorder=0)
+
+                if cls_id < self.seg_prob_map.shape[0]:
+                    prob_ch = self.seg_prob_map[cls_id]
+                    prob_resized = cv2.resize(prob_ch, (tw, th),
+                                             interpolation=cv2.INTER_LINEAR)
+                    ax.imshow(prob_resized, aspect='auto', origin='upper',
+                              cmap='hot', alpha=0.75, zorder=1,
+                              vmin=0, vmax=1, interpolation='bilinear')
+                    max_val = float(prob_resized.max())
+                    mean_val = float(prob_resized[prob_resized > 0.05].mean()) if np.any(prob_resized > 0.05) else 0.0
+                    ax.text(0.02, 0.03,
+                            f'max={max_val:.2f}  avg={mean_val:.2f}',
+                            transform=ax.transAxes,
+                            color='white', fontsize=8, va='bottom', fontweight='bold',
+                            bbox=dict(boxstyle='round,pad=0.3', facecolor='#333', alpha=0.65))
+
         else:
-            ax2.text(0.5, 0.5, 'Tumor Epithelial 없음', ha='center', va='center',
-                     color='#aaa', fontsize=13, transform=ax2.transAxes)
-        ax2.set_xticks([])
-        ax2.set_yticks([])
+            # Segmentation 없음 → 세포 밀도 히트맵 (Other 타입 또는 미실행)
+            if not self.cells:
+                label = QLabel('세포 데이터 없음')
+                label.setStyleSheet(f'color: {SUBTEXT}; font-size: 13px;')
+                outer_layout.addWidget(label)
+                return outer
 
-        # colorbar label color
-        for ax in [ax1, ax2]:
-            if ax.images:
-                cb = fig.axes[-1] if fig.axes else None
+            if self.roi_bounds:
+                x0, y0, x1, y1 = self.roi_bounds
+                range_x = [x0, x1]
+                range_y = [y0, y1]
+                region_w, region_h = x1 - x0, y1 - y0
+            else:
+                wf, hf = self.slide_dimensions
+                range_x, range_y = [0, wf], [0, hf]
+                region_w, region_h = wf, hf
 
-        layout.addWidget(canvas)
-        return widget
+            bins_x = 100
+            bins_y = max(10, int(bins_x * region_h / region_w))
+            thumb_extent = [range_x[0], range_x[1], range_y[1], range_y[0]]
+
+            counts = self._get_class_counts()
+            active_classes = [k for k, v in counts.items() if v > 0]
+            panels = [('전체 세포', None)] + [(CLASS_NAMES[k], k) for k in active_classes]
+            rows = (len(panels) + cols - 1) // cols
+
+            fig = Figure(figsize=(panel_w * cols, panel_h * rows), facecolor=BG)
+            fig.subplots_adjust(hspace=0.45, wspace=0.25, left=0.03, right=0.97,
+                                top=0.91, bottom=0.03)
+            canvas = FigureCanvas(fig)
+            canvas.setMinimumHeight(int(panel_h * rows * 96))
+            canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+            def _draw_density_panel(ax, title, cls_id):
+                ax.set_facecolor('#e8e8e8')
+                ax.set_title(title, color=TEXT, fontsize=9, pad=5, fontweight='bold')
+                ax.set_xticks([])
+                ax.set_yticks([])
+                ax.set_xlim(range_x)
+                ax.set_ylim([range_y[1], range_y[0]])
+                for sp in ax.spines.values():
+                    sp.set_color(SPINE)
+
+                if self.thumbnail is not None:
+                    ax.imshow(self.thumbnail, aspect='auto',
+                              extent=thumb_extent, origin='upper', zorder=0)
+
+                if cls_id is None:
+                    xs = np.array([c['x'] for c in self.cells])
+                    ys = np.array([c['y'] for c in self.cells])
+                    cmap = 'hot'
+                else:
+                    subset = [c for c in self.cells if c.get('cls_id') == cls_id]
+                    xs = np.array([c['x'] for c in subset])
+                    ys = np.array([c['y'] for c in subset])
+                    rgb = mcolors.to_rgb(CLASS_COLORS_HEX.get(cls_id, '#333333'))
+                    cmap = mcolors.LinearSegmentedColormap.from_list(
+                        f'cls_{cls_id}', [(0, 0, 0, 0), (*rgb, 1.0)])
+
+                if len(xs) == 0:
+                    ax.text(0.5, 0.5, '세포 없음', ha='center', va='center',
+                            color=SUBTEXT, fontsize=9, transform=ax.transAxes)
+                    return
+
+                h2d, _, _ = np.histogram2d(xs, ys, bins=(bins_x, bins_y),
+                                            range=[range_x, range_y])
+                from scipy.ndimage import gaussian_filter
+                h2d_smooth = gaussian_filter(h2d.T, sigma=1.5)
+                ax.imshow(h2d_smooth, origin='upper', aspect='auto',
+                          extent=[range_x[0], range_x[1], range_y[1], range_y[0]],
+                          cmap=cmap, alpha=0.75, zorder=1, interpolation='bilinear',
+                          vmin=0, vmax=max(h2d_smooth.max(), 1))
+                ax.text(0.02, 0.03, f'n={len(xs):,}', transform=ax.transAxes,
+                        color='white', fontsize=8, va='bottom',
+                        bbox=dict(boxstyle='round,pad=0.3', facecolor='#333', alpha=0.65))
+
+            for i, (title, cls_id) in enumerate(panels):
+                ax = fig.add_subplot(rows, cols, i + 1)
+                _draw_density_panel(ax, title, cls_id)
+
+        scroll = QScrollArea()
+        scroll.setWidget(canvas)
+        scroll.setWidgetResizable(False)
+        scroll.setStyleSheet('background: white; border: none;')
+        outer_layout.addWidget(scroll)
+
+        mode_label = QLabel(
+            "  모드: Segmentation 확률 히트맵" if use_prob else
+            "  모드: 세포 밀도 히트맵 (Segmentation 미실행)"
+        )
+        mode_label.setStyleSheet(f"color: {SUBTEXT}; font-size: 11px; padding: 4px;")
+        outer_layout.addWidget(mode_label)
+        return outer
 
     def _create_confidence_tab(self):
         widget = QWidget()
@@ -297,7 +452,7 @@ class DetectionVisualizationDialog(QDialog):
 
         if not active_classes:
             label = QLabel("데이터 없음")
-            label.setStyleSheet("color: white;")
+            label.setStyleSheet(f"color: {TEXT};")
             layout.addWidget(label)
             return widget
 
@@ -318,27 +473,367 @@ class DetectionVisualizationDialog(QDialog):
             ax.spines['bottom'].set_visible(True)
 
             confs = [c['confidence'] for c in self.cells if c.get('cls_id') == cls_id]
-            color = CLASS_COLORS_HEX.get(cls_id, '#FFFFFF')
+            color = CLASS_COLORS_HEX.get(cls_id, '#4488CC')
 
-            ax.hist(confs, bins=20, color=color, alpha=0.85, edgecolor='#333',
-                    range=(0, 1))
+            ax.hist(confs, bins=20, color=color, alpha=0.80, edgecolor='white',
+                    linewidth=0.4, range=(0, 1))
             ax.set_title(f'{CLASS_NAMES[cls_id]}\n(n={len(confs):,})',
-                         color='white', fontsize=8, pad=4)
-            ax.set_xlabel('Confidence', color='#aaa', fontsize=7)
-            ax.set_ylabel('Count', color='#aaa', fontsize=7)
+                         color=TEXT, fontsize=8, pad=4)
+            ax.set_xlabel('Confidence', color=SUBTEXT, fontsize=7)
+            ax.set_ylabel('Count', color=SUBTEXT, fontsize=7)
 
             mean_conf = np.mean(confs)
-            ax.axvline(mean_conf, color='white', linestyle='--', linewidth=1, alpha=0.8)
+            ax.axvline(mean_conf, color='#555', linestyle='--', linewidth=1, alpha=0.9)
             ylim = ax.get_ylim()
             ax.text(mean_conf + 0.02, ylim[1] * 0.88,
-                    f'avg {mean_conf:.2f}', color='white', fontsize=7)
+                    f'avg {mean_conf:.2f}', color=TEXT, fontsize=7)
 
         layout.addWidget(canvas)
         return widget
 
 
-def show_detection_visualization(cells, slide_dimensions=None, parent=None):
+    # ──────────────────────────────────────────────
+    # PDF 내보내기
+    # ──────────────────────────────────────────────
+
+    def _export_pdf(self):
+        from PyQt5.QtWidgets import QFileDialog, QMessageBox, QProgressDialog
+        from PyQt5.QtCore import Qt as QtCore_Qt
+        import gc
+
+        import os
+        if self.slide_path:
+            base = os.path.splitext(os.path.basename(self.slide_path))[0]
+            default_name = f"{base}_ai_report.pdf"
+        else:
+            default_name = "ai_report.pdf"
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "PDF 저장", default_name, "PDF Files (*.pdf)")
+        if not path:
+            return
+        if not path.lower().endswith('.pdf'):
+            path += '.pdf'
+
+        prog = QProgressDialog("PDF 생성 중...", None, 0, 0, self)
+        prog.setWindowModality(QtCore_Qt.WindowModal)
+        prog.setMinimumDuration(0)
+        prog.show()
+
+        try:
+            from matplotlib.backends.backend_pdf import PdfPages
+            with PdfPages(path) as pdf:
+                for make_fn in [
+                    self._make_pdf_cover,
+                    self._make_pdf_class_distribution,
+                    self._make_pdf_tumor_analysis,
+                ]:
+                    fig = make_fn()
+                    pdf.savefig(fig, bbox_inches='tight')
+                    fig.clear(); del fig; gc.collect()
+
+                if self.seg_prob_map is not None:
+                    fig = self._make_pdf_spatial_heatmap()
+                    pdf.savefig(fig, bbox_inches='tight')
+                    fig.clear(); del fig; gc.collect()
+
+                fig = self._make_pdf_confidence()
+                pdf.savefig(fig, bbox_inches='tight')
+                fig.clear(); del fig; gc.collect()
+
+            prog.close()
+            QMessageBox.information(self, "완료", f"PDF 저장 완료\n{path}")
+        except Exception as e:
+            prog.close()
+            import traceback
+            QMessageBox.warning(self, "오류",
+                                f"PDF 생성 실패:\n{str(e)}\n\n{traceback.format_exc()[:600]}")
+
+    # ── 커버 페이지 ──────────────────────────────
+    def _make_pdf_cover(self):
+        import datetime
+        from matplotlib.figure import Figure as MplFig
+
+        fig = MplFig(figsize=A4_LANDSCAPE, facecolor='white')
+
+        # 헤더 밴드
+        hax = fig.add_axes([0, 0.91, 1, 0.09])
+        hax.set_facecolor('#1a56a0')
+        hax.set_xticks([]); hax.set_yticks([])
+        for sp in hax.spines.values(): sp.set_visible(False)
+        hax.text(0.02, 0.5, 'AI 검출 결과 보고서',
+                 transform=hax.transAxes, color='white',
+                 fontsize=18, fontweight='bold', va='center')
+        hax.text(0.98, 0.5, datetime.datetime.now().strftime('%Y-%m-%d'),
+                 transform=hax.transAxes, color='white',
+                 fontsize=10, va='center', ha='right')
+
+        # 썸네일 + 폴리곤 (좌 60%)
+        img_ax = fig.add_axes([0.02, 0.10, 0.57, 0.78])
+        img_ax.set_xticks([]); img_ax.set_yticks([])
+        for sp in img_ax.spines.values(): sp.set_color(SPINE)
+
+        if self.thumbnail is not None:
+            th, tw = self.thumbnail.shape[:2]
+            img_ax.imshow(self.thumbnail, origin='upper', aspect='equal')
+
+            # 폴리곤 오버레이
+            if self.roi_polygons and self.roi_bounds:
+                rx0, ry0, rx1, ry1 = self.roi_bounds
+                rw, rh = rx1 - rx0, ry1 - ry0
+                for poly in self.roi_polygons:
+                    pts = np.array(poly)
+                    if pts.ndim == 2 and pts.shape[1] >= 2:
+                        px = (pts[:, 0] - rx0) * tw / rw
+                        py = (pts[:, 1] - ry0) * th / rh
+                        img_ax.plot(np.append(px, px[0]), np.append(py, py[0]),
+                                    color='#2196F3', linewidth=2.5, alpha=0.9, zorder=2)
+                        img_ax.fill(px, py, alpha=0.10, color='#2196F3', zorder=1)
+        else:
+            img_ax.set_facecolor('#f0f0f0')
+            img_ax.text(0.5, 0.5, '썸네일 없음', ha='center', va='center',
+                        color=SUBTEXT, fontsize=12, transform=img_ax.transAxes)
+
+        img_ax.set_title('조직 이미지' + (' (ROI)' if self.roi_bounds else ''),
+                         color=TEXT, fontsize=11, pad=6)
+
+        # 통계 패널 (우 38%)
+        counts = self._get_class_counts()
+        tumor = counts.get(6, 0)
+        benign = counts.get(7, 0)
+        total_epi = tumor + benign
+        tumor_ratio = (tumor / total_epi * 100) if total_epi > 0 else 0
+        n_total = len(self.cells)
+
+        stat_ax = fig.add_axes([0.62, 0.10, 0.36, 0.78])
+        stat_ax.set_facecolor('#f8f8f8')
+        stat_ax.set_xticks([]); stat_ax.set_yticks([])
+        for sp in stat_ax.spines.values(): sp.set_color(SPINE)
+        stat_ax.set_title('검출 요약', color=TEXT, fontsize=11, pad=8)
+
+        rows = [('총 검출 세포', f'{n_total:,}개', TEXT)]
+        for cls_id, name in CLASS_NAMES.items():
+            cnt = counts.get(cls_id, 0)
+            if cnt > 0:
+                rows.append((f'  {name}', f'{cnt:,}개', CLASS_COLORS_HEX.get(cls_id, TEXT)))
+        rows.append(None)  # divider
+        tc = '#E84040' if tumor_ratio >= 50 else ('#FF8C00' if tumor_ratio >= 20 else TEXT)
+        rows.append(('Tumor 비율', f'{tumor_ratio:.1f}%', tc))
+
+        y = 0.90; dy = min(0.09, 0.85 / max(len(rows), 1))
+        for row in rows:
+            if row is None:
+                stat_ax.axhline(y=y + dy * 0.4, xmin=0.04, xmax=0.96,
+                                color=SPINE, linewidth=0.8)
+                y -= dy * 0.5; continue
+            label, value, color = row
+            stat_ax.text(0.05, y, label, transform=stat_ax.transAxes,
+                         fontsize=9, color=SUBTEXT, va='top')
+            stat_ax.text(0.95, y, value, transform=stat_ax.transAxes,
+                         fontsize=10, color=color, va='top', ha='right', fontweight='bold')
+            y -= dy
+
+        # 푸터
+        fig.text(0.5, 0.01,
+                 f'생성: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M")}  |  '
+                 'Comprehensive Pathology AI Solution',
+                 ha='center', va='bottom', fontsize=8, color=SUBTEXT)
+        return fig
+
+    # ── 클래스 분포 ──────────────────────────────
+    def _make_pdf_class_distribution(self):
+        from matplotlib.figure import Figure as MplFig
+
+        counts = self._get_class_counts()
+        active = {k: v for k, v in counts.items() if v > 0}
+        fig = MplFig(figsize=A4_LANDSCAPE, facecolor='white')
+        fig.suptitle('클래스별 세포 분포', fontsize=16, fontweight='bold', color=TEXT, y=0.97)
+
+        if not active:
+            ax = fig.add_subplot(111)
+            ax.text(0.5, 0.5, '검출 데이터 없음', ha='center', va='center',
+                    color=TEXT, fontsize=14)
+            return fig
+
+        names = [CLASS_NAMES[k] for k in active]
+        values = list(active.values())
+        colors = [CLASS_COLORS_HEX[k] for k in active]
+        max_v = max(values)
+
+        fig.subplots_adjust(left=0.10, right=0.95, top=0.88, bottom=0.12, wspace=0.35)
+
+        ax1 = fig.add_subplot(1, 2, 1)
+        ax1.set_facecolor(PANEL)
+        ax1.tick_params(colors=TEXT, labelsize=9)
+        for sp in ax1.spines.values(): sp.set_color(SPINE)
+        ax1.spines['top'].set_visible(False); ax1.spines['right'].set_visible(False)
+        bars = ax1.barh(names, values, color=colors, height=0.6,
+                        edgecolor='white', linewidth=0.5)
+        ax1.set_xlabel('세포 수', color=SUBTEXT, fontsize=10)
+        ax1.set_title('클래스별 세포 수', color=TEXT, fontsize=13, pad=8)
+        for bar, val in zip(bars, values):
+            ax1.text(val + max_v * 0.01, bar.get_y() + bar.get_height() / 2,
+                     f'{val:,}', va='center', color=TEXT, fontsize=9)
+
+        ax2 = fig.add_subplot(1, 2, 2)
+        ax2.set_facecolor('white')
+        wedges, _, autotexts = ax2.pie(
+            values, labels=None, colors=colors,
+            autopct=lambda p: f'{p:.1f}%' if p > 3 else '',
+            pctdistance=0.72, startangle=90,
+            wedgeprops={'linewidth': 0.8, 'edgecolor': 'white'}
+        )
+        for t in autotexts:
+            t.set_color('#111'); t.set_fontsize(9); t.set_fontweight('bold')
+        ax2.set_title(f'비율  (총 {len(self.cells):,}개)', color=TEXT, fontsize=13, pad=8)
+        ax2.legend(wedges, [f'{n}  ({v:,})' for n, v in zip(names, values)],
+                   loc='lower center', bbox_to_anchor=(0.5, -0.16),
+                   ncol=2, fontsize=9, labelcolor=TEXT,
+                   facecolor='white', edgecolor=SPINE)
+        return fig
+
+    # ── Tumor 분석 ───────────────────────────────
+    def _make_pdf_tumor_analysis(self):
+        from matplotlib.figure import Figure as MplFig
+
+        counts = self._get_class_counts()
+        tumor = counts.get(6, 0); benign = counts.get(7, 0)
+        total_epi = tumor + benign
+        tumor_ratio = (tumor / total_epi * 100) if total_epi > 0 else 0
+
+        fig = MplFig(figsize=A4_LANDSCAPE, facecolor='white')
+        fig.suptitle('Tumor 분석', fontsize=16, fontweight='bold', color=TEXT, y=0.97)
+        fig.subplots_adjust(left=0.08, right=0.95, top=0.88, bottom=0.10, wspace=0.35)
+
+        ax1 = fig.add_subplot(1, 2, 1)
+        ax1.set_facecolor('white')
+        if total_epi > 0:
+            _, _, autotexts = ax1.pie(
+                [tumor, benign],
+                labels=[f'Tumor Epithelial\n({tumor:,}개)', f'Benign Epithelial\n({benign:,}개)'],
+                colors=['#E84040', '#2196F3'],
+                autopct='%1.1f%%', startangle=90,
+                textprops={'color': TEXT, 'fontsize': 11},
+                wedgeprops={'linewidth': 1.2, 'edgecolor': 'white'}
+            )
+            for t in autotexts:
+                t.set_fontsize(13); t.set_fontweight('bold'); t.set_color('white')
+        else:
+            ax1.text(0.5, 0.5, 'Epithelial 세포 없음', ha='center', va='center',
+                     color=SUBTEXT, fontsize=13, transform=ax1.transAxes)
+        ax1.set_title('Tumor vs Benign Epithelial', color=TEXT, fontsize=13, pad=8)
+
+        ax2 = fig.add_subplot(1, 2, 2)
+        ax2.set_facecolor(PANEL)
+        for sp in ax2.spines.values(): sp.set_color(SPINE)
+        ax2.spines['top'].set_visible(False)
+        ax2.spines['right'].set_visible(False)
+        ax2.spines['left'].set_visible(False)
+        ax2.set_xlim(0, 100); ax2.set_ylim(0, 1)
+        ax2.barh(0.5, 100, height=0.25, color='#e0e0e0', left=0)
+        bar_color = '#E84040' if tumor_ratio >= 50 else ('#FF8C00' if tumor_ratio >= 20 else '#FFB347')
+        ax2.barh(0.5, tumor_ratio, height=0.25, color=bar_color, left=0)
+        ax2.text(50, 0.82, 'Tumor 비율', ha='center', color=SUBTEXT, fontsize=12)
+        ax2.text(50, 0.22, f'{tumor_ratio:.1f}%', ha='center', color=bar_color,
+                 fontsize=34, fontweight='bold')
+        ax2.set_xticks([0, 25, 50, 75, 100])
+        ax2.set_xticklabels(['0%', '25%', '50%', '75%', '100%'], color=SUBTEXT, fontsize=9)
+        ax2.set_yticks([])
+        ax2.set_title(f'Tumor / (Tumor + Benign)  [{total_epi:,}개 기준]',
+                      color=TEXT, fontsize=11, pad=8)
+        return fig
+
+    # ── 공간 히트맵 ───────────────────────────────
+    def _make_pdf_spatial_heatmap(self):
+        import cv2
+        from matplotlib.figure import Figure as MplFig
+
+        if self.seg_prob_map is None or self.thumbnail is None:
+            fig = MplFig(figsize=A4_LANDSCAPE, facecolor='white')
+            fig.text(0.5, 0.5, '공간 히트맵 데이터 없음', ha='center', va='center',
+                     color=SUBTEXT, fontsize=14)
+            return fig
+
+        th, tw = self.thumbnail.shape[:2]
+        active_panels = [(cid, cn) for cid, cn in enumerate(self.seg_class_names) if cid != 0]
+        cols = min(3, len(active_panels))
+        rows = max(1, (len(active_panels) + cols - 1) // cols)
+
+        fig = MplFig(figsize=A4_LANDSCAPE, facecolor='white')
+        fig.suptitle('공간 확률 히트맵 (Segmentation)', fontsize=16,
+                     fontweight='bold', color=TEXT, y=0.97)
+        fig.subplots_adjust(hspace=0.40, wspace=0.15,
+                            left=0.02, right=0.98, top=0.91, bottom=0.04)
+
+        for i, (cls_id, cls_name) in enumerate(active_panels):
+            ax = fig.add_subplot(rows, cols, i + 1)
+            ax.set_facecolor('#e8e8e8')
+            ax.set_title(cls_name, color=TEXT, fontsize=10, pad=5, fontweight='bold')
+            ax.set_xticks([]); ax.set_yticks([])
+            for sp in ax.spines.values(): sp.set_color(SPINE)
+            ax.imshow(self.thumbnail, aspect='auto', origin='upper', zorder=0)
+            if cls_id < self.seg_prob_map.shape[0]:
+                prob_ch = self.seg_prob_map[cls_id]
+                prob_r = cv2.resize(prob_ch, (tw, th), interpolation=cv2.INTER_LINEAR)
+                ax.imshow(prob_r, aspect='auto', origin='upper',
+                          cmap='hot', alpha=0.75, zorder=1, vmin=0, vmax=1)
+                max_v = float(prob_r.max())
+                mean_v = float(prob_r[prob_r > 0.05].mean()) if np.any(prob_r > 0.05) else 0.0
+                ax.text(0.02, 0.03, f'max={max_v:.2f}  avg={mean_v:.2f}',
+                        transform=ax.transAxes, color='white', fontsize=8,
+                        va='bottom', fontweight='bold',
+                        bbox=dict(boxstyle='round,pad=0.3', facecolor='#333', alpha=0.65))
+        return fig
+
+    # ── Confidence 분포 ───────────────────────────
+    def _make_pdf_confidence(self):
+        from matplotlib.figure import Figure as MplFig
+
+        counts = self._get_class_counts()
+        active_classes = [k for k, v in counts.items() if v > 0]
+        fig = MplFig(figsize=A4_LANDSCAPE, facecolor='white')
+        fig.suptitle('Confidence 분포', fontsize=16, fontweight='bold', color=TEXT, y=0.97)
+
+        if not active_classes:
+            fig.text(0.5, 0.5, '데이터 없음', ha='center', va='center',
+                     color=TEXT, fontsize=14)
+            return fig
+
+        cols = min(3, len(active_classes))
+        rows = (len(active_classes) + cols - 1) // cols
+        fig.subplots_adjust(hspace=0.55, wspace=0.40,
+                            left=0.07, right=0.97, top=0.88, bottom=0.08)
+
+        for i, cls_id in enumerate(active_classes):
+            ax = fig.add_subplot(rows, cols, i + 1)
+            ax.set_facecolor(PANEL)
+            ax.tick_params(colors=TEXT, labelsize=8)
+            for sp in ax.spines.values(): sp.set_color(SPINE)
+            ax.spines['top'].set_visible(False); ax.spines['right'].set_visible(False)
+
+            confs = [c['confidence'] for c in self.cells if c.get('cls_id') == cls_id]
+            color = CLASS_COLORS_HEX.get(cls_id, '#4488CC')
+            ax.hist(confs, bins=20, color=color, alpha=0.80,
+                    edgecolor='white', linewidth=0.4, range=(0, 1))
+            ax.set_title(f'{CLASS_NAMES[cls_id]}\n(n={len(confs):,})',
+                         color=TEXT, fontsize=9, pad=4)
+            ax.set_xlabel('Confidence', color=SUBTEXT, fontsize=8)
+            ax.set_ylabel('Count', color=SUBTEXT, fontsize=8)
+            mean_conf = np.mean(confs)
+            ax.axvline(mean_conf, color='#555', linestyle='--', linewidth=1, alpha=0.9)
+            ylim = ax.get_ylim()
+            ax.text(mean_conf + 0.02, ylim[1] * 0.88,
+                    f'avg {mean_conf:.2f}', color=TEXT, fontsize=8)
+        return fig
+
+
+def show_detection_visualization(cells, slide_dimensions=None, thumbnail=None,
+                                  roi_bounds=None, seg_prob_map=None, seg_class_names=None,
+                                  roi_polygons=None, slide_path=None, parent=None):
     """시각화 다이얼로그 표시 헬퍼 함수"""
-    dialog = DetectionVisualizationDialog(cells, slide_dimensions, parent)
+    dialog = DetectionVisualizationDialog(
+        cells, slide_dimensions, thumbnail, roi_bounds,
+        seg_prob_map, seg_class_names, roi_polygons, slide_path, parent
+    )
     dialog.show()
     return dialog
