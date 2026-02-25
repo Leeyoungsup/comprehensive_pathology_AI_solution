@@ -1315,6 +1315,81 @@ class TiledDetectionOverlay:
 
         return pixmap, x, y
 
+    def create_heatmap_mask(self, view_rect, heatmap_size=512):
+        """저배율 LOD용 히트맵 마스크 생성
+
+        세포 밀도를 heatmap_size 해상도 격자에 누적하고
+        Gaussian blur + COLORMAP_HOT으로 시각화한다.
+
+        Returns:
+            (QPixmap | None, x, y, scale)
+            scale: scene units per heatmap pixel (setScale에 사용)
+        """
+        from PyQt5.QtGui import QImage, QPixmap
+
+        x = int(view_rect.x())
+        y = int(view_rect.y())
+        width = int(view_rect.width())
+        height = int(view_rect.height())
+
+        if width <= 0 or height <= 0:
+            return None, x, y, 1.0
+
+        # 종횡비 유지하여 히트맵 해상도 결정
+        hm_w = heatmap_size
+        hm_h = max(1, int(heatmap_size * height / width))
+
+        # 뷰 영역 내 셀 조회 (SpatialGrid 활용)
+        visible_cells = self.spatial_grid.query(x, y, x + width, y + height)
+        if not visible_cells:
+            return None, x, y, 1.0
+
+        # 클래스 가시성 필터
+        visible_cells = [c for c in visible_cells
+                         if self.class_visibility.get(c.get('cls_id', 0), True)]
+        if not visible_cells:
+            return None, x, y, 1.0
+
+        # 밀도 격자 누적
+        density = np.zeros((hm_h, hm_w), dtype=np.float32)
+        for cell in visible_cells:
+            cx = int((cell['x'] - x) / width * hm_w)
+            cy = int((cell['y'] - y) / height * hm_h)
+            if 0 <= cx < hm_w and 0 <= cy < hm_h:
+                density[cy, cx] += 1.0
+
+        # 적응형 Gaussian blur (heatmap 크기에 비례)
+        sigma = max(3.0, hm_w / 40.0)
+        density = cv2.GaussianBlur(density, (0, 0), sigma)
+
+        # 정규화
+        max_val = float(density.max())
+        if max_val == 0:
+            return None, x, y, 1.0
+        density_norm = (density / max_val * 255).astype(np.uint8)
+
+        # 컬러맵 적용 (COLORMAP_HOT: 검정→빨강→노랑→흰색)
+        colored_bgr = cv2.applyColorMap(density_norm, cv2.COLORMAP_HOT)
+        colored_rgb = cv2.cvtColor(colored_bgr, cv2.COLOR_BGR2RGB)
+
+        # 알파: 밀도에 비례 (배경은 투명)
+        alpha_mask = np.clip(
+            density_norm.astype(np.float32) * (self.alpha / 255.0), 0, 255
+        ).astype(np.uint8)
+
+        mask = np.zeros((hm_h, hm_w, 4), dtype=np.uint8)
+        mask[:, :, 0] = colored_rgb[:, :, 0]
+        mask[:, :, 1] = colored_rgb[:, :, 1]
+        mask[:, :, 2] = colored_rgb[:, :, 2]
+        mask[:, :, 3] = alpha_mask
+
+        bytes_per_line = 4 * hm_w
+        qimage = QImage(mask.data, hm_w, hm_h, bytes_per_line, QImage.Format_RGBA8888)
+        pixmap = QPixmap.fromImage(qimage.copy())  # .copy()로 numpy 메모리 독립
+
+        scale = width / hm_w  # scene 좌표 기준 pixel 크기
+        return pixmap, x, y, scale
+
     def get_cells_in_region(self, x, y, width, height):
         """특정 영역 내의 세포 리스트 반환"""
         return self.spatial_grid.query(x, y, x + width, y + height)
