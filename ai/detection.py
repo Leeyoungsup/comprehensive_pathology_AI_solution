@@ -12,12 +12,18 @@ from xml.dom import minidom
 from glob import glob
 from pathlib import Path
 
+import threading
+import queue
+
 import numpy as np
 import torch
 import torchvision
 import cv2
 
 from PyQt5.QtCore import QObject, pyqtSignal, QThread
+
+# I/O 워커 스레드별 독립 OpenSlide 객체 (스레드 안전 병렬 읽기)
+_patch_thread_local = threading.local()
 
 # AI 모델 경로 설정
 AI_ROOT = Path(__file__).parent
@@ -151,7 +157,7 @@ class DetectionWorker(QThread):
     error = pyqtSignal(str)      # 에러 메시지
     status = pyqtSignal(str)     # 상태 메시지
     
-    def __init__(self, slide, model, roi_polygons=None, device='cuda', auto_classify_epithelial=True, tissue_type="Stomach"):
+    def __init__(self, slide, model, roi_polygons=None, device='cuda', auto_classify_epithelial=True, tissue_type="Stomach", image_path=None):
         super().__init__()
         self.slide = slide  # pyvips 또는 openslide 이미지
         self.model = model
@@ -160,6 +166,7 @@ class DetectionWorker(QThread):
         self.is_cancelled = False
         self.auto_classify_epithelial = auto_classify_epithelial  # 자동 Epithelial 재분류
         self.tissue_type = tissue_type  # 조직 타입 (Breast, Stomach, Other)
+        self.image_path = image_path  # 병렬 I/O용 슬라이드 경로
 
         # 설정
         self.image_size = 1024
@@ -218,70 +225,151 @@ class DetectionWorker(QThread):
             self.status.emit(f"조직 마스크 생성 완료 ({mask_time:.2f}s)")
             self.progress.emit(5)
             
-            # 총 패치 수 계산
-            total_patches = (width // self.image_size) * (height // self.image_size)
-            processed_patches = 0
+            # ── Pre-scan: 조직+ROI 통과 패치 사전 집계 ──
+            self.status.emit("유효 패치 수 계산 중...")
+            valid_patch_list = []
+            for pr in range(width // self.image_size - 1):
+                for pc in range(height // self.image_size - 1):
+                    mx = (pr * self.image_size) // 64
+                    my = (pc * self.image_size) // 64
+                    if np.sum(thumb_mask[my:my + self.image_size // 64,
+                                        mx:mx + self.image_size // 64]) == 0:
+                        continue
+                    px, py = pr * self.image_size, pc * self.image_size
+                    if self.roi_polygons and not self._is_in_roi(px, py):
+                        continue
+                    valid_patch_list.append((px, py))
+
+            n_valid = len(valid_patch_list)
+            total_grid = (width // self.image_size) * (height // self.image_size)
+            self.status.emit(f"유효 패치 {n_valid}개 확인 완료 (전체 {total_grid}개 중)")
+
             detected_cells_count = 0
-            tissue_patches = 0  # 조직 영역 패치 수
-            roi_patches = 0  # ROI 내부 패치 수
-            
-            import time
+            processed_valid = 0
+
             start_time = time.time()
             last_update_time = start_time
-            
-            self.status.emit(f"세포 검출 중... (총 {total_patches}개 패치)")
-            
-            # 패치별 처리
-            for patch_row in range(width // self.image_size - 1):
-                if self.is_cancelled:
-                    break
-                    
-                for patch_col in range(height // self.image_size - 1):
-                    if self.is_cancelled:
+
+            # ── 배치 병렬처리: I/O 프리페치(멀티스레드) + 배치 GPU 추론 ──
+            BATCH_SIZE = 8        # GPU 한 번에 처리할 패치 수
+            IO_WORKERS = 4        # 동시 슬라이드 I/O 스레드 수
+            PREFETCH_BATCHES = 3  # 큐에 미리 쌓아둘 배치 수 (메모리 상한)
+
+            from concurrent.futures import ThreadPoolExecutor
+
+            prefetch_queue = queue.Queue(maxsize=PREFETCH_BATCHES)
+            producer_done = threading.Event()
+
+            def _io_producer():
+                """I/O 스레드: 패치 병렬 읽기 → 배치 구성 → 프리페치 큐 삽입"""
+                try:
+                    with ThreadPoolExecutor(max_workers=IO_WORKERS) as io_pool:
+                        pending = []  # [(px, py, future), ...]
+
+                        for px, py in valid_patch_list:
+                            if self.is_cancelled:
+                                break
+                            future = io_pool.submit(self._read_patch_tensor, px, py)
+                            pending.append((px, py, future))
+
+                            # 배치가 채워지면 결과를 모아 큐에 삽입
+                            if len(pending) >= BATCH_SIZE:
+                                batch_coords, batch_tensors = [], []
+                                for bx, by, f in pending:
+                                    t = f.result(timeout=60)
+                                    if t is not None:
+                                        batch_coords.append((bx, by))
+                                        batch_tensors.append(t)
+                                if batch_coords:
+                                    # 큐가 가득 차면 블로킹 (메모리 상한 적용)
+                                    # 취소 시 블로킹 해제를 위해 타임아웃 폴링
+                                    while True:
+                                        try:
+                                            prefetch_queue.put(
+                                                (batch_coords, batch_tensors, len(pending)),
+                                                timeout=0.5
+                                            )
+                                            break
+                                        except queue.Full:
+                                            if self.is_cancelled:
+                                                return
+                                pending.clear()
+
+                        # 남은 패치 처리 (마지막 부분 배치)
+                        if pending and not self.is_cancelled:
+                            batch_coords, batch_tensors = [], []
+                            for bx, by, f in pending:
+                                t = f.result(timeout=60)
+                                if t is not None:
+                                    batch_coords.append((bx, by))
+                                    batch_tensors.append(t)
+                            if batch_coords:
+                                while True:
+                                    try:
+                                        prefetch_queue.put(
+                                            (batch_coords, batch_tensors, len(pending)),
+                                            timeout=0.5
+                                        )
+                                        break
+                                    except queue.Full:
+                                        if self.is_cancelled:
+                                            return
+                except Exception as e:
+                    print(f"I/O 프로듀서 오류: {e}")
+                finally:
+                    producer_done.set()
+                    prefetch_queue.put(None)  # sentinel
+
+            producer_thread = threading.Thread(target=_io_producer, daemon=True)
+            producer_thread.start()
+
+            # GPU 추론 루프 (메인 워커 스레드에서 실행)
+            while True:
+                try:
+                    item = prefetch_queue.get(timeout=120)
+                except queue.Empty:
+                    if producer_done.is_set():
                         break
-                    
-                    # 마스크 체크 (조직 영역인지)
-                    mask_x = (patch_row * self.image_size) // 64
-                    mask_y = (patch_col * self.image_size) // 64
-                    mask_region = thumb_mask[mask_y:mask_y + self.image_size // 64,
-                                            mask_x:mask_x + self.image_size // 64]
-                    
-                    if np.sum(mask_region) == 0:
-                        processed_patches += 1
-                        continue
-                    
-                    tissue_patches += 1
-                    
-                    # ROI 체크 (ROI가 지정된 경우)
-                    patch_x = patch_row * self.image_size
-                    patch_y = patch_col * self.image_size
-                    
-                    if self.roi_polygons and not self._is_in_roi(patch_x, patch_y):
-                        processed_patches += 1
-                        continue
-                    
-                    roi_patches += 1
-                    
-                    # 패치 추출 및 처리
-                    cells = self._process_patch(patch_x, patch_y)
-                    all_cells.extend(cells)
-                    detected_cells_count = len(all_cells)
-                    
-                    processed_patches += 1
-                    progress = int(5 + (processed_patches / total_patches) * 90)
-                    self.progress.emit(progress)
-                    
-                    # 상태 메시지 업데이트 (매 10개 패치마다 또는 1초마다)
-                    current_time = time.time()
-                    if processed_patches % 10 == 0 or (current_time - last_update_time) >= 1.0:
-                        elapsed = current_time - start_time
-                        patches_per_sec = processed_patches / elapsed if elapsed > 0 else 0
-                        remaining_patches = total_patches - processed_patches
-                        eta = remaining_patches / patches_per_sec if patches_per_sec > 0 else 0
-                        
-                        status_msg = f"패치 {processed_patches}/{total_patches} | 조직:{tissue_patches} ROI:{roi_patches} | 세포:{detected_cells_count}개 | {patches_per_sec:.1f}it/s | ETA:{eta:.0f}s"
-                        self.status.emit(status_msg)
-                        last_update_time = current_time
+                    continue
+
+                if item is None:
+                    break
+
+                if self.is_cancelled:
+                    # 큐를 비워서 프로듀서 블로킹 해제
+                    while True:
+                        try:
+                            prefetch_queue.get_nowait()
+                        except queue.Empty:
+                            break
+                    break
+
+                batch_coords, batch_tensors, patch_count = item
+                new_cells = self._infer_batch(batch_coords, batch_tensors)
+                all_cells.extend(new_cells)
+                detected_cells_count = len(all_cells)
+
+                processed_valid += patch_count
+                pct = processed_valid / n_valid if n_valid > 0 else 1.0
+                self.progress.emit(int(5 + pct * 45))
+
+                current_time = time.time()
+                if current_time - last_update_time >= 1.0:
+                    elapsed = current_time - start_time
+                    patches_per_sec = processed_valid / elapsed if elapsed > 0 else 0
+                    remaining = n_valid - processed_valid
+                    eta = remaining / patches_per_sec if patches_per_sec > 0 else 0
+                    if eta >= 60:
+                        eta_str = f"{int(eta) // 60}분 {int(eta) % 60}초"
+                    else:
+                        eta_str = f"{int(eta)}초"
+                    self.status.emit(
+                        f"패치 {processed_valid}/{n_valid} | 세포:{detected_cells_count}개 "
+                        f"| {patches_per_sec:.1f}it/s | ~{eta_str} 남음"
+                    )
+                    last_update_time = current_time
+
+            producer_thread.join(timeout=10)
             
             if self.is_cancelled:
                 self.error.emit("검출이 취소되었습니다.")
@@ -305,7 +393,10 @@ class DetectionWorker(QThread):
                 'cells': all_cells,
                 'num_cells': len(all_cells),
                 'class_counts': self._count_by_class(all_cells),
-                'message': f'총 {len(all_cells)}개 세포 검출 완료 (재분류 포함)'
+                'message': f'총 {len(all_cells)}개 세포 검출 완료 (재분류 포함)',
+                'seg_mask': getattr(self, 'last_prediction_mask', None),
+                'seg_metadata': getattr(self, 'last_seg_metadata', None),
+                'seg_class_names': getattr(self, 'last_seg_class_names', None),
             }
 
             self.progress.emit(100)
@@ -379,7 +470,107 @@ class DetectionWorker(QThread):
         
         return False
 
-    
+    def _read_patch_tensor(self, patch_x, patch_y):
+        """
+        I/O + CPU 전처리: 패치 읽기 → CPU 텐서 반환 (ThreadPoolExecutor 에서 실행)
+        각 스레드가 독립적인 OpenSlide 객체를 사용해 thread-safe 병렬 읽기 보장.
+
+        Returns:
+            CPU tensor (C, H, W) float32 [0,1]  또는  None (읽기 실패)
+        """
+        try:
+            if self.image_path:
+                # 스레드별 독립 OpenSlide (thread-safe)
+                if (not hasattr(_patch_thread_local, 'slide') or
+                        _patch_thread_local.image_path != self.image_path):
+                    import openslide as _openslide
+                    _patch_thread_local.slide = _openslide.OpenSlide(self.image_path)
+                    _patch_thread_local.image_path = self.image_path
+                slide = _patch_thread_local.slide
+            else:
+                # image_path 미제공 시 메인 slide 사용 (단일 스레드에서만 안전)
+                slide = self.slide
+
+            patch = slide.read_region(
+                (patch_x, patch_y), 0, (self.image_size, self.image_size)
+            )
+            patch = np.array(patch)[:, :, :3]
+            patch = cv2.resize(patch, (512, 512))
+            # .copy()로 numpy 배열 해제 후에도 텐서가 유효하도록 보장
+            return torch.from_numpy(patch.copy()).permute(2, 0, 1).float() / 255.
+        except Exception as e:
+            print(f"패치 읽기 오류 ({patch_x}, {patch_y}): {e}")
+            return None
+
+    def _infer_batch(self, batch_coords, batch_tensors):
+        """
+        배치 단위 GPU 추론 + 결과 파싱
+
+        Args:
+            batch_coords: [(start_x, start_y), ...] 패치 좌상단 WSI 좌표
+            batch_tensors: CPU 텐서 리스트 (각 shape: [C, H, W])
+
+        Returns:
+            검출된 세포 딕셔너리 리스트
+        """
+        cells = []
+        try:
+            batch = torch.stack(batch_tensors).to(self.device)  # (B, C, H, W)
+
+            self.model.eval()
+            with torch.no_grad():
+                with torch.amp.autocast('cuda'):
+                    preds = self.model(batch)
+
+            results = non_max_suppression(
+                preds,
+                confidence_threshold=0.01,
+                iou_threshold=0.3,
+                class_thresholds=self.class_thresholds,
+            )
+
+            # 512 → image_size(1024) → WSI level-0 좌표 스케일
+            coord_scale = self.image_size / 512  # = 2.0
+
+            for i, (start_x, start_y) in enumerate(batch_coords):
+                if i >= len(results) or len(results[i]) == 0:
+                    continue
+
+                detections = results[i]
+                xyxy   = detections[:, :4]
+                confs  = detections[:, 4]
+                cls_ids = detections[:, 5]
+
+                centers_x = (xyxy[:, 0] + xyxy[:, 2]) / 2
+                centers_y = (xyxy[:, 1] + xyxy[:, 3]) / 2
+
+                actual_x = start_x + centers_x * coord_scale
+                actual_y = start_y + centers_y * coord_scale
+
+                for j in range(len(detections)):
+                    cell_x = actual_x[j].item()
+                    cell_y = actual_y[j].item()
+
+                    if self.roi_polygons:
+                        in_roi = False
+                        for polygon in self.roi_polygons:
+                            if polygon.contains_point(cell_x, cell_y):
+                                in_roi = True
+                                break
+                        if not in_roi:
+                            continue
+
+                    cells.append({
+                        'x': cell_x,
+                        'y': cell_y,
+                        'cls_id': int(cls_ids[j].item()),
+                        'confidence': confs[j].item(),
+                    })
+        except Exception as e:
+            import traceback
+            print(f"배치 추론 오류: {e}\n{traceback.format_exc()}")
+        return cells
+
     def _process_patch(self, start_x, start_y):
         """단일 패치 처리"""
         cells = []
@@ -544,8 +735,9 @@ class DetectionWorker(QThread):
                 # Segmentation: 55-90% 범위
                 adjusted_progress = 55 + int(progress_pct * 0.35)
                 self.progress.emit(adjusted_progress)
-                if int(progress_pct) % 10 == 0:
-                    self.status.emit(f"Segmentation 진행 중... {int(progress_pct)}%")
+
+            def seg_status_callback(msg):
+                self.status.emit(msg)
 
             prediction_mask, metadata = seg_model.predict_wsi(
                 self.slide,
@@ -553,8 +745,14 @@ class DetectionWorker(QThread):
                 overlap_ratio=0.4,
                 batch_size=8,
                 progress_callback=progress_callback,
+                status_callback=seg_status_callback,
                 roi_bounds=roi_bounds
             )
+
+            # 시각화를 위해 저장
+            self.last_prediction_mask = prediction_mask
+            self.last_seg_metadata = metadata
+            self.last_seg_class_names = seg_model.class_names
 
             self.status.emit("Epithelial 세포 재분류 중...")
             self.progress.emit(92)
@@ -598,31 +796,47 @@ class DetectionWorker(QThread):
                     epi_coords.append([cell['x'], cell['y']])
                     epi_seg_classes.append(seg_class)
 
-            # 2단계: DBSCAN 클러스터링 (관 단위 그룹핑)
-            if len(epi_coords) > 0:
-                from sklearn.cluster import DBSCAN
-                from collections import Counter
+            # 2단계: segmentation 마스크 connected component로 관(gland) 단위 클러스터링
+            # Non_Tumor(2) + Tumor(3) 픽셀이 붙어있으면 같은 관으로 간주
+            from scipy import ndimage as ndi
 
-                coords_arr = np.array(epi_coords)
-                clustering = DBSCAN(eps=100, min_samples=3).fit(coords_arr)
-                labels = clustering.labels_
-                n_clusters = len(set(labels) - {-1})
-                print(f"DBSCAN 클러스터링: {n_clusters}개 클러스터, {sum(labels == -1)}개 노이즈")
+            TUMOR_RATIO_THRESHOLD = 0.1
 
-                # 3단계: 클러스터별 Tumor 존재 판정 (10% 이상이면 Tumor 관)
-                TUMOR_RATIO_THRESHOLD = 0.1
-                for cluster_id in set(labels):
-                    if cluster_id == -1:
-                        continue  # 노이즈 세포는 개별 판정 유지
-                    cluster_mask = (labels == cluster_id)
-                    cluster_seg = [epi_seg_classes[j] for j in range(len(labels)) if cluster_mask[j]]
-                    tumor_count = sum(1 for s in cluster_seg if s == 3)  # Tumor 픽셀
-                    tumor_ratio = tumor_count / len(cluster_seg)
-                    # Tumor 비율이 10% 이상이면 관 전체를 Tumor로 판정
-                    assign_class = 3 if tumor_ratio >= TUMOR_RATIO_THRESHOLD else 2
-                    for j in range(len(labels)):
-                        if cluster_mask[j] and epi_seg_classes[j] == 2:  # Non-Tumor 세포만 클러스터 판정 적용
-                            epi_seg_classes[j] = assign_class
+            # Non_Tumor + Tumor 연결 영역 이진화 (8-connectivity)
+            epi_region = np.isin(prediction_mask, [2, 3]).astype(np.uint8)
+            labeled_mask, num_components = ndi.label(epi_region, structure=np.ones((3, 3), dtype=np.int8))
+            print(f"Connected component 클러스터링: {num_components}개 상피 영역")
+
+            # 3단계: 컴포넌트별 Tumor 픽셀 비율로 관 타입 판정
+            # np.bincount로 전체 픽셀을 O(N) 한 번에 집계 (per-comp 루프 제거)
+            flat_label = labeled_mask.ravel()
+            flat_mask  = prediction_mask.ravel().astype(np.int32)
+            n_bins = num_components + 1
+
+            tumor_counts    = np.bincount(flat_label, weights=(flat_mask == 3), minlength=n_bins)
+            nontumor_counts = np.bincount(flat_label, weights=(flat_mask == 2), minlength=n_bins)
+            total_counts    = tumor_counts + nontumor_counts
+
+            # comp_class_arr[comp_id]: 2=Non_Tumor, 3=Tumor, 0=미분류(total==0)
+            with np.errstate(invalid='ignore', divide='ignore'):
+                tumor_ratio = np.where(total_counts > 0, tumor_counts / total_counts, 0.0)
+            comp_class_arr = np.where(tumor_ratio >= TUMOR_RATIO_THRESHOLD, 3, 2).astype(np.int32)
+            comp_class_arr[0] = 0  # background
+
+            # epi_seg_classes 업데이트: 세포 좌표 → 컴포넌트 ID → 관 타입 (벡터 룩업)
+            if epi_indices:
+                mxs = np.array([int((cells[i]['x'] - region_offset_x) * scale_factor) for i in epi_indices])
+                mys = np.array([int((cells[i]['y'] - region_offset_y) * scale_factor) for i in epi_indices])
+                h, w = labeled_mask.shape
+                valid = (mxs >= 0) & (mxs < w) & (mys >= 0) & (mys < h)
+                comp_ids = np.zeros(len(epi_indices), dtype=np.int32)
+                comp_ids[valid] = labeled_mask[mys[valid], mxs[valid]]
+                # comp_id > 0 인 경우만 업데이트 (0=Stroma/Background → 1단계 seg_class 유지)
+                update_mask = comp_ids > 0
+                updated_classes = comp_class_arr[comp_ids]
+                for k in range(len(epi_indices)):
+                    if update_mask[k]:
+                        epi_seg_classes[k] = int(updated_classes[k])
 
             # 4단계: 최종 cls_id 할당
             reclassified_count = 0
@@ -731,7 +945,7 @@ class CellDetection(QObject):
             self.detectionError.emit(error_msg)
             return False
     
-    def run_detection(self, slide, roi_polygons=None, auto_classify_epithelial=True, tissue_type="Stomach"):
+    def run_detection(self, slide, roi_polygons=None, auto_classify_epithelial=True, tissue_type="Stomach", image_path=None):
         """
         세포 검출 실행
 
@@ -740,6 +954,7 @@ class CellDetection(QObject):
             roi_polygons: ROI Annotation 리스트 (선택사항)
             auto_classify_epithelial: Epithelial 자동 재분류 여부 (기본값: True)
             tissue_type: 조직 타입 (Breast, Stomach, Other)
+            image_path: WSI 파일 경로 (병렬 I/O 활성화, None이면 단일 슬라이드 사용)
         """
         if self.model is None:
             self.detectionError.emit("모델이 로드되지 않았습니다.")
@@ -749,10 +964,10 @@ class CellDetection(QObject):
             print("이미 검출 작업이 실행 중입니다.")
             return
 
-        # auto_classify_epithelial과 tissue_type 파라미터 전달
         self.worker = DetectionWorker(slide, self.model, roi_polygons, self.device,
                                        auto_classify_epithelial=auto_classify_epithelial,
-                                       tissue_type=tissue_type)
+                                       tissue_type=tissue_type,
+                                       image_path=image_path)
         self.worker.finished.connect(self._on_finished)
         self.worker.progress.connect(self._on_progress)
         self.worker.status.connect(self._on_status)
