@@ -144,11 +144,14 @@ class PathologyViewer(QMainWindow):
         처음 사용 시에만 호출됨
         """
         # 검출 모듈은 DetectionService를 통해 관리
-        detection_module = self.detection_service.get_detection_module()
-        detection_module.detectionComplete.connect(self.on_detection_complete)
-        detection_module.detectionProgress.connect(self.on_ai_progress)
-        detection_module.detectionStatus.connect(self.on_detection_status)
-        detection_module.detectionError.connect(self.on_ai_error)
+        # 시그널 중복 연결 방지 (run_detection 호출 시마다 이 함수가 불리므로)
+        if not getattr(self, '_detection_signals_connected', False):
+            detection_module = self.detection_service.get_detection_module()
+            detection_module.detectionComplete.connect(self.on_detection_complete)
+            detection_module.detectionProgress.connect(self.on_ai_progress)
+            detection_module.detectionStatus.connect(self.on_detection_status)
+            detection_module.detectionError.connect(self.on_ai_error)
+            self._detection_signals_connected = True
         
         # 조직 분할 (필요 시 생성)
         if self.tissue_segmentation is None:
