@@ -317,27 +317,36 @@ class PathologyViewer(QMainWindow):
                 ys = [p[1] for ann in annotations for p in ann.coordinates]
                 roi_bounds = (int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys)))
 
-            try:
-                if roi_bounds:
-                    # ROI 영역만 크롭한 썸네일
-                    rx0, ry0, rx1, ry1 = roi_bounds
-                    region_w = rx1 - rx0
-                    region_h = ry1 - ry0
-                    thumb_size = 600
-                    scale = min(thumb_size / region_w, thumb_size / region_h)
-                    region_thumb = tile_manager.slide.read_region(
-                        (rx0, ry0), 0, (region_w, region_h)
-                    )
-                    import cv2
-                    thumb_arr = np.array(region_thumb)[:, :, :3]
-                    new_w = max(1, int(region_w * scale))
-                    new_h = max(1, int(region_h * scale))
-                    thumbnail_np = cv2.resize(thumb_arr, (new_w, new_h))
-                else:
-                    thumb = tile_manager.slide.get_thumbnail((600, 600))
-                    thumbnail_np = np.array(thumb.convert('RGB'))
-            except Exception:
-                thumbnail_np = None
+                # 워커가 미리 생성한 썸네일 재사용 (슬라이드 재읽기 없음)
+            pa = getattr(self, '_plot_arrays', None)
+            if pa and pa.get('thumbnail') is not None:
+                thumbnail_np = pa['thumbnail']
+                # 워커 썸네일의 roi_bounds도 재사용 (annotations 없는 경우 대비)
+                if not roi_bounds and pa.get('thumb_roi_bounds') is not None:
+                    roi_bounds = pa['thumb_roi_bounds']
+            else:
+                try:
+                    if roi_bounds:
+                        import cv2
+                        rx0, ry0, rx1, ry1 = roi_bounds
+                        region_w = rx1 - rx0
+                        region_h = ry1 - ry0
+                        thumb_size = 600
+                        scale = min(thumb_size / region_w, thumb_size / region_h)
+                        best_level = tile_manager.slide.get_best_level_for_downsample(1.0 / scale)
+                        level_ds = tile_manager.slide.level_downsamples[best_level]
+                        lw = max(1, round(region_w / level_ds))
+                        lh = max(1, round(region_h / level_ds))
+                        region_thumb = tile_manager.slide.read_region((rx0, ry0), best_level, (lw, lh))
+                        thumb_arr = np.array(region_thumb)[:, :, :3]
+                        new_w = max(1, int(region_w * scale))
+                        new_h = max(1, int(region_h * scale))
+                        thumbnail_np = cv2.resize(thumb_arr, (new_w, new_h))
+                    else:
+                        thumb = tile_manager.slide.get_thumbnail((600, 600))
+                        thumbnail_np = np.array(thumb.convert('RGB'))
+                except Exception:
+                    thumbnail_np = None
 
         # Segmentation 확률 맵 전달 (Other 타입이면 None)
         seg_prob_map = None
@@ -370,7 +379,8 @@ class PathologyViewer(QMainWindow):
 
         self._visualization_dialog = show_detection_visualization(
             self.all_raw_cells, slide_dimensions, thumbnail_np, roi_bounds,
-            seg_prob_map, seg_class_names, roi_polygon_coords, slide_path, self
+            seg_prob_map, seg_class_names, roi_polygon_coords, slide_path, self,
+            plot_arrays=getattr(self, '_plot_arrays', None)
         )
     
     # === AI 기능 ===
@@ -931,6 +941,8 @@ class PathologyViewer(QMainWindow):
         self.current_class_thresholds = {c['cls_id']: 1 for c in cells}
         self.current_color_map = None
         self.is_pdl1_mode = False
+        # 시각화 다이얼로그용 사전 계산 배열 저장
+        self._plot_arrays = result.get('plot_arrays', None)
 
         # Progress 초기화
         self.progressBar.setValue(100)
@@ -1281,7 +1293,7 @@ class PathologyViewer(QMainWindow):
             wsi_stem = Path(self.current_image_path).stem
             save_path = wsi_dir / f"{wsi_stem}_detection_result.json"
 
-            _NON_SERIAL = ('seg_mask', 'seg_metadata', 'seg_class_names')
+            _NON_SERIAL = ('seg_mask', 'seg_metadata', 'seg_class_names', 'plot_arrays')
             result_to_save = {k: v for k, v in self.current_detection_result.items()
                               if k not in _NON_SERIAL}
             result_with_meta = {
@@ -1403,7 +1415,7 @@ class PathologyViewer(QMainWindow):
                 # 파일 확장자 확인
                 if file_path.endswith('.json'):
                     # numpy 배열은 JSON 직렬화 불가 → 시각화 전용 필드 제외
-                    _NON_SERIAL = ('seg_mask', 'seg_metadata', 'seg_class_names')
+                    _NON_SERIAL = ('seg_mask', 'seg_metadata', 'seg_class_names', 'plot_arrays')
                     result_to_save = {k: v for k, v in self.current_detection_result.items()
                                       if k not in _NON_SERIAL}
                     # 메타데이터 추가
@@ -1580,6 +1592,8 @@ class PathologyViewer(QMainWindow):
         self.current_class_thresholds = {c['cls_id']: 1 for c in cells}
         self.current_color_map = None
         self.is_pdl1_mode = False
+        # 파일에서 로드 시 plot_arrays 없음 → 다이얼로그에서 직접 계산
+        self._plot_arrays = None
 
         # 오버레이에 세포 표시
         if cells:
