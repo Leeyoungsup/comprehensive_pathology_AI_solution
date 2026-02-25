@@ -65,6 +65,7 @@ class PathologyViewer(QMainWindow):
         # Segmentation 결과 캐시
         self.current_segmentation_result = None
         self.is_segmentation_running = False
+        self.tumor_seg_worker = None  # TumorSegmentationWorker 인스턴스
 
         # 조직 타입 (기본값: Stomach)
         self.current_tissue_type = "Stomach"
@@ -119,14 +120,23 @@ class PathologyViewer(QMainWindow):
     
     def setup_ui_additions(self):
         """추가 UI 요소 설정 (프로그래밍 방식으로 버튼 추가 등)"""
-        from PyQt5.QtWidgets import QCheckBox
+        from PyQt5.QtWidgets import QCheckBox, QHBoxLayout, QWidget
 
-        # 자동저장 체크박스 추가 (AI 분석 그룹 하단)
-        self.chkAutoSave = QCheckBox("결과 자동저장")
+        # 자동저장 + 자동시각화 체크박스를 나란히 배치
+        self.chkAutoSave = QCheckBox("자동저장")
         self.chkAutoSave.setChecked(False)
         self.chkAutoSave.setToolTip("체크 시 AI 분석 결과를 WSI 파일 위치에 자동 저장합니다")
-        # AI 분석 그룹(groupBox) 레이아웃에 추가
-        self.groupBox.layout().addWidget(self.chkAutoSave)
+
+        self.chkAutoVisualize = QCheckBox("자동 시각화")
+        self.chkAutoVisualize.setChecked(False)
+        self.chkAutoVisualize.setToolTip("체크 시 검출 완료 후 결과 시각화 창을 자동으로 엽니다")
+
+        chk_row = QWidget()
+        chk_layout = QHBoxLayout(chk_row)
+        chk_layout.setContentsMargins(0, 0, 0, 0)
+        chk_layout.addWidget(self.chkAutoSave)
+        chk_layout.addWidget(self.chkAutoVisualize)
+        self.groupBox.layout().addWidget(chk_row)
 
     def setup_ai_modules(self):
         """
@@ -291,15 +301,73 @@ class PathologyViewer(QMainWindow):
         tile_manager = self.wsi_viewer.get_tile_manager()
         slide_dimensions = None
         thumbnail_np = None
+        roi_bounds = None
+
         if tile_manager and tile_manager.slide:
             slide_dimensions = tile_manager.slide.dimensions
+            sw, sh = slide_dimensions
+
+            # ROI 폴리곤이 있으면 bounds 계산
+            annotations = self.wsi_viewer.annotation_list.annotations if self.wsi_viewer.annotation_list.annotations else []
+            if annotations:
+                xs = [p[0] for ann in annotations for p in ann.coordinates]
+                ys = [p[1] for ann in annotations for p in ann.coordinates]
+                roi_bounds = (int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys)))
+
             try:
-                thumb = tile_manager.slide.get_thumbnail((600, 600))
-                thumbnail_np = np.array(thumb.convert('RGB'))
+                if roi_bounds:
+                    # ROI 영역만 크롭한 썸네일
+                    rx0, ry0, rx1, ry1 = roi_bounds
+                    region_w = rx1 - rx0
+                    region_h = ry1 - ry0
+                    thumb_size = 600
+                    scale = min(thumb_size / region_w, thumb_size / region_h)
+                    region_thumb = tile_manager.slide.read_region(
+                        (rx0, ry0), 0, (region_w, region_h)
+                    )
+                    import cv2
+                    thumb_arr = np.array(region_thumb)[:, :, :3]
+                    new_w = max(1, int(region_w * scale))
+                    new_h = max(1, int(region_h * scale))
+                    thumbnail_np = cv2.resize(thumb_arr, (new_w, new_h))
+                else:
+                    thumb = tile_manager.slide.get_thumbnail((600, 600))
+                    thumbnail_np = np.array(thumb.convert('RGB'))
             except Exception:
                 thumbnail_np = None
+
+        # Segmentation 확률 맵 전달 (Other 타입이면 None)
+        seg_prob_map = None
+        seg_class_names = None
+        if self.current_tissue_type != "Other" and self.current_segmentation_result:
+            seg_metadata = self.current_segmentation_result.get('metadata', {})
+            seg_prob_map = seg_metadata.get('prob_map')
+            seg_class_names = self.current_segmentation_result.get(
+                'class_names', ['Background', 'Stroma', 'Non_Tumor', 'Tumor'])
+
+            # ROI가 있으면 prob_map을 thumbnail과 동일한 영역으로 크롭 (buffer 제거)
+            if seg_prob_map is not None and roi_bounds is not None:
+                rx0, ry0, rx1, ry1 = roi_bounds
+                region_offset = seg_metadata.get('region_offset', (0, 0))
+                wsi_mpp = seg_metadata.get('wsi_mpp', 0.25)
+                output_mpp_val = seg_metadata.get('output_mpp', 4.0)
+                scale = wsi_mpp / output_mpp_val
+                px0 = max(0, int((rx0 - region_offset[0]) * scale))
+                py0 = max(0, int((ry0 - region_offset[1]) * scale))
+                px1 = min(seg_prob_map.shape[2], int((rx1 - region_offset[0]) * scale))
+                py1 = min(seg_prob_map.shape[1], int((ry1 - region_offset[1]) * scale))
+                if px1 > px0 and py1 > py0:
+                    seg_prob_map = seg_prob_map[:, py0:py1, px0:px1]
+
+        # 폴리곤 좌표 추출 (WSI level-0 기준)
+        roi_polygon_coords = [list(ann.coordinates) for ann in annotations] if annotations else []
+
+        # 슬라이드 경로
+        slide_path = tile_manager.slide_path if tile_manager else None
+
         self._visualization_dialog = show_detection_visualization(
-            self.all_raw_cells, slide_dimensions, thumbnail_np, self
+            self.all_raw_cells, slide_dimensions, thumbnail_np, roi_bounds,
+            seg_prob_map, seg_class_names, roi_polygon_coords, slide_path, self
         )
     
     # === AI 기능 ===
@@ -440,7 +508,8 @@ class PathologyViewer(QMainWindow):
             # 검출 시작 (서비스 이용)
             self.detection_service.start_detection(slide, roi_polygons,
                                                     auto_classify_epithelial=auto_classify,
-                                                    tissue_type=self.current_tissue_type)
+                                                    tissue_type=self.current_tissue_type,
+                                                    image_path=self.current_image_path)
             
         except Exception as e:
             self.statusbar.showMessage("검출 실행 실패")
@@ -448,144 +517,108 @@ class PathologyViewer(QMainWindow):
             self.is_detection_running = False
     
     def run_tumor_segmentation(self):
-        """Tumor Segmentation 실행"""
+        """Tumor Segmentation 실행 (백그라운드 스레드)"""
+        # 실행 중이면 취소
         if self.is_segmentation_running:
             self.btnTumorSegmentation.setText("Tumor Segmentation")
             self.is_segmentation_running = False
+            if self.tumor_seg_worker and self.tumor_seg_worker.isRunning():
+                self.tumor_seg_worker.cancel()
             self.statusbar.showMessage("Segmentation이 중단되었습니다.")
             return
-        
+
         if not self.current_image_path:
             self.statusbar.showMessage("먼저 이미지를 로드해주세요.")
             return
-        
+
         if self.current_tissue_type == "Other":
             QMessageBox.warning(self, "경고", "Other 타입에서는 Tumor Segmentation을 실행할 수 없습니다.\nBreast 또는 Stomach을 선택해주세요.")
             return
-        
+
         # 기존 Detection 결과 제거
         self.current_detection_result = None
         self.wsi_viewer.clear_detection_overlay()
-        # ResultList 완전 초기화
         self.resultList.clear()
-        
+
         # 버튼 상태 변경
         self.btnTumorSegmentation.setText("⏸ 중단")
         self.is_segmentation_running = True
-        
+
         # Progress 초기화
         self.progressBar.setValue(0)
         self.progressLabel.setText("Tumor Segmentation 초기화 중...")
-        
-        from PyQt5.QtWidgets import QApplication
-        QApplication.processEvents()
-        
-        try:
-            # Segmentation 모델 로딩
-            from ai.epithelial_classifier import WSISegmentationModel
-            from pathlib import Path
-            
-            project_root = Path(__file__).parent.parent
-            if self.current_tissue_type == "Breast":
-                model_path = project_root / "model" / "HnE_BR_segmentation.pt"
-            elif self.current_tissue_type == "Stomach":
-                model_path = project_root / "model" / "HnE_ST_segmentation.pt"
-            
-            self.statusbar.showMessage("Segmentation 모델 로딩 중...")
-            QApplication.processEvents()
-            
-            seg_model = WSISegmentationModel(
-                model_path=str(model_path),
-                model_mpp=1.0,
-                output_mpp=4.0,
-                device='cuda'
-            )
-            
-            # 슬라이드 열기
-            import openslide
-            slide = openslide.OpenSlide(self.current_image_path)
-            
-            def progress_callback(progress_pct):
-                self.progressBar.setValue(int(progress_pct))
-                if int(progress_pct) % 10 == 0:
-                    self.progressLabel.setText(f"Segmentation 진행 중... {int(progress_pct)}%")
-                    QApplication.processEvents()
-            
-            self.statusbar.showMessage("Tumor Segmentation 실행 중...")
-            
-            # ROI polygon 좌표 수집 (있으면)
-            roi_polygons = []
-            roi_bounds = None
-            if self.wsi_viewer.annotation_list.annotations:
-                min_x = float('inf')
-                min_y = float('inf')
-                max_x = float('-inf')
-                max_y = float('-inf')
-                
-                for polygon in self.wsi_viewer.annotation_list.annotations:
-                    coords = polygon.coordinates
-                    roi_polygons.append(coords)  # polygon 좌표 저장
-                    xs = [p[0] for p in coords]
-                    ys = [p[1] for p in coords]
-                    min_x = min(min_x, min(xs))
-                    min_y = min(min_y, min(ys))
-                    max_x = max(max_x, max(xs))
-                    max_y = max(max_y, max(ys))
-                
-                roi_bounds = (int(min_x), int(min_y), int(max_x), int(max_y))
 
-            # Segmentation 실행
-            prediction_mask, metadata = seg_model.predict_wsi(
-                slide,
-                patch_size=512,
-                overlap_ratio=0.4,
-                batch_size=8,
-                progress_callback=progress_callback,
-                roi_bounds=roi_bounds
-            )
-            
-            # 결과 저장
-            self.current_segmentation_result = {
-                'mask': prediction_mask,
-                'metadata': metadata,
-                'class_names': seg_model.class_names,
-                'roi_bounds': roi_bounds,  # ROI bounding box
-                'roi_polygons': roi_polygons  # ROI polygon 좌표들
-            }
-            
-            # 오버레이 표시
-            self.wsi_viewer.set_segmentation_overlay(prediction_mask, metadata, seg_model.class_names, roi_bounds, roi_polygons)
-            
-            # 결과 리스트 업데이트
-            self.update_segmentation_result_list()
-            
-            self.progressBar.setValue(100)
-            self.progressLabel.setText("Segmentation 완료")
-            self.statusbar.showMessage("Tumor Segmentation 완료")
+        # ROI polygon 좌표 수집
+        roi_polygons = []
+        roi_bounds = None
+        if self.wsi_viewer.annotation_list.annotations:
+            min_x = float('inf')
+            min_y = float('inf')
+            max_x = float('-inf')
+            max_y = float('-inf')
 
-            # 자동저장
-            if self.chkAutoSave.isChecked():
-                self._auto_save_segmentation_result()
+            for polygon in self.wsi_viewer.annotation_list.annotations:
+                coords = polygon.coordinates
+                roi_polygons.append(coords)
+                xs = [p[0] for p in coords]
+                ys = [p[1] for p in coords]
+                min_x = min(min_x, min(xs))
+                min_y = min(min_y, min(ys))
+                max_x = max(max_x, max(xs))
+                max_y = max(max_y, max(ys))
 
-            # GPU 메모리 정리
-            del seg_model
-            import torch
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            
-            slide.close()
-            
-        except Exception as e:
-            import traceback
-            error_msg = f"Segmentation 실행 실패: {str(e)}\n{traceback.format_exc()}"
-            print(error_msg)
-            QMessageBox.critical(self, "오류", f"Segmentation 실행 실패:\n{str(e)}")
-            self.statusbar.showMessage("Segmentation 실행 실패")
-        
-        finally:
-            self.btnTumorSegmentation.setText("Tumor Segmentation")
-            self.is_segmentation_running = False
-    
+            roi_bounds = (int(min_x), int(min_y), int(max_x), int(max_y))
+
+        # 워커 생성 및 시그널 연결
+        from ai.epithelial_classifier import TumorSegmentationWorker
+        self.tumor_seg_worker = TumorSegmentationWorker(
+            image_path=self.current_image_path,
+            tissue_type=self.current_tissue_type,
+            roi_bounds=roi_bounds,
+            roi_polygons=roi_polygons if roi_polygons else None,
+        )
+        self.tumor_seg_worker.finished.connect(self.on_tumor_segmentation_complete)
+        self.tumor_seg_worker.progress.connect(self.on_ai_progress)
+        self.tumor_seg_worker.status.connect(self.on_detection_status)
+        self.tumor_seg_worker.error.connect(self.on_tumor_segmentation_error)
+        self.tumor_seg_worker.start()
+
+        self.statusbar.showMessage("Tumor Segmentation 실행 중...")
+
+    def on_tumor_segmentation_complete(self, result):
+        """Tumor Segmentation 완료 (백그라운드 스레드에서 시그널로 수신)"""
+        self.is_segmentation_running = False
+        self.btnTumorSegmentation.setText("Tumor Segmentation")
+
+        # 결과 저장
+        self.current_segmentation_result = result
+
+        # 오버레이 표시
+        self.wsi_viewer.set_segmentation_overlay(
+            result['mask'], result['metadata'], result['class_names'],
+            result['roi_bounds'], result['roi_polygons']
+        )
+
+        # 결과 리스트 업데이트
+        self.update_segmentation_result_list()
+
+        self.progressBar.setValue(100)
+        self.progressLabel.setText("Segmentation 완료")
+        self.statusbar.showMessage("Tumor Segmentation 완료")
+
+        # 자동저장
+        if self.chkAutoSave.isChecked():
+            self._auto_save_segmentation_result()
+
+    def on_tumor_segmentation_error(self, error_msg):
+        """Tumor Segmentation 에러"""
+        self.is_segmentation_running = False
+        self.btnTumorSegmentation.setText("Tumor Segmentation")
+        self.progressLabel.setText("Segmentation 실패")
+        self.statusbar.showMessage("Segmentation 실행 실패")
+        print(error_msg)
+        QMessageBox.critical(self, "오류", f"Segmentation 실행 실패:\n{error_msg.split(chr(10))[0]}")
+
     def run_pdl1_detection(self):
         """PD-L1 Detection 실행 또는 중단"""
         if self.is_pdl1_running:
@@ -879,6 +912,15 @@ class PathologyViewer(QMainWindow):
 
         # 결과 캐시 저장
         self.current_detection_result = result
+
+        # Segmentation이 함께 실행된 경우 (Breast/Stomach) 결과 저장
+        if result.get('seg_mask') is not None:
+            seg_metadata = result.get('seg_metadata', {})
+            self.current_segmentation_result = {
+                'mask': result['seg_mask'],
+                'metadata': seg_metadata,
+                'class_names': result.get('seg_class_names', ['Background', 'Stroma', 'Non_Tumor', 'Tumor']),
+            }
 
         # Raw cells 저장 (슬라이더용)
         cells = result.get('cells', [])
@@ -1236,6 +1278,9 @@ class PathologyViewer(QMainWindow):
             wsi_stem = Path(self.current_image_path).stem
             save_path = wsi_dir / f"{wsi_stem}_detection_result.json"
 
+            _NON_SERIAL = ('seg_mask', 'seg_metadata', 'seg_class_names')
+            result_to_save = {k: v for k, v in self.current_detection_result.items()
+                              if k not in _NON_SERIAL}
             result_with_meta = {
                 "metadata": {
                     "model_type": "detection",
@@ -1245,7 +1290,7 @@ class PathologyViewer(QMainWindow):
                     "image_path": str(self.current_image_path),
                     "image_name": Path(self.current_image_path).name
                 },
-                "result": self.current_detection_result
+                "result": result_to_save
             }
 
             with open(str(save_path), 'w', encoding='utf-8') as f:
@@ -1324,8 +1369,9 @@ class PathologyViewer(QMainWindow):
 
     def save_detection_results(self):
         """AI 결과를 JSON 파일로 저장 (Detection 또는 Segmentation)"""
-        # Segmentation 결과가 있으면 Segmentation 저장으로 분기
-        if self.current_segmentation_result is not None:
+        # Detection 결과 없이 Segmentation만 있으면 Segmentation 저장으로 분기
+        # (Detection 결과가 있으면 Detection 우선 저장 — 내부 Segmentation은 시각화 전용)
+        if self.current_segmentation_result is not None and self.current_detection_result is None:
             self.save_segmentation_results()
             return
 
@@ -1353,6 +1399,10 @@ class PathologyViewer(QMainWindow):
                 
                 # 파일 확장자 확인
                 if file_path.endswith('.json'):
+                    # numpy 배열은 JSON 직렬화 불가 → 시각화 전용 필드 제외
+                    _NON_SERIAL = ('seg_mask', 'seg_metadata', 'seg_class_names')
+                    result_to_save = {k: v for k, v in self.current_detection_result.items()
+                                      if k not in _NON_SERIAL}
                     # 메타데이터 추가
                     result_with_meta = {
                         "metadata": {
@@ -1363,7 +1413,7 @@ class PathologyViewer(QMainWindow):
                             "image_path": str(self.current_image_path) if self.current_image_path else None,
                             "image_name": Path(self.current_image_path).name if self.current_image_path else None
                         },
-                        "result": self.current_detection_result
+                        "result": result_to_save
                     }
                     
                     # JSON 형식으로 저장
@@ -1520,12 +1570,18 @@ class PathologyViewer(QMainWindow):
         """Detection 결과 로드 처리"""
         # 결과 데이터 설정
         self.current_detection_result = result
-        
-        # 오버레이에 세포 표시
+
+        # all_raw_cells 설정 (visualization/slider용)
         cells = result.get('cells', [])
+        self.all_raw_cells = cells
+        self.current_class_thresholds = {c['cls_id']: 1 for c in cells}
+        self.current_color_map = None
+        self.is_pdl1_mode = False
+
+        # 오버레이에 세포 표시
         if cells:
             self.wsi_viewer.set_detection_results(cells)
-        
+
         # 결과 리스트 업데이트
         num_cells = result.get('num_cells', 0)
         class_counts = result.get('class_counts', {})
