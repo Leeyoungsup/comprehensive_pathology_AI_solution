@@ -162,7 +162,7 @@ class WSISegmentationModel:
 
         print(f"Segmentation model loaded from: {self.model_path}")
 
-    def predict_wsi(self, slide, patch_size=512, overlap_ratio=0.3, batch_size=8, progress_callback=None, roi_bounds=None):
+    def predict_wsi(self, slide, patch_size=512, overlap_ratio=0.3, batch_size=8, progress_callback=None, status_callback=None, roi_bounds=None):
         """
         Predict on entire WSI or ROI region using overlapping patches with weighted blending
 
@@ -275,12 +275,49 @@ class WSISegmentationModel:
                 
                 patch_coords.append((x_abs, y_abs, x_rel, y_rel))  # (abs_x, abs_y, rel_x, rel_y)
 
-        # Process patches in batches
-        tf = ToTensor()
-        processed_patches = 0
+        # ── Pre-scan: 가장 낮은 해상도 레벨로 유효(조직) 패치 사전 필터링 ──
+        coarse_level = slide.level_count - 1
+        coarse_downsample = slide.level_downsamples[coarse_level]
+        thumb_w = max(1, int(region_w / coarse_downsample))
+        thumb_h = max(1, int(region_h / coarse_downsample))
+        try:
+            thumbnail_arr = np.array(
+                slide.read_region(
+                    (region_offset_x, region_offset_y),
+                    coarse_level,
+                    (thumb_w, thumb_h)
+                ).convert('RGB')
+            )
+            thumb_patch_size = max(1, int(patch_size_level0 / coarse_downsample))
 
-        for batch_start in range(0, len(patch_coords), batch_size):
-            batch_coords = patch_coords[batch_start:batch_start + batch_size]
+            valid_patch_coords = []
+            for (x_abs, y_abs, x_rel, y_rel) in patch_coords:
+                tx  = int(x_rel / coarse_downsample)
+                ty  = int(y_rel / coarse_downsample)
+                tx2 = min(tx + thumb_patch_size, thumbnail_arr.shape[1])
+                ty2 = min(ty + thumb_patch_size, thumbnail_arr.shape[0])
+                if tx < thumbnail_arr.shape[1] and ty < thumbnail_arr.shape[0] and tx2 > tx and ty2 > ty:
+                    region_thumb = thumbnail_arr[ty:ty2, tx:tx2]
+                    if np.mean(region_thumb > 220) < 0.9:
+                        valid_patch_coords.append((x_abs, y_abs, x_rel, y_rel))
+            del thumbnail_arr
+        except Exception:
+            # 썸네일 읽기 실패 시 전체 패치 그대로 사용
+            valid_patch_coords = patch_coords
+
+        n_valid = len(valid_patch_coords)
+        print(f"유효 패치: {n_valid} / {total_patches} (배경 {total_patches - n_valid}개 사전 스킵)")
+        if status_callback:
+            status_callback(f"유효 패치 {n_valid}개 확인 완료, 추론 시작...")
+
+        # Process patches in batches
+        import time
+        tf = ToTensor()
+        processed_valid = 0
+        start_time = time.time()
+
+        for batch_start in range(0, len(valid_patch_coords), batch_size):
+            batch_coords = valid_patch_coords[batch_start:batch_start + batch_size]
             batch_images = []
             valid_coords = []
 
@@ -298,21 +335,21 @@ class WSISegmentationModel:
                     patch = patch.resize((patch_size, patch_size), Image.BILINEAR)
                     patch_tensor = tf(patch)
 
-                    # Check if patch is mostly background (white)
+                    # 안전 체크 (pre-scan 이 코스 레벨이므로 경계값 재확인)
                     patch_array = np.array(patch)
-                    white_ratio = np.mean(patch_array > 220)
-
-                    if white_ratio < 0.9:  # Skip mostly white patches
+                    if np.mean(patch_array > 220) < 0.9:
                         batch_images.append(patch_tensor)
-                        valid_coords.append((x_rel, y_rel))  # Store relative coordinates
-                except Exception as e:
+                        valid_coords.append((x_rel, y_rel))
+                except Exception:
                     continue
 
+            processed_valid += len(batch_coords)
+
             if len(batch_images) == 0:
-                processed_patches += len(batch_coords)
-                if progress_callback:
-                    progress = int(100 * processed_patches / len(patch_coords))
-                    progress_callback(progress)
+                if progress_callback or status_callback:
+                    pct = processed_valid / n_valid if n_valid > 0 else 1.0
+                    if progress_callback:
+                        progress_callback(int(pct * 100))
                 continue
 
             # Stack and predict
@@ -346,16 +383,34 @@ class WSISegmentationModel:
 
                 weight_sum[y_model:y_end, x_model:x_end] += weight_mask[:patch_h, :patch_w]
 
-            # Update progress
-            processed_patches += len(batch_coords)
-            if progress_callback:
-                progress = int(100 * processed_patches / len(patch_coords))
-                progress_callback(progress)
+            # 진행률 + ETA 업데이트
+            if progress_callback or status_callback:
+                pct = processed_valid / n_valid if n_valid > 0 else 1.0
+                elapsed = time.time() - start_time
+                if pct > 0.01 and elapsed > 1.0:
+                    remaining = int(elapsed / pct * (1.0 - pct))
+                    if remaining >= 60:
+                        eta_str = f"{remaining // 60}분 {remaining % 60}초"
+                    else:
+                        eta_str = f"{remaining}초"
+                    msg = f"Segmentation {processed_valid}/{n_valid} 패치 처리 중 (~{eta_str} 남음)"
+                else:
+                    msg = f"Segmentation {processed_valid}/{n_valid} 패치 처리 중..."
+                if status_callback:
+                    status_callback(msg)
+                if progress_callback:
+                    progress_callback(int(pct * 100))
 
         # Normalize by weights
         weight_sum = np.maximum(weight_sum, 1e-6)  # Avoid division by zero
         for c in range(self.num_classes):
             prediction_sum[c] /= weight_sum
+
+        # Probability map at output resolution (for visualization heatmaps)
+        prob_map_output = np.zeros((self.num_classes, output_h, output_w), dtype=np.float32)
+        for c in range(self.num_classes):
+            prob_img = Image.fromarray(prediction_sum[c])
+            prob_map_output[c] = np.array(prob_img.resize((output_w, output_h), Image.BILINEAR))
 
         # Get final prediction (argmax)
         prediction_model_res = np.argmax(prediction_sum, axis=0).astype(np.uint8)
@@ -376,6 +431,7 @@ class WSISegmentationModel:
             'mask_shape': prediction_mask.shape,
             'class_names': self.class_names,
             'region_offset': (region_offset_x, region_offset_y),  # ROI offset
+            'prob_map': prob_map_output,  # (num_classes, H, W) softmax probabilities
         }
 
         return prediction_mask, metadata
@@ -665,3 +721,114 @@ class EpithelialClassifier(QObject):
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
+
+
+# ============================================================================
+# Tumor Segmentation Worker (Background Thread)
+# ============================================================================
+
+class TumorSegmentationWorker(QThread):
+    """
+    Tumor Segmentation을 백그라운드에서 실행하는 워커 스레드
+    UI 블로킹 없이 WSISegmentationModel.predict_wsi()를 실행
+    """
+
+    finished = pyqtSignal(dict)  # {'mask', 'metadata', 'class_names', 'roi_bounds', 'roi_polygons'}
+    progress = pyqtSignal(int)   # 0-100
+    status = pyqtSignal(str)
+    error = pyqtSignal(str)
+
+    def __init__(self, image_path, tissue_type, roi_bounds=None, roi_polygons=None):
+        """
+        Args:
+            image_path: WSI 파일 경로 (str)
+            tissue_type: 'Breast' 또는 'Stomach'
+            roi_bounds: (x_min, y_min, x_max, y_max) 또는 None
+            roi_polygons: [[좌표, ...], ...] 또는 None
+        """
+        super().__init__()
+        self.image_path = image_path
+        self.tissue_type = tissue_type
+        self.roi_bounds = roi_bounds
+        self.roi_polygons = roi_polygons
+        self.is_cancelled = False
+
+    def run(self):
+        """백그라운드 Segmentation 실행"""
+        import openslide
+        slide = None
+        seg_model = None
+        try:
+            # 모델 경로 결정
+            project_root = Path(__file__).parent.parent
+            if self.tissue_type == "Breast":
+                model_path = project_root / "model" / "HnE_BR_segmentation.pt"
+            else:
+                model_path = project_root / "model" / "HnE_ST_segmentation.pt"
+
+            self.status.emit("Segmentation 모델 로딩 중...")
+            self.progress.emit(1)
+
+            seg_model = WSISegmentationModel(
+                model_path=str(model_path),
+                model_mpp=1.0,
+                output_mpp=4.0,
+                device='cuda'
+            )
+
+            if self.is_cancelled:
+                return
+
+            self.status.emit("슬라이드 로딩 중...")
+            slide = openslide.OpenSlide(self.image_path)
+
+            def progress_callback(pct):
+                if not self.is_cancelled:
+                    self.progress.emit(int(pct))
+
+            def status_callback(msg):
+                if not self.is_cancelled:
+                    self.status.emit(msg)
+
+            self.status.emit("Tumor Segmentation 실행 중...")
+            prediction_mask, metadata = seg_model.predict_wsi(
+                slide,
+                patch_size=512,
+                overlap_ratio=0.4,
+                batch_size=8,
+                progress_callback=progress_callback,
+                status_callback=status_callback,
+                roi_bounds=self.roi_bounds
+            )
+
+            if self.is_cancelled:
+                return
+
+            self.progress.emit(100)
+            self.finished.emit({
+                'mask': prediction_mask,
+                'metadata': metadata,
+                'class_names': seg_model.class_names,
+                'roi_bounds': self.roi_bounds,
+                'roi_polygons': self.roi_polygons,
+            })
+
+        except Exception as e:
+            import traceback
+            self.error.emit(f"Segmentation 실패: {str(e)}\n{traceback.format_exc()}")
+
+        finally:
+            # GPU 메모리 및 슬라이드 정리
+            if seg_model is not None:
+                del seg_model
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            if slide is not None:
+                try:
+                    slide.close()
+                except Exception:
+                    pass
+
+    def cancel(self):
+        """작업 취소 요청"""
+        self.is_cancelled = True
