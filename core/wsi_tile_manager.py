@@ -5,7 +5,7 @@ ASAP의 TileManager를 참고한 타일 기반 렌더링 시스템
 
 import openslide
 import numpy as np
-from PyQt5.QtCore import QObject, pyqtSignal, QThread, QRect, QRectF
+from PyQt5.QtCore import QObject, pyqtSignal, QThread, QRect, QRectF, QTimer
 from PyQt5.QtGui import QImage, QPixmap
 from collections import OrderedDict
 import threading
@@ -109,56 +109,77 @@ class TileLoader(QThread):
     
     tileLoaded = pyqtSignal(QPixmap, int, int, int)  # pixmap, tile_x, tile_y, level
     
-    def __init__(self, slide, tile_size=2048):
+    def __init__(self, slide_path, tile_size=512):
         super().__init__()
-        self.slide = slide
+        self.slide_path = slide_path
+        self._slide = None  # run() 내에서 스레드 전용으로 오픈
         self.tile_size = tile_size
         self.tasks = []
         self.running = True
         self.lock = threading.Lock()
         self.condition = threading.Condition(self.lock)
     
-    def add_task(self, tile_x, tile_y, level):
-        """타일 로딩 태스크 추가"""
+    def add_task(self, tile_x, tile_y, level, priority=False):
+        """타일 로딩 태스크 추가 (priority=True 이면 큐 앞에 삽입)"""
         with self.lock:
             task = (tile_x, tile_y, level)
             if task not in self.tasks:
-                self.tasks.append(task)
+                if priority:
+                    self.tasks.insert(0, task)
+                else:
+                    self.tasks.append(task)
                 self.condition.notify()
+
+    def flush_tasks(self):
+        """대기 중인 모든 태스크 제거"""
+        with self.lock:
+            self.tasks.clear()
     
     def run(self):
-        """워커 스레드 실행"""
-        while self.running:
-            task = None
-            with self.lock:
-                if self.tasks:
-                    task = self.tasks.pop(0)
-                else:
-                    self.condition.wait(timeout=0.1)
-            
-            if task:
-                tile_x, tile_y, level = task
-                pixmap = self.load_tile(tile_x, tile_y, level)
-                if pixmap:
-                    self.tileLoaded.emit(pixmap, tile_x, tile_y, level)
+        """워커 스레드 실행 - 스레드 전용 OpenSlide 오픈"""
+        try:
+            self._slide = openslide.OpenSlide(self.slide_path)
+        except Exception as e:
+            print(f"TileLoader OpenSlide 오픈 실패: {e}")
+            return
+        try:
+            while self.running:
+                task = None
+                with self.lock:
+                    if self.tasks:
+                        task = self.tasks.pop(0)
+                    else:
+                        self.condition.wait(timeout=0.1)
+
+                if task:
+                    tile_x, tile_y, level = task
+                    pixmap = self.load_tile(tile_x, tile_y, level)
+                    if pixmap:
+                        self.tileLoaded.emit(pixmap, tile_x, tile_y, level)
+        finally:
+            if self._slide:
+                self._slide.close()
+                self._slide = None
     
     def load_tile(self, tile_x, tile_y, level):
         """실제 타일 로딩"""
+        if self._slide is None:
+            return None
         try:
             # 이미지 좌표 계산
-            downsample = self.slide.level_downsamples[level]
+            downsample = self._slide.level_downsamples[level]
             x = int(tile_x * self.tile_size * downsample)
             y = int(tile_y * self.tile_size * downsample)
-            
+
             # 슬라이드 경계 체크 (level 0 기준)
-            level_0_width, level_0_height = self.slide.level_dimensions[0]
+            level_0_width, level_0_height = self._slide.level_dimensions[0]
             if x >= level_0_width or y >= level_0_height:
                 return None
-            
+
             # 타일 읽기
-            tile = self.slide.read_region(
-                (x, y), 
-                level, 
+            tile = self._slide.read_region(
+                (x, y),
+                level,
                 (self.tile_size, self.tile_size)
             )
             
@@ -226,16 +247,22 @@ class WSITileManager(QObject):
             print(f"WSI 로딩 실패: {e}")
             raise
         
-        # 워커 스레드 생성
+        # 워커 스레드 생성 (각 워커가 독립 OpenSlide 오픈)
         self.workers = []
         for _ in range(num_workers):
-            worker = TileLoader(self.slide, tile_size)
+            worker = TileLoader(slide_path, tile_size)
             worker.tileLoaded.connect(self.on_tile_loaded)
             worker.start()
             self.workers.append(worker)
         
         self.current_worker_idx = 0
-    
+
+        # 타일 업데이트 배치 타이머 (~60fps): 여러 타일이 연속 로드돼도 한 번만 갱신
+        self._update_timer = QTimer(self)
+        self._update_timer.setSingleShot(True)
+        self._update_timer.setInterval(16)
+        self._update_timer.timeout.connect(self.tilesUpdated)
+
     def _setup_level_stages(self):
         """4단계 레벨 매핑 설정"""
         if not self.slide:
@@ -311,82 +338,91 @@ class WSITileManager(QObject):
         
         return best_level
     
+    def flush_all_workers(self):
+        """모든 워커의 대기 태스크 제거 (스테일 요청 플러시)"""
+        for worker in self.workers:
+            worker.flush_tasks()
+        with self.loading_lock:
+            self.loading_tiles.clear()
+
     def load_tiles_for_view(self, view_rect, level, force_reload=False):
-        """뷰 영역에 필요한 타일 로딩 (현재 보이는 타일이 레벨에 맞지 않을 경우만 로드)"""
+        """뷰 영역에 필요한 타일 로딩 (가시 영역 타일 우선 로드)"""
         if not self.slide:
             return
-        
+
         downsample = self.get_level_downsample(level)
-        
-        # 타일 인덱스 계산 (보이는 영역만, 버퍼 제외)
         tile_size_at_level = self.tile_size
+
+        # 가시 영역 타일 인덱스
         visible_start_x = max(0, int(view_rect.left() / downsample / tile_size_at_level))
         visible_start_y = max(0, int(view_rect.top() / downsample / tile_size_at_level))
         visible_end_x = int(view_rect.right() / downsample / tile_size_at_level) + 1
         visible_end_y = int(view_rect.bottom() / downsample / tile_size_at_level) + 1
-        
-        # 현재 보이는 영역에 필요한 타일이 모두 캐시에 있는지 확인
+
+        # 가시 영역 타일이 모두 캐시에 있는지 확인
         all_tiles_cached = True
         for ty in range(visible_start_y, visible_end_y):
             for tx in range(visible_start_x, visible_end_x):
-                cache_key = (tx, ty, level)
-                if self.cache.get(cache_key) is None:
+                if self.cache.get((tx, ty, level)) is None:
                     all_tiles_cached = False
                     break
             if not all_tiles_cached:
                 break
-        
-        # 레벨 변경 여부 확인
+
+        # 레벨 변경 감지
         level_changed = (self.last_loaded_level != level)
-        
-        # 모든 타일이 캐시에 있고 레벨도 동일하면 로딩 스킵
+
         if all_tiles_cached and not level_changed:
             return
-        
-        # 레벨 기록
+
         if level_changed:
+            # 레벨 변경 시 이전 레벨 스테일 태스크 플러시
+            self.flush_all_workers()
             self.last_loaded_level = level
-        
-        # 타일 범위 확장 (버퍼 포함)
+
+        # 버퍼 범위
         buffer_tiles = 4
         start_tile_x = max(0, visible_start_x - buffer_tiles)
         start_tile_y = max(0, visible_start_y - buffer_tiles)
         end_tile_x = visible_end_x + buffer_tiles
         end_tile_y = visible_end_y + buffer_tiles
-        
-        # 타일 로딩 요청 (캐시에 없고 슬라이드 경계 내의 타일만)
-        tiles_requested = 0
-        tiles_cached = 0
+
         level_width, level_height = self.get_level_dimensions(level)
         level_width_in_tiles = (level_width + self.tile_size - 1) // self.tile_size
         level_height_in_tiles = (level_height + self.tile_size - 1) // self.tile_size
-        
+
+        tiles_requested = 0
+        tiles_cached = 0
+
+        def _request_tile(tx, ty, priority):
+            nonlocal tiles_requested, tiles_cached
+            if tx >= level_width_in_tiles or ty >= level_height_in_tiles:
+                return
+            cache_key = (tx, ty, level)
+            if self.cache.get(cache_key) is not None:
+                tiles_cached += 1
+                return
+            with self.loading_lock:
+                if cache_key in self.loading_tiles:
+                    return
+                self.loading_tiles.add(cache_key)
+            worker = self.workers[self.current_worker_idx]
+            worker.add_task(tx, ty, level, priority=priority)
+            self.current_worker_idx = (self.current_worker_idx + 1) % len(self.workers)
+            tiles_requested += 1
+
+        # 1단계: 가시 영역 타일 우선 (priority=True → 큐 앞에 삽입)
+        for ty in range(visible_start_y, visible_end_y):
+            for tx in range(visible_start_x, visible_end_x):
+                _request_tile(tx, ty, priority=True)
+
+        # 2단계: 버퍼 타일 (priority=False → 큐 뒤에 추가)
         for ty in range(start_tile_y, end_tile_y):
             for tx in range(start_tile_x, end_tile_x):
-                # 슬라이드 경계 체크
-                if tx >= level_width_in_tiles or ty >= level_height_in_tiles:
-                    continue
-                
-                cache_key = (tx, ty, level)
-                
-                # 캐시에 있는지 확인
-                if self.cache.get(cache_key) is not None:
-                    tiles_cached += 1
-                    continue
-                
-                # 이미 로딩 중인지 확인
-                with self.loading_lock:
-                    if cache_key in self.loading_tiles:
-                        continue
-                    # 로딩 중으로 표시
-                    self.loading_tiles.add(cache_key)
-                
-                # 캐시에 없고 로딩 중이 아니면 로딩 요청
-                worker = self.workers[self.current_worker_idx]
-                worker.add_task(tx, ty, level)
-                self.current_worker_idx = (self.current_worker_idx + 1) % len(self.workers)
-                tiles_requested += 1
-        
+                if visible_start_x <= tx < visible_end_x and visible_start_y <= ty < visible_end_y:
+                    continue  # 이미 1단계에서 처리
+                _request_tile(tx, ty, priority=False)
+
         if tiles_requested > 0:
             print(f"  -> {tiles_requested}개 타일 로딩 요청됨 (캐시: {tiles_cached}개)")
     
@@ -398,16 +434,17 @@ class WSITileManager(QObject):
     def on_tile_loaded(self, pixmap, tile_x, tile_y, level):
         """타일 로딩 완료 시 호출"""
         cache_key = (tile_x, tile_y, level)
-        
+
         # 로딩 중 표시 제거
         with self.loading_lock:
             self.loading_tiles.discard(cache_key)
-        
+
         # 캐시에 저장
         self.cache.put(cache_key, pixmap)
-        
-        # 업데이트 시그널 발생
-        self.tilesUpdated.emit()
+
+        # 배치 타이머가 비활성이면 시작 (16ms 내 다수 타일이 들어와도 한 번만 갱신)
+        if not self._update_timer.isActive():
+            self._update_timer.start()
     
     def get_cached_tiles_info(self):
         """캐시된 타일 정보 반환 (미니맵용)"""
