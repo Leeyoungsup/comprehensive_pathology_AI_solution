@@ -52,7 +52,7 @@ class WSIViewWidget(QGraphicsView):
         self.setDragMode(QGraphicsView.NoDrag)
         self.setRenderHint(QPainter.Antialiasing, False)
         self.setRenderHint(QPainter.SmoothPixmapTransform, True)
-        self.setViewportUpdateMode(QGraphicsView.FullViewportUpdate)
+        self.setViewportUpdateMode(QGraphicsView.MinimalViewportUpdate)
         
         # Scene 설정
         self.scene = QGraphicsScene(self)
