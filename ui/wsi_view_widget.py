@@ -132,7 +132,7 @@ class WSIViewWidget(QGraphicsView):
             self.tile_items.clear()
             
             # 새로운 타일 매니저 생성
-            self.tile_manager = WSITileManager(wsi_path, tile_size=512, num_workers=4)
+            self.tile_manager = WSITileManager(wsi_path, num_workers=4)
             self.tile_manager.tilesUpdated.connect(self.on_tiles_updated)
             
             # Scene 크기 설정 (레벨 0 기준)
@@ -300,7 +300,7 @@ class WSIViewWidget(QGraphicsView):
         level_downsample = self.tile_manager.get_level_downsample(level)
         
         # 타일 크기
-        tile_size = 512
+        tile_size = self.tile_manager.tile_size
         
         # 보이는 타일 범위 계산
         start_tile_x = max(0, int(view_rect.left() / tile_size / level_downsample))
