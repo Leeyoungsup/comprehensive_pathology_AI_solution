@@ -137,6 +137,7 @@ class PathologyViewer(QMainWindow):
         chk_layout.addWidget(self.chkAutoSave)
         chk_layout.addWidget(self.chkAutoVisualize)
         self.groupBox.layout().addWidget(chk_row)
+        chk_row.hide()  # 자동저장/자동시각화 체크박스 임시 숨김
 
     def setup_ai_modules(self):
         """
@@ -768,7 +769,7 @@ class PathologyViewer(QMainWindow):
             result_with_meta = {
                 "metadata": {
                     "model_type": "pdl1_detection",
-                    "model_name": "YOLOv11x_PDL1",
+                    "model_name": "PD-L1 Detection",
                     "version": "1.0",
                     "timestamp": datetime.now().isoformat(),
                     "image_path": str(self.current_image_path),
@@ -1299,7 +1300,7 @@ class PathologyViewer(QMainWindow):
             result_with_meta = {
                 "metadata": {
                     "model_type": "detection",
-                    "model_name": "YOLOv11m",
+                    "model_name": "HnE Cell Detection",
                     "version": "1.0",
                     "timestamp": datetime.now().isoformat(),
                     "image_path": str(self.current_image_path),
@@ -1422,7 +1423,7 @@ class PathologyViewer(QMainWindow):
                     result_with_meta = {
                         "metadata": {
                             "model_type": "detection",
-                            "model_name": "YOLOv11n",
+                            "model_name": "HnE Cell Detection",
                             "version": "1.0",
                             "timestamp": datetime.now().isoformat(),
                             "image_path": str(self.current_image_path) if self.current_image_path else None,
