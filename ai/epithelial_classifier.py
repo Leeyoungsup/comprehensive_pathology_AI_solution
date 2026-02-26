@@ -75,6 +75,8 @@ def get_wsi_mpp(slide):
     except:
         pass
 
+    # Default assumption for 40x objective
+    print("Warning: Could not determine MPP, using default 0.25")
     return 0.25
 
 
@@ -158,6 +160,8 @@ class WSISegmentationModel:
         self.model.load_state_dict(checkpoint)
         self.model.eval()
 
+        print(f"Segmentation model loaded from: {self.model_path}")
+
     def predict_wsi(self, slide, patch_size=512, overlap_ratio=0.3, batch_size=8, progress_callback=None, status_callback=None, roi_bounds=None):
         """
         Predict on entire WSI or ROI region using overlapping patches with weighted blending
@@ -199,12 +203,17 @@ class WSISegmentationModel:
             region_offset_x = x_min
             region_offset_y = y_min
             
+            print(f"ROI region: ({x_min}, {y_min}) to ({x_max}, {y_max})")
+            print(f"ROI size: {region_w} x {region_h} (with 10% buffer)")
         else:
             # Process entire WSI
             region_w = wsi_w
             region_h = wsi_h
             region_offset_x = 0
             region_offset_y = 0
+            print(f"Processing entire WSI: {wsi_w} x {wsi_h}")
+
+        print(f"WSI base MPP: {base_mpp:.4f}")
 
         # Calculate scale factors
         read_scale = self.model_mpp / base_mpp  # Scale from base to model resolution
@@ -225,9 +234,16 @@ class WSISegmentationModel:
         output_w = int(model_res_w / output_scale)
         output_h = int(model_res_h / output_scale)
 
+        print(f"Model resolution size: {model_res_w} x {model_res_h}")
+        print(f"Output mask size: {output_w} x {output_h}")
+        print(f"Patch size at level 0: {patch_size_level0}")
+        print(f"Step size at level 0: {step_size_level0}")
+
         # Find best level for reading
         read_level = find_best_level(slide, self.model_mpp, base_mpp)
         level_downsample = slide.level_downsamples[read_level]
+
+        print(f"Reading from level {read_level} (downsample: {level_downsample:.2f})")
 
         # Initialize accumulators at model resolution
         prediction_sum = np.zeros((self.num_classes, model_res_h, model_res_w), dtype=np.float32)
@@ -241,6 +257,7 @@ class WSISegmentationModel:
         n_patches_y = max(1, int(np.ceil((region_h - patch_size_level0) / step_size_level0)) + 1)
         total_patches = n_patches_x * n_patches_y
 
+        print(f"Total patches: {n_patches_x} x {n_patches_y} = {total_patches}")
 
         # Generate patch coordinates (relative to processing region)
         patch_coords = []
@@ -289,6 +306,7 @@ class WSISegmentationModel:
             valid_patch_coords = patch_coords
 
         n_valid = len(valid_patch_coords)
+        print(f"유효 패치: {n_valid} / {total_patches} (배경 {total_patches - n_valid}개 사전 스킵)")
         if status_callback:
             status_callback(f"유효 패치 {n_valid}개 확인 완료, 추론 시작...")
 
@@ -542,6 +560,7 @@ class EpithelialClassificationWorker(QThread):
             reclassified.append(cell_copy)
 
         epithelial_count = len(epi_indices)
+        print(f"Epithelial cells to reclassify: {epithelial_count}")
 
         # 2단계: DBSCAN 클러스터링 (관 단위 그룹핑)
         if epithelial_count > 0:
