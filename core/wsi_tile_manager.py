@@ -75,8 +75,6 @@ class TileCache:
                 del self.cache[key]
                 self.level_counts[level] -= 1
                 self.total_evictions += 1
-                if self.total_evictions % 100 == 0:  # 100개마다 로그
-                    print(f"  [캐시 관리] 레벨 {level} 타일 제거 (total evictions: {self.total_evictions})")
                 return
     
     def get_all_keys(self):
@@ -219,7 +217,7 @@ class WSITileManager(QObject):
     
     tilesUpdated = pyqtSignal()
     
-    def __init__(self, slide_path, tile_size=2048, num_workers=16):
+    def __init__(self, slide_path, tile_size=2048, num_workers=8):
         super().__init__()
         self.slide = None
         self.slide_path = slide_path
@@ -241,12 +239,7 @@ class WSITileManager(QObject):
             self.slide = openslide.OpenSlide(slide_path)
             self._setup_level_stages()
             self.mpp = self._read_mpp()
-            print(f"WSI 로딩 완료: {slide_path}")
-            print(f"  - 총 레벨 수: {self.slide.level_count}")
-            print(f"  - 4단계 레벨 매핑: {self.level_stages}")
-            print(f"  - MPP: {self.mpp:.4f} μm/px")
         except Exception as e:
-            print(f"WSI 로딩 실패: {e}")
             raise
         
         # 워커 스레드 생성 (각 워커가 독립 OpenSlide 오픈)
@@ -408,16 +401,11 @@ class WSITileManager(QObject):
         level_width_in_tiles = (level_width + self.tile_size - 1) // self.tile_size
         level_height_in_tiles = (level_height + self.tile_size - 1) // self.tile_size
 
-        tiles_requested = 0
-        tiles_cached = 0
-
         def _request_tile(tx, ty, priority):
-            nonlocal tiles_requested, tiles_cached
             if tx >= level_width_in_tiles or ty >= level_height_in_tiles:
                 return
             cache_key = (tx, ty, level)
             if self.cache.get(cache_key) is not None:
-                tiles_cached += 1
                 return
             with self.loading_lock:
                 if cache_key in self.loading_tiles:
@@ -426,7 +414,6 @@ class WSITileManager(QObject):
             worker = self.workers[self.current_worker_idx]
             worker.add_task(tx, ty, level, priority=priority)
             self.current_worker_idx = (self.current_worker_idx + 1) % len(self.workers)
-            tiles_requested += 1
 
         # 1단계: 가시 영역 타일 우선 (priority=True → 큐 앞에 삽입)
         for ty in range(visible_start_y, visible_end_y):
@@ -440,8 +427,6 @@ class WSITileManager(QObject):
                     continue  # 이미 1단계에서 처리
                 _request_tile(tx, ty, priority=False)
 
-        if tiles_requested > 0:
-            print(f"  -> {tiles_requested}개 타일 로딩 요청됨 (캐시: {tiles_cached}개)")
     
     def get_tile(self, tile_x, tile_y, level):
         """캐시에서 타일 가져오기"""
