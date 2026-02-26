@@ -177,13 +177,10 @@ class DetectionWorker(QThread):
             mpp_y = slide.properties.get('openslide.mpp-y')
             if mpp_x and mpp_y:
                 self.origin_mpp = (float(mpp_x) + float(mpp_y)) / 2
-                print(f"슬라이드 MPP: {self.origin_mpp:.4f} (x={mpp_x}, y={mpp_y})")
             else:
                 self.origin_mpp = 0.25
-                print(f"MPP 정보 없음, 기본값 사용: {self.origin_mpp}")
         except:
             self.origin_mpp = 0.25
-            print(f"MPP 읽기 실패, 기본값 사용: {self.origin_mpp}")
         
         self.output_mpp = 0.5
         self.original_size = int(self.image_size * self.output_mpp / self.origin_mpp)
@@ -652,12 +649,6 @@ class DetectionWorker(QThread):
             cls_name = CLASS_NAMES.get(cell['cls_id'], 'Unknown')
             counts[cls_name] = counts.get(cls_name, 0) + 1
 
-        # 디버그: 총합 확인
-        total_from_classes = sum(counts.values())
-        print(f"세포 카운트 검증: 전체={len(cells)}, 클래스별 합계={total_from_classes}")
-        if total_from_classes != len(cells):
-            print(f"경고: 카운트 불일치! 차이={len(cells) - total_from_classes}")
-
         return counts
 
     def _build_plot_arrays(self, cells, class_counts):
@@ -773,18 +764,12 @@ class DetectionWorker(QThread):
         Returns:
             재분류된 세포 리스트
         """
-        print("\n" + "="*50)
-        print("Epithelial 재분류 시작")
-        print("="*50)
-
         try:
             from ai.epithelial_classifier import WSISegmentationModel
             if self.tissue_type == "Other":
-                print("조직 타입이 'Other'로 설정되어 있어 재분류를 건너뜁니다.")
                 self.status.emit("조직 타입이 'Other'로 설정되어 있어 재분류를 건너뜁니다.")
                 return cells
             # Segmentation 모델 로딩
-            print("Segmentation 모델 로딩 중...")
             self.status.emit("Segmentation 모델 로딩 중...")
             self.progress.emit(52)
 
@@ -795,9 +780,6 @@ class DetectionWorker(QThread):
             elif self.tissue_type == "Stomach":
                 model_path = project_root / "model" / "HnE_ST_segmentation.pt"
 
-            print(f"Segmentation 모델 경로: {model_path}")
-            print(f"모델 파일 존재: {model_path.exists()}")
-
             # WSISegmentationModel은 __init__에서 자동으로 모델 로딩
             try:
                 seg_model = WSISegmentationModel(
@@ -806,9 +788,7 @@ class DetectionWorker(QThread):
                     output_mpp=4.0,
                     device=self.device
                 )
-                print("Segmentation 모델 로드 성공!")
             except (FileNotFoundError, ImportError) as e:
-                print(f"Segmentation 모델 로드 실패: {e}")
                 self.status.emit(f"Segmentation 모델 로드 실패, 재분류 건너뜀: {str(e)}")
                 return cells
 
@@ -832,12 +812,8 @@ class DetectionWorker(QThread):
                     max_y = max(max_y, max(ys))
                 
                 roi_bounds = (int(min_x), int(min_y), int(max_x), int(max_y))
-                print(f"ROI bounds: {roi_bounds}")
-            else:
-                print("ROI 없음, 전체 WSI Segmentation 실행")
 
             # WSI Segmentation 실행
-            print("WSI Segmentation 실행 중...")
             self.status.emit("WSI Segmentation 실행 중...")
 
             def progress_callback(progress_pct):
@@ -875,95 +851,58 @@ class DetectionWorker(QThread):
             region_offset_x = metadata.get('region_offset', (0, 0))[0]
             region_offset_y = metadata.get('region_offset', (0, 0))[1]
 
-            # Epithelial cells 재분류
-            print(f"Scale factor: {scale_factor} (wsi_mpp={wsi_mpp}, output_mpp={output_mpp})")
-            print(f"Prediction mask shape: {prediction_mask.shape}")
-            print(f"Region offset: ({region_offset_x}, {region_offset_y})")
+            # 1단계: Epithelial 세포별 seg_class 수집 — numpy 벡터화
+            epi_indices = [i for i, c in enumerate(cells) if c.get('cls_id') == 1]
 
-            epithelial_count = sum(1 for cell in cells if cell.get('cls_id') == 1)
-            print(f"Epithelial cells to reclassify: {epithelial_count}")
-
-            # 1단계: Epithelial 세포별 seg_class 수집
-            epi_indices = []   # cells 리스트 내 인덱스
-            epi_coords = []    # [[x, y], ...]
-            epi_seg_classes = []  # 각 세포의 원본 seg_class
-
-            for i, cell in enumerate(cells):
-                if cell.get('cls_id') == 1:  # Epithelial
-                    cell_x_in_region = cell['x'] - region_offset_x
-                    cell_y_in_region = cell['y'] - region_offset_y
-
-                    mask_x = int(cell_x_in_region * scale_factor)
-                    mask_y = int(cell_y_in_region * scale_factor)
-
-                    if 0 <= mask_x < prediction_mask.shape[1] and 0 <= mask_y < prediction_mask.shape[0]:
-                        seg_class = int(prediction_mask[mask_y, mask_x])
-                    else:
-                        seg_class = 0  # Out of bounds → Background
-
-                    epi_indices.append(i)
-                    epi_coords.append([cell['x'], cell['y']])
-                    epi_seg_classes.append(seg_class)
+            epi_seg_classes = []
+            if epi_indices:
+                # 좌표 배열로 일괄 변환
+                epi_xs = np.array([cells[i]['x'] for i in epi_indices], dtype=np.float32)
+                epi_ys = np.array([cells[i]['y'] for i in epi_indices], dtype=np.float32)
+                mxs = ((epi_xs - region_offset_x) * scale_factor).astype(np.int32)
+                mys = ((epi_ys - region_offset_y) * scale_factor).astype(np.int32)
+                h, w = prediction_mask.shape
+                valid = (mxs >= 0) & (mxs < w) & (mys >= 0) & (mys < h)
+                seg_vals = np.zeros(len(epi_indices), dtype=np.int32)
+                seg_vals[valid] = prediction_mask[mys[valid], mxs[valid]]
+                epi_seg_classes = seg_vals.tolist()
 
             # 2단계: segmentation 마스크 connected component로 관(gland) 단위 클러스터링
-            # Non_Tumor(2) + Tumor(3) 픽셀이 붙어있으면 같은 관으로 간주
             from scipy import ndimage as ndi
 
             TUMOR_RATIO_THRESHOLD = 0.1
-
-            # Non_Tumor + Tumor 연결 영역 이진화 (8-connectivity)
             epi_region = np.isin(prediction_mask, [2, 3]).astype(np.uint8)
             labeled_mask, num_components = ndi.label(epi_region, structure=np.ones((3, 3), dtype=np.int8))
-            print(f"Connected component 클러스터링: {num_components}개 상피 영역")
 
-            # 3단계: 컴포넌트별 Tumor 픽셀 비율로 관 타입 판정
-            # np.bincount로 전체 픽셀을 O(N) 한 번에 집계 (per-comp 루프 제거)
+            # 3단계: 컴포넌트별 Tumor 픽셀 비율 — bincount로 O(pixels) 1회 집계
             flat_label = labeled_mask.ravel()
             flat_mask  = prediction_mask.ravel().astype(np.int32)
             n_bins = num_components + 1
-
-            tumor_counts    = np.bincount(flat_label, weights=(flat_mask == 3), minlength=n_bins)
-            nontumor_counts = np.bincount(flat_label, weights=(flat_mask == 2), minlength=n_bins)
-            total_counts    = tumor_counts + nontumor_counts
-
-            # comp_class_arr[comp_id]: 2=Non_Tumor, 3=Tumor, 0=미분류(total==0)
+            tumor_counts = np.bincount(flat_label, weights=(flat_mask == 3), minlength=n_bins)
+            total_counts = np.bincount(flat_label, weights=np.isin(flat_mask, [2, 3]).astype(float), minlength=n_bins)
             with np.errstate(invalid='ignore', divide='ignore'):
                 tumor_ratio = np.where(total_counts > 0, tumor_counts / total_counts, 0.0)
             comp_class_arr = np.where(tumor_ratio >= TUMOR_RATIO_THRESHOLD, 3, 2).astype(np.int32)
             comp_class_arr[0] = 0  # background
 
-            # epi_seg_classes 업데이트: 세포 좌표 → 컴포넌트 ID → 관 타입 (벡터 룩업)
+            # 세포 좌표 → 컴포넌트 ID → 관 타입 (1단계 mxs/mys 재사용, 벡터 룩업)
             if epi_indices:
-                mxs = np.array([int((cells[i]['x'] - region_offset_x) * scale_factor) for i in epi_indices])
-                mys = np.array([int((cells[i]['y'] - region_offset_y) * scale_factor) for i in epi_indices])
-                h, w = labeled_mask.shape
-                valid = (mxs >= 0) & (mxs < w) & (mys >= 0) & (mys < h)
+                # 1단계에서 이미 계산한 mxs/mys를 labeled_mask에 재적용
+                lh, lw = labeled_mask.shape
+                lvalid = (mxs >= 0) & (mxs < lw) & (mys >= 0) & (mys < lh)
                 comp_ids = np.zeros(len(epi_indices), dtype=np.int32)
-                comp_ids[valid] = labeled_mask[mys[valid], mxs[valid]]
-                # comp_id > 0 인 경우만 업데이트 (0=Stroma/Background → 1단계 seg_class 유지)
+                comp_ids[lvalid] = labeled_mask[mys[lvalid], mxs[lvalid]]
+                # comp_id > 0 인 경우만 업데이트 (0=Background → 1단계 seg_class 유지)
                 update_mask = comp_ids > 0
-                updated_classes = comp_class_arr[comp_ids]
-                for k in range(len(epi_indices)):
-                    if update_mask[k]:
-                        epi_seg_classes[k] = int(updated_classes[k])
+                epi_seg_arr = np.array(epi_seg_classes, dtype=np.int32)
+                epi_seg_arr[update_mask] = comp_class_arr[comp_ids[update_mask]]
+                epi_seg_classes = epi_seg_arr.tolist()
 
-            # 4단계: 최종 cls_id 할당
+            # 4단계: 최종 cls_id 할당 (cells는 dict 리스트이므로 순회 필요)
             reclassified_count = 0
-            class_distribution = {6: 0, 7: 0}
-
             for k, idx in enumerate(epi_indices):
-                if epi_seg_classes[k] == 2:  # Non_Tumor 영역
-                    cells[idx]['cls_id'] = 7  # benign epithelial
-                    class_distribution[7] += 1
-                else:  # Tumor (3), Stroma (1), Background (0)
-                    cells[idx]['cls_id'] = 6  # tumor epithelial(Invasive)
-                    class_distribution[6] += 1
+                cells[idx]['cls_id'] = 7 if epi_seg_classes[k] == 2 else 6
                 reclassified_count += 1
-
-            print(f"재분류 완료: {reclassified_count}개")
-            print(f"  - tumor epithelial(Invasive): {class_distribution[6]}")
-            print(f"  - benign epithelial: {class_distribution[7]}")
-            print("="*50 + "\n")
 
             self.status.emit(f"Epithelial 재분류 완료 ({reclassified_count}개)")
             self.progress.emit(98)
@@ -1007,8 +946,6 @@ class CellDetection(QObject):
         project_root = Path(__file__).parent.parent
         self.default_model_path = project_root / "model" / "HnE_detection.pt"
         
-        print(f"Detection device: {self.device}")
-        print(f"Default model path: {self.default_model_path}")
     
     def load_model(self, model_path=None):
         """
@@ -1033,25 +970,17 @@ class CellDetection(QObject):
             if model_path:
                 if not os.path.exists(model_path):
                     error_msg = f"모델 파일을 찾을 수 없습니다: {model_path}"
-                    print(error_msg)
                     self.detectionError.emit(error_msg)
                     return False
-                
+
                 checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
                 self.model.load_state_dict(checkpoint['model_state_dict'])
-                print(f"모델 로드 완료: {model_path}")
-            else:
-                print("경고: 모델 경로가 지정되지 않았습니다")
             
             self.model.eval()
             return True
             
         except Exception as e:
-            error_msg = f"모델 로드 실패: {str(e)}"
-            print(error_msg)
-            import traceback
-            traceback.print_exc()
-            self.detectionError.emit(error_msg)
+            self.detectionError.emit(f"모델 로드 실패: {str(e)}")
             return False
     
     def run_detection(self, slide, roi_polygons=None, auto_classify_epithelial=True, tissue_type="Stomach", image_path=None):
@@ -1070,7 +999,6 @@ class CellDetection(QObject):
             return
 
         if self.worker and self.worker.isRunning():
-            print("이미 검출 작업이 실행 중입니다.")
             return
 
         self.worker = DetectionWorker(slide, self.model, roi_polygons, self.device,
@@ -1118,8 +1046,6 @@ class CellDetection(QObject):
         
         import gc
         gc.collect()
-        
-        print("모델 언로드 및 GPU 리소스 해제 완료")
     
     def is_model_loaded(self):
         """모델이 로드되어 있는지 확인"""
