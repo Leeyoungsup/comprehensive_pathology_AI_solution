@@ -567,22 +567,22 @@ class EpithelialClassificationWorker(QThread):
             coords_arr = np.array(epi_coords)
             clustering = DBSCAN(eps=100, min_samples=3).fit(coords_arr)
             labels = clustering.labels_
-            n_clusters = len(set(labels) - {-1})
-            print(f"DBSCAN clustering: {n_clusters} clusters, {sum(labels == -1)} noise points")
 
-            # 3단계: 클러스터별 Tumor 존재 판정 (10% 이상이면 Tumor 관)
+            # 3단계: 클러스터별 Tumor 비율 판정 — numpy 벡터화 (O(n), 기존 O(n×k) 루프 제거)
             TUMOR_RATIO_THRESHOLD = 0.1
-            for cluster_id in set(labels):
-                if cluster_id == -1:
-                    continue
-                cluster_mask = (labels == cluster_id)
-                cluster_seg = [epi_seg_classes[j] for j in range(len(labels)) if cluster_mask[j]]
-                tumor_count = sum(1 for s in cluster_seg if s == 3)  # Tumor 픽셀
-                tumor_ratio = tumor_count / len(cluster_seg)
-                assign_class = 3 if tumor_ratio >= TUMOR_RATIO_THRESHOLD else 2
-                for j in range(len(labels)):
-                    if cluster_mask[j]:
-                        epi_seg_classes[j] = assign_class
+            epi_seg_arr = np.array(epi_seg_classes, dtype=np.int32)
+            valid_mask = labels >= 0  # DBSCAN noise(-1) 제외
+            if valid_mask.any():
+                valid_labels = labels[valid_mask]
+                valid_segs   = epi_seg_arr[valid_mask]
+                n_cls        = int(valid_labels.max()) + 1
+                tumor_counts = np.bincount(valid_labels, weights=(valid_segs == 3).astype(np.float64), minlength=n_cls)
+                total_counts = np.bincount(valid_labels, minlength=n_cls)
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    tumor_ratio = np.where(total_counts > 0, tumor_counts / total_counts, 0.0)
+                cluster_assign = np.where(tumor_ratio >= TUMOR_RATIO_THRESHOLD, 3, 2).astype(np.int32)
+                epi_seg_arr[valid_mask] = cluster_assign[valid_labels]
+                epi_seg_classes = epi_seg_arr.tolist()
 
         # 4단계: 최종 cls_id 할당
         for k, idx in enumerate(epi_indices):
