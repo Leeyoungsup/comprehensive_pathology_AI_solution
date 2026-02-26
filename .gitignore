@@ -2,6 +2,7 @@ model/HnE_detection.pt
 model/HnE_ST_segmentation.pt
 model/HnE_BR_segmentation.pt
 model/PDL1_TPS_detection.pt
+model/HnE_detection_backup.pt
 dist/
 build/
 PathologyAIViewer_Portable/
