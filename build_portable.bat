@@ -110,7 +110,14 @@ if exist icon (xcopy icon PathologyAIViewer_Portable\icon\ /E /I /Y /Q >nul && e
 echo   파일 복사 완료!
 echo.
 
-:: 실행 배치 파일 생성
+:: Python 파일 사전 컴파일 (첫 실행 시 재컴파일 방지)
+echo Python 파일 사전 컴파일 중...
+PathologyAIViewer_Portable\python_env\python.exe -m compileall -q PathologyAIViewer_Portable\ai PathologyAIViewer_Portable\backend PathologyAIViewer_Portable\core PathologyAIViewer_Portable\ui PathologyAIViewer_Portable\utils 2>nul
+PathologyAIViewer_Portable\python_env\python.exe -m py_compile PathologyAIViewer_Portable\main.py 2>nul
+echo   컴파일 완료!
+echo.
+
+:: 실행 배치 파일 생성 (디버그/문제 진단용)
 echo @echo off > PathologyAIViewer_Portable\run.bat
 echo chcp 65001 ^>nul >> PathologyAIViewer_Portable\run.bat
 echo echo Pathology AI Viewer 시작 중... >> PathologyAIViewer_Portable\run.bat
@@ -124,13 +131,9 @@ echo python main.py >> PathologyAIViewer_Portable\run.bat
 echo. >> PathologyAIViewer_Portable\run.bat
 echo pause >> PathologyAIViewer_Portable\run.bat
 
-:: 콘솔 없는 실행 파일 (VBScript)
-echo Set WshShell = CreateObject("WScript.Shell") > PathologyAIViewer_Portable\run_nogui.vbs
-echo WshShell.Run "python_env\pythonw.exe main.py", 0, False >> PathologyAIViewer_Portable\run_nogui.vbs
-
 echo   실행 파일 생성 완료!
-echo   - run.bat: 콘솔 창 표시
-echo   - run_nogui.vbs: 콘솔 없이 실행
+echo   - run.bat: 콘솔 창 표시 (문제 진단용)
+echo   - PathologyAIViewer.exe: 정식 실행 파일 (build_exe.bat으로 별도 생성)
 echo.
 
 echo.
