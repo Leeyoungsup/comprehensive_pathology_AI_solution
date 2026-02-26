@@ -405,6 +405,7 @@ class WSISegmentationModel:
         weight_sum = np.maximum(weight_sum, 1e-6)  # Avoid division by zero
         for c in range(self.num_classes):
             prediction_sum[c] /= weight_sum
+        del weight_sum  # 대형 배열 즉시 해제 (수 GB)
 
         # Probability map at output resolution (for visualization heatmaps)
         prob_map_output = np.zeros((self.num_classes, output_h, output_w), dtype=np.float32)
@@ -414,6 +415,7 @@ class WSISegmentationModel:
 
         # Get final prediction (argmax)
         prediction_model_res = np.argmax(prediction_sum, axis=0).astype(np.uint8)
+        del prediction_sum  # 대형 누산 배열 즉시 해제 (수 GB)
 
         # Downsample to output resolution
         prediction_mask = Image.fromarray(prediction_model_res).resize(
