@@ -42,7 +42,6 @@ dll_paths = [
 for dll_path in dll_paths:
     if dll_path.exists():
         os.environ['OPENSLIDE_PATH'] = str(dll_path)
-        print(f"Set OPENSLIDE_PATH: {dll_path}")
         break
 
 # PATH 환경 변수에 추가 (앞쪽에 배치)
@@ -52,7 +51,6 @@ for dll_path in dll_paths:
         path_str = str(dll_path)
         if path_str not in os.environ.get('PATH', ''):
             path_additions.append(path_str)
-            print(f"Added to PATH: {dll_path}")
 
 if path_additions:
     os.environ['PATH'] = os.pathsep.join(path_additions) + os.pathsep + os.environ.get('PATH', '')
@@ -62,9 +60,8 @@ for dll_path in dll_paths:
     if dll_path.exists():
         try:
             os.add_dll_directory(str(dll_path))
-            print(f"Added DLL directory: {dll_path}")
-        except (AttributeError, OSError) as e:
-            print(f"Failed to add DLL directory {dll_path}: {e}")
+        except (AttributeError, OSError):
+            pass
 
 from PyQt5.QtWidgets import QApplication, QMessageBox
 from ui.viewer import PathologyViewer
