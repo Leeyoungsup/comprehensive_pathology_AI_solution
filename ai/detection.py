@@ -177,13 +177,10 @@ class DetectionWorker(QThread):
             mpp_y = slide.properties.get('openslide.mpp-y')
             if mpp_x and mpp_y:
                 self.origin_mpp = (float(mpp_x) + float(mpp_y)) / 2
-                print(f"슬라이드 MPP: {self.origin_mpp:.4f} (x={mpp_x}, y={mpp_y})")
             else:
                 self.origin_mpp = 0.25
-                print(f"MPP 정보 없음, 기본값 사용: {self.origin_mpp}")
         except:
             self.origin_mpp = 0.25
-            print(f"MPP 읽기 실패, 기본값 사용: {self.origin_mpp}")
         
         self.output_mpp = 0.5
         self.original_size = int(self.image_size * self.output_mpp / self.origin_mpp)
@@ -191,12 +188,12 @@ class DetectionWorker(QThread):
         
         # 클래스별 confidence threshold
         self.class_thresholds = {
-            0: 0.05,  # Neutrophil
-            1: 0.05,  # Epithelial
+            0: 0.01,  # Neutrophil
+            1: 0.01,  # Epithelial
             2: 0.01,  # Lymphocyte
-            3: 0.05,  # Plasma
-            4: 0.05,  # Eosinophil
-            5: 0.05   # Connective tissue
+            3: 0.01,  # Plasma
+            4: 0.01,  # Eosinophil
+            5: 0.01   # Connective tissue
         }
     
     def run(self):
@@ -652,12 +649,6 @@ class DetectionWorker(QThread):
             cls_name = CLASS_NAMES.get(cell['cls_id'], 'Unknown')
             counts[cls_name] = counts.get(cls_name, 0) + 1
 
-        # 디버그: 총합 확인
-        total_from_classes = sum(counts.values())
-        print(f"세포 카운트 검증: 전체={len(cells)}, 클래스별 합계={total_from_classes}")
-        if total_from_classes != len(cells):
-            print(f"경고: 카운트 불일치! 차이={len(cells) - total_from_classes}")
-
         return counts
 
     def _build_plot_arrays(self, cells, class_counts):
@@ -773,18 +764,12 @@ class DetectionWorker(QThread):
         Returns:
             재분류된 세포 리스트
         """
-        print("\n" + "="*50)
-        print("Epithelial 재분류 시작")
-        print("="*50)
-
         try:
             from ai.epithelial_classifier import WSISegmentationModel
             if self.tissue_type == "Other":
-                print("조직 타입이 'Other'로 설정되어 있어 재분류를 건너뜁니다.")
                 self.status.emit("조직 타입이 'Other'로 설정되어 있어 재분류를 건너뜁니다.")
                 return cells
             # Segmentation 모델 로딩
-            print("Segmentation 모델 로딩 중...")
             self.status.emit("Segmentation 모델 로딩 중...")
             self.progress.emit(52)
 
@@ -795,9 +780,6 @@ class DetectionWorker(QThread):
             elif self.tissue_type == "Stomach":
                 model_path = project_root / "model" / "HnE_ST_segmentation.pt"
 
-            print(f"Segmentation 모델 경로: {model_path}")
-            print(f"모델 파일 존재: {model_path.exists()}")
-
             # WSISegmentationModel은 __init__에서 자동으로 모델 로딩
             try:
                 seg_model = WSISegmentationModel(
@@ -806,9 +788,7 @@ class DetectionWorker(QThread):
                     output_mpp=4.0,
                     device=self.device
                 )
-                print("Segmentation 모델 로드 성공!")
             except (FileNotFoundError, ImportError) as e:
-                print(f"Segmentation 모델 로드 실패: {e}")
                 self.status.emit(f"Segmentation 모델 로드 실패, 재분류 건너뜀: {str(e)}")
                 return cells
 
@@ -832,12 +812,8 @@ class DetectionWorker(QThread):
                     max_y = max(max_y, max(ys))
                 
                 roi_bounds = (int(min_x), int(min_y), int(max_x), int(max_y))
-                print(f"ROI bounds: {roi_bounds}")
-            else:
-                print("ROI 없음, 전체 WSI Segmentation 실행")
 
             # WSI Segmentation 실행
-            print("WSI Segmentation 실행 중...")
             self.status.emit("WSI Segmentation 실행 중...")
 
             def progress_callback(progress_pct):
@@ -875,14 +851,6 @@ class DetectionWorker(QThread):
             region_offset_x = metadata.get('region_offset', (0, 0))[0]
             region_offset_y = metadata.get('region_offset', (0, 0))[1]
 
-            # Epithelial cells 재분류
-            print(f"Scale factor: {scale_factor} (wsi_mpp={wsi_mpp}, output_mpp={output_mpp})")
-            print(f"Prediction mask shape: {prediction_mask.shape}")
-            print(f"Region offset: ({region_offset_x}, {region_offset_y})")
-
-            epithelial_count = sum(1 for cell in cells if cell.get('cls_id') == 1)
-            print(f"Epithelial cells to reclassify: {epithelial_count}")
-
             # 1단계: Epithelial 세포별 seg_class 수집
             epi_indices = []   # cells 리스트 내 인덱스
             epi_coords = []    # [[x, y], ...]
@@ -914,7 +882,6 @@ class DetectionWorker(QThread):
             # Non_Tumor + Tumor 연결 영역 이진화 (8-connectivity)
             epi_region = np.isin(prediction_mask, [2, 3]).astype(np.uint8)
             labeled_mask, num_components = ndi.label(epi_region, structure=np.ones((3, 3), dtype=np.int8))
-            print(f"Connected component 클러스터링: {num_components}개 상피 영역")
 
             # 3단계: 컴포넌트별 Tumor 픽셀 비율로 관 타입 판정
             # np.bincount로 전체 픽셀을 O(N) 한 번에 집계 (per-comp 루프 제거)
@@ -960,11 +927,6 @@ class DetectionWorker(QThread):
                     class_distribution[6] += 1
                 reclassified_count += 1
 
-            print(f"재분류 완료: {reclassified_count}개")
-            print(f"  - tumor epithelial(Invasive): {class_distribution[6]}")
-            print(f"  - benign epithelial: {class_distribution[7]}")
-            print("="*50 + "\n")
-
             self.status.emit(f"Epithelial 재분류 완료 ({reclassified_count}개)")
             self.progress.emit(98)
 
@@ -1007,8 +969,6 @@ class CellDetection(QObject):
         project_root = Path(__file__).parent.parent
         self.default_model_path = project_root / "model" / "HnE_detection.pt"
         
-        print(f"Detection device: {self.device}")
-        print(f"Default model path: {self.default_model_path}")
     
     def load_model(self, model_path=None):
         """
@@ -1039,9 +999,6 @@ class CellDetection(QObject):
                 
                 checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
                 self.model.load_state_dict(checkpoint['model_state_dict'])
-                print(f"모델 로드 완료: {model_path}")
-            else:
-                print("경고: 모델 경로가 지정되지 않았습니다")
             
             self.model.eval()
             return True
@@ -1070,7 +1027,6 @@ class CellDetection(QObject):
             return
 
         if self.worker and self.worker.isRunning():
-            print("이미 검출 작업이 실행 중입니다.")
             return
 
         self.worker = DetectionWorker(slide, self.model, roi_polygons, self.device,
@@ -1118,8 +1074,6 @@ class CellDetection(QObject):
         
         import gc
         gc.collect()
-        
-        print("모델 언로드 및 GPU 리소스 해제 완료")
     
     def is_model_loaded(self):
         """모델이 로드되어 있는지 확인"""
