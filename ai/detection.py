@@ -90,43 +90,46 @@ def non_max_suppression(outputs, confidence_threshold=0.01, iou_threshold=0.35, 
     """
     max_wh = 7680
 
-
     bs = outputs.shape[0]
     nc = outputs.shape[1] - 4
-    
+
     # 빠른 필터링을 위해 가장 낮은 threshold 사용
     min_conf = confidence_threshold
     if class_thresholds:
         min_conf = min(min(class_thresholds.values()), confidence_threshold)
-    
+
     # 전체 confidence가 낮은 것들 먼저 제거
     xc = outputs[:, 4:4 + nc].amax(1) > min_conf
-    
+
+    # 클래스별 threshold 텐서 사전 구성 (루프 외부에서 1회)
+    thresh_t = None
+    if class_thresholds:
+        thresh_t = torch.full((nc,), confidence_threshold,
+                              dtype=torch.float32, device=outputs.device)
+        for cid, thr in class_thresholds.items():
+            if 0 <= cid < nc:
+                thresh_t[cid] = thr
+
     output = [torch.zeros((0, 6), device=outputs.device)] * bs
-    
+
     for xi, x in enumerate(outputs):
         x = x.transpose(0, -1)[xc[xi]]
-        
+
         if not x.shape[0]:
             continue
 
         # 박스와 클래스 분리
         box, cls = x.split((4, nc), 1)
         box = wh2xy(box)
-        
+
         # 각 검출의 최고 클래스와 confidence 찾기
         conf, j = cls.max(1, keepdim=True)
         x = torch.cat((box, conf, j.float()), 1)
-        
-        # 클래스별 threshold 적용
-        if class_thresholds:
-            keep = torch.zeros(x.shape[0], dtype=torch.bool, device=x.device)
-            for i, detection in enumerate(x):
-                class_id = int(detection[5].item())
-                threshold = class_thresholds.get(class_id, confidence_threshold)
-                if detection[4].item() >= threshold:
-                    keep[i] = True
-            x = x[keep]
+
+        # 클래스별 threshold 적용 — 벡터화 (Python 루프 없음)
+        if thresh_t is not None:
+            cls_idx = x[:, 5].long().clamp(0, nc - 1)
+            x = x[x[:, 4] >= thresh_t[cls_idx]]
         else:
             x = x[x[:, 4] > confidence_threshold]
         
@@ -204,8 +207,12 @@ class DetectionWorker(QThread):
             
             self.status.emit("검출 시작...")
             self.progress.emit(1)
-            
-            all_cells = []
+
+            # numpy 청크 누적 (list-of-dicts 대신 사용 → Python GC 압력 제거)
+            _chunks_x:    list[np.ndarray] = []
+            _chunks_y:    list[np.ndarray] = []
+            _chunks_cls:  list[np.ndarray] = []
+            _chunks_conf: list[np.ndarray] = []
             
             # 슬라이드 크기 가져오기 (openslide)
             self.status.emit("슬라이드 정보 확인 중...")
@@ -342,9 +349,14 @@ class DetectionWorker(QThread):
                     break
 
                 batch_coords, batch_tensors, patch_count = item
-                new_cells = self._infer_batch(batch_coords, batch_tensors)
-                all_cells.extend(new_cells)
-                detected_cells_count = len(all_cells)
+                bx, by, bcls, bconf = self._infer_batch(batch_coords, batch_tensors)
+                k = len(bx)
+                if k > 0:
+                    _chunks_x.append(bx)
+                    _chunks_y.append(by)
+                    _chunks_cls.append(bcls)
+                    _chunks_conf.append(bconf)
+                    detected_cells_count += k
 
                 processed_valid += patch_count
                 pct = processed_valid / n_valid if n_valid > 0 else 1.0
@@ -367,7 +379,7 @@ class DetectionWorker(QThread):
                     last_update_time = current_time
 
             producer_thread.join(timeout=10)
-            
+
             if self.is_cancelled:
                 self.error.emit("검출이 취소되었습니다.")
                 return
@@ -375,27 +387,49 @@ class DetectionWorker(QThread):
             self.status.emit(f"결과 정리 중... ({detected_cells_count}개 검출)")
             self.progress.emit(50)
 
-            # Epithelial 재분류 (자동 실행)
+            # 청크 병합 → 연속 numpy 배열
+            import gc
+            if _chunks_x:
+                all_x    = np.concatenate(_chunks_x)
+                all_y    = np.concatenate(_chunks_y)
+                all_cls  = np.concatenate(_chunks_cls)
+                all_conf = np.concatenate(_chunks_conf)
+            else:
+                all_x = all_y = all_conf = np.empty(0, dtype=np.float32)
+                all_cls = np.empty(0, dtype=np.int32)
+            # 청크 리스트 즉시 해제
+            del _chunks_x, _chunks_y, _chunks_cls, _chunks_conf
+            gc.collect()
+
+            # Epithelial 재분류 (자동 실행) — cls 배열 in-place 수정
             if self.auto_classify_epithelial:
-                epithelial_count = sum(1 for cell in all_cells if cell.get('cls_id') == 1)
+                epithelial_count = int(np.sum(all_cls == 1))
                 if epithelial_count > 0:
                     self.status.emit(f"Epithelial 세포 재분류 시작... ({epithelial_count}개)")
-                    all_cells = self._run_epithelial_classification(all_cells)
+                    self._run_epithelial_classification(all_x, all_y, all_cls)
                 else:
                     self.status.emit("Epithelial 세포가 없어 재분류를 건너뜁니다.")
 
-            # 결과 정리
-            class_counts = self._count_by_class(all_cells)
+            # 결과 정리 (numpy 배열 기반)
+            class_counts = self._count_by_class(all_cls)
 
-            # 시각화 다이얼로그용 plot 배열 사전 계산 (워커 스레드에서 처리 → 메인 스레드 O(N) 루프 제거)
-            plot_arrays = self._build_plot_arrays(all_cells, class_counts)
+            # 시각화 다이얼로그용 plot 배열 사전 계산
+            plot_arrays = self._build_plot_arrays(all_x, all_y, all_cls, all_conf)
+
+            # JSON 저장 / UI 렌더링용 list-of-dicts 재구성 (1회)
+            n_cells = len(all_x)
+            all_cells = [
+                {'x': float(all_x[i]), 'y': float(all_y[i]),
+                 'cls_id': int(all_cls[i]), 'confidence': float(all_conf[i])}
+                for i in range(n_cells)
+            ]
 
             result = {
                 'status': 'success',
                 'cells': all_cells,
-                'num_cells': len(all_cells),
+                'num_cells': n_cells,
                 'class_counts': class_counts,
-                'message': f'총 {len(all_cells)}개 세포 검출 완료 (재분류 포함)',
+                'message': f'총 {n_cells}개 세포 검출 완료 (재분류 포함)',
                 'seg_mask': getattr(self, 'last_prediction_mask', None),
                 'seg_metadata': getattr(self, 'last_seg_metadata', None),
                 'seg_class_names': getattr(self, 'last_seg_class_names', None),
@@ -514,13 +548,20 @@ class DetectionWorker(QThread):
             batch_tensors: CPU 텐서 리스트 (각 shape: [C, H, W])
 
         Returns:
-            검출된 세포 딕셔너리 리스트
+            (x, y, cls, conf) — numpy arrays (float32, float32, int32, float32)
+            검출이 없으면 길이 0인 빈 배열 반환
         """
-        cells = []
+        _ef = np.empty(0, dtype=np.float32)
+        _ei = np.empty(0, dtype=np.int32)
+
+        batch_xs: list[np.ndarray] = []
+        batch_ys: list[np.ndarray] = []
+        batch_clss: list[np.ndarray] = []
+        batch_confs: list[np.ndarray] = []
+
         try:
             batch = torch.stack(batch_tensors).to(self.device)  # (B, C, H, W)
 
-            self.model.eval()
             with torch.no_grad():
                 with torch.amp.autocast('cuda'):
                     preds = self.model(batch)
@@ -540,39 +581,46 @@ class DetectionWorker(QThread):
                     continue
 
                 detections = results[i]
-                xyxy   = detections[:, :4]
-                confs  = detections[:, 4]
+                xyxy    = detections[:, :4]
+                confs_t = detections[:, 4]
                 cls_ids = detections[:, 5]
 
-                centers_x = (xyxy[:, 0] + xyxy[:, 2]) / 2
-                centers_y = (xyxy[:, 1] + xyxy[:, 3]) / 2
+                # GPU 텐서 → numpy (단일 D2H 전송)
+                cx_np = ((xyxy[:, 0] + xyxy[:, 2]) / 2 * coord_scale + start_x).cpu().numpy().astype(np.float32)
+                cy_np = ((xyxy[:, 1] + xyxy[:, 3]) / 2 * coord_scale + start_y).cpu().numpy().astype(np.float32)
+                cls_np  = cls_ids.cpu().numpy().astype(np.int32)
+                conf_np = confs_t.cpu().numpy().astype(np.float32)
 
-                actual_x = start_x + centers_x * coord_scale
-                actual_y = start_y + centers_y * coord_scale
+                if self.roi_polygons:
+                    keep = np.array([
+                        any(poly.contains_point(float(cx_np[j]), float(cy_np[j]))
+                            for poly in self.roi_polygons)
+                        for j in range(len(cx_np))
+                    ], dtype=bool)
+                    cx_np   = cx_np[keep]
+                    cy_np   = cy_np[keep]
+                    cls_np  = cls_np[keep]
+                    conf_np = conf_np[keep]
 
-                for j in range(len(detections)):
-                    cell_x = actual_x[j].item()
-                    cell_y = actual_y[j].item()
+                if len(cx_np) > 0:
+                    batch_xs.append(cx_np)
+                    batch_ys.append(cy_np)
+                    batch_clss.append(cls_np)
+                    batch_confs.append(conf_np)
 
-                    if self.roi_polygons:
-                        in_roi = False
-                        for polygon in self.roi_polygons:
-                            if polygon.contains_point(cell_x, cell_y):
-                                in_roi = True
-                                break
-                        if not in_roi:
-                            continue
-
-                    cells.append({
-                        'x': cell_x,
-                        'y': cell_y,
-                        'cls_id': int(cls_ids[j].item()),
-                        'confidence': confs[j].item(),
-                    })
         except Exception as e:
             import traceback
             print(f"배치 추론 오류: {e}\n{traceback.format_exc()}")
-        return cells
+
+        if not batch_xs:
+            return _ef, _ef.copy(), _ei, _ef.copy()
+
+        return (
+            np.concatenate(batch_xs),
+            np.concatenate(batch_ys),
+            np.concatenate(batch_clss),
+            np.concatenate(batch_confs),
+        )
 
     def _process_patch(self, start_x, start_y):
         """단일 패치 처리"""
@@ -642,18 +690,22 @@ class DetectionWorker(QThread):
         
         return cells
     
-    def _count_by_class(self, cells):
-        """클래스별 세포 수 카운트"""
+    def _count_by_class(self, cls_arr):
+        """클래스별 세포 수 카운트 (numpy 배열 입력)"""
         counts = {name: 0 for name in CLASS_NAMES.values()}
-        for cell in cells:
-            cls_name = CLASS_NAMES.get(cell['cls_id'], 'Unknown')
-            counts[cls_name] = counts.get(cls_name, 0) + 1
-
+        if len(cls_arr) == 0:
+            return counts
+        max_id = max(CLASS_NAMES.keys()) + 1
+        bc = np.bincount(cls_arr, minlength=max_id)
+        for cls_id, name in CLASS_NAMES.items():
+            if cls_id < len(bc):
+                counts[name] = int(bc[cls_id])
         return counts
 
-    def _build_plot_arrays(self, cells, class_counts):
+    def _build_plot_arrays(self, all_x, all_y, all_cls, all_conf):
         """
         시각화 다이얼로그용 numpy 배열 사전 계산 (워커 스레드에서 1회 수행)
+        all_x, all_y, all_cls, all_conf는 이미 numpy 배열로 전달됨.
 
         반환:
             {
@@ -667,24 +719,16 @@ class DetectionWorker(QThread):
                 'thumb_roi_bounds': tuple | None       - 썸네일에 해당하는 WSI ROI (x0,y0,x1,y1)
             }
         """
-        n = len(cells)
-        if n == 0:
-            empty = np.empty(0, dtype=np.float32)
+        if len(all_x) == 0:
             thumbnail, thumb_roi = self._generate_thumbnail_for_plot()
             return {
-                'all_x': empty, 'all_y': empty,
+                'all_x': all_x, 'all_y': all_y,
                 'xs_by_class': {}, 'ys_by_class': {}, 'confs_by_class': {},
                 'counts_by_id': {},
                 'thumbnail': thumbnail, 'thumb_roi_bounds': thumb_roi,
             }
 
-        # 전체 배열 1회 추출
-        all_x    = np.fromiter((c['x']                   for c in cells), dtype=np.float32, count=n)
-        all_y    = np.fromiter((c['y']                   for c in cells), dtype=np.float32, count=n)
-        all_cls  = np.fromiter((c.get('cls_id', 0)       for c in cells), dtype=np.int32,   count=n)
-        all_conf = np.fromiter((c.get('confidence', 0.0) for c in cells), dtype=np.float32, count=n)
-
-        # 클래스별 분리 (numpy boolean indexing)
+        # 클래스별 분리 (numpy boolean indexing — fromiter 제거)
         unique_cls = np.unique(all_cls).tolist()
         xs_by_class    = {}
         ys_by_class    = {}
@@ -754,22 +798,22 @@ class DetectionWorker(QThread):
             print(f"썸네일 생성 실패: {e}")
             return None, None
 
-    def _run_epithelial_classification(self, cells):
+    def _run_epithelial_classification(self, x, y, cls_arr):
         """
         Epithelial 세포 재분류 (WSI Segmentation 기반)
+        cls_arr를 in-place로 수정한다 (반환값 없음).
 
         Args:
-            cells: 검출된 세포 리스트
-
-        Returns:
-            재분류된 세포 리스트
+            x, y:     세포 좌표 numpy 배열 (float32)
+            cls_arr:  세포 클래스 numpy 배열 (int32) — in-place 수정됨
+            conf:     세포 confidence numpy 배열 (float32)
         """
         try:
             from ai.epithelial_classifier import WSISegmentationModel
             if self.tissue_type == "Other":
                 self.status.emit("조직 타입이 'Other'로 설정되어 있어 재분류를 건너뜁니다.")
-                return cells
-            # Segmentation 모델 로딩
+                return
+
             self.status.emit("Segmentation 모델 로딩 중...")
             self.progress.emit(52)
 
@@ -779,8 +823,9 @@ class DetectionWorker(QThread):
                 model_path = project_root / "model" / "HnE_BR_segmentation.pt"
             elif self.tissue_type == "Stomach":
                 model_path = project_root / "model" / "HnE_ST_segmentation.pt"
+            else:
+                return
 
-            # WSISegmentationModel은 __init__에서 자동으로 모델 로딩
             try:
                 seg_model = WSISegmentationModel(
                     model_path=str(model_path),
@@ -790,36 +835,25 @@ class DetectionWorker(QThread):
                 )
             except (FileNotFoundError, ImportError) as e:
                 self.status.emit(f"Segmentation 모델 로드 실패, 재분류 건너뜀: {str(e)}")
-                return cells
+                return
 
             # ROI bounds 계산 (ROI가 있으면)
             roi_bounds = None
             if self.roi_polygons:
-                # 모든 ROI polygon의 bounding box 계산
-                min_x = float('inf')
-                min_y = float('inf')
-                max_x = float('-inf')
-                max_y = float('-inf')
-                
+                min_x = float('inf');  min_y = float('inf')
+                max_x = float('-inf'); max_y = float('-inf')
                 for polygon in self.roi_polygons:
-                    # Annotation 객체는 coordinates 속성 사용
                     coords = polygon.coordinates
-                    xs = [p[0] for p in coords]
-                    ys = [p[1] for p in coords]
-                    min_x = min(min_x, min(xs))
-                    min_y = min(min_y, min(ys))
-                    max_x = max(max_x, max(xs))
-                    max_y = max(max_y, max(ys))
-                
+                    xs_ = [p[0] for p in coords]
+                    ys_ = [p[1] for p in coords]
+                    min_x = min(min_x, min(xs_)); min_y = min(min_y, min(ys_))
+                    max_x = max(max_x, max(xs_)); max_y = max(max_y, max(ys_))
                 roi_bounds = (int(min_x), int(min_y), int(max_x), int(max_y))
 
-            # WSI Segmentation 실행
             self.status.emit("WSI Segmentation 실행 중...")
 
             def progress_callback(progress_pct):
-                # Segmentation: 55-90% 범위
-                adjusted_progress = 55 + int(progress_pct * 0.35)
-                self.progress.emit(adjusted_progress)
+                self.progress.emit(55 + int(progress_pct * 0.35))
 
             def seg_status_callback(msg):
                 self.status.emit(msg)
@@ -834,7 +868,6 @@ class DetectionWorker(QThread):
                 roi_bounds=roi_bounds
             )
 
-            # 시각화를 위해 저장
             self.last_prediction_mask = prediction_mask
             self.last_seg_metadata = metadata
             self.last_seg_class_names = seg_model.class_names
@@ -842,39 +875,33 @@ class DetectionWorker(QThread):
             self.status.emit("Epithelial 세포 재분류 중...")
             self.progress.emit(92)
 
-            # MPP 정보 및 ROI offset
             wsi_mpp = self.origin_mpp
             output_mpp = seg_model.output_mpp
             scale_factor = wsi_mpp / output_mpp
-            
-            # ROI offset 가져오기
             region_offset_x = metadata.get('region_offset', (0, 0))[0]
             region_offset_y = metadata.get('region_offset', (0, 0))[1]
 
-            # 1단계: Epithelial 세포별 seg_class 수집 — numpy 벡터화
-            epi_indices = [i for i, c in enumerate(cells) if c.get('cls_id') == 1]
+            # 1단계: Epithelial 인덱스 및 mask 좌표 (numpy 벡터화)
+            epi_indices = np.where(cls_arr == 1)[0]
+            if len(epi_indices) == 0:
+                return
 
-            epi_seg_classes = []
-            if epi_indices:
-                # 좌표 배열로 일괄 변환
-                epi_xs = np.array([cells[i]['x'] for i in epi_indices], dtype=np.float32)
-                epi_ys = np.array([cells[i]['y'] for i in epi_indices], dtype=np.float32)
-                mxs = ((epi_xs - region_offset_x) * scale_factor).astype(np.int32)
-                mys = ((epi_ys - region_offset_y) * scale_factor).astype(np.int32)
-                h, w = prediction_mask.shape
-                valid = (mxs >= 0) & (mxs < w) & (mys >= 0) & (mys < h)
-                seg_vals = np.zeros(len(epi_indices), dtype=np.int32)
-                seg_vals[valid] = prediction_mask[mys[valid], mxs[valid]]
-                epi_seg_classes = seg_vals.tolist()
+            epi_xs = x[epi_indices]
+            epi_ys = y[epi_indices]
+            mxs = ((epi_xs - region_offset_x) * scale_factor).astype(np.int32)
+            mys = ((epi_ys - region_offset_y) * scale_factor).astype(np.int32)
+            h, w = prediction_mask.shape
+            valid = (mxs >= 0) & (mxs < w) & (mys >= 0) & (mys < h)
+            seg_vals = np.zeros(len(epi_indices), dtype=np.int32)
+            seg_vals[valid] = prediction_mask[mys[valid], mxs[valid]]
 
-            # 2단계: segmentation 마스크 connected component로 관(gland) 단위 클러스터링
+            # 2단계: connected component 클러스터링
             from scipy import ndimage as ndi
-
             TUMOR_RATIO_THRESHOLD = 0.1
             epi_region = np.isin(prediction_mask, [2, 3]).astype(np.uint8)
             labeled_mask, num_components = ndi.label(epi_region, structure=np.ones((3, 3), dtype=np.int8))
 
-            # 3단계: 컴포넌트별 Tumor 픽셀 비율 — bincount로 O(pixels) 1회 집계
+            # 3단계: 컴포넌트별 Tumor 픽셀 비율 — bincount
             flat_label = labeled_mask.ravel()
             flat_mask  = prediction_mask.ravel().astype(np.int32)
             n_bins = num_components + 1
@@ -885,40 +912,28 @@ class DetectionWorker(QThread):
             comp_class_arr = np.where(tumor_ratio >= TUMOR_RATIO_THRESHOLD, 3, 2).astype(np.int32)
             comp_class_arr[0] = 0  # background
 
-            # 세포 좌표 → 컴포넌트 ID → 관 타입 (1단계 mxs/mys 재사용, 벡터 룩업)
-            if epi_indices:
-                # 1단계에서 이미 계산한 mxs/mys를 labeled_mask에 재적용
-                lh, lw = labeled_mask.shape
-                lvalid = (mxs >= 0) & (mxs < lw) & (mys >= 0) & (mys < lh)
-                comp_ids = np.zeros(len(epi_indices), dtype=np.int32)
-                comp_ids[lvalid] = labeled_mask[mys[lvalid], mxs[lvalid]]
-                # comp_id > 0 인 경우만 업데이트 (0=Background → 1단계 seg_class 유지)
-                update_mask = comp_ids > 0
-                epi_seg_arr = np.array(epi_seg_classes, dtype=np.int32)
-                epi_seg_arr[update_mask] = comp_class_arr[comp_ids[update_mask]]
-                epi_seg_classes = epi_seg_arr.tolist()
+            # 세포 좌표 → 컴포넌트 ID → 관 타입 (mxs/mys 재사용)
+            lh, lw = labeled_mask.shape
+            lvalid = (mxs >= 0) & (mxs < lw) & (mys >= 0) & (mys < lh)
+            comp_ids = np.zeros(len(epi_indices), dtype=np.int32)
+            comp_ids[lvalid] = labeled_mask[mys[lvalid], mxs[lvalid]]
+            update_mask = comp_ids > 0
+            seg_vals[update_mask] = comp_class_arr[comp_ids[update_mask]]
 
-            # 4단계: 최종 cls_id 할당 (cells는 dict 리스트이므로 순회 필요)
-            reclassified_count = 0
-            for k, idx in enumerate(epi_indices):
-                cells[idx]['cls_id'] = 7 if epi_seg_classes[k] == 2 else 6
-                reclassified_count += 1
+            # 4단계: cls_arr in-place 업데이트 (2=Benign→7, else Tumor→6)
+            cls_arr[epi_indices] = np.where(seg_vals == 2, 7, 6).astype(np.int32)
 
-            self.status.emit(f"Epithelial 재분류 완료 ({reclassified_count}개)")
+            self.status.emit(f"Epithelial 재분류 완료 ({len(epi_indices)}개)")
             self.progress.emit(98)
 
-            # GPU 메모리 정리
             del seg_model
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-
-            return cells
 
         except Exception as e:
             import traceback
             print(f"Epithelial 재분류 실패: {e}\n{traceback.format_exc()}")
             self.status.emit(f"재분류 실패, 원본 결과 사용: {str(e)}")
-            return cells
 
     def cancel(self):
         """작업 취소"""
