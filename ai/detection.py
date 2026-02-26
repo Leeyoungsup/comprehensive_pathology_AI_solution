@@ -1310,6 +1310,7 @@ class TiledDetectionOverlay:
         self.color_map = color_map  # 커스텀 색상맵 (None이면 CLASS_COLORS_RGB 사용)
         self.point_radius = 16
         self.alpha = 180
+        self._heatmap_cache = None  # 사전 계산된 density 그리드 캐시
 
     def set_cells(self, cells, color_map=None):
         """검출된 세포 리스트 설정 및 공간 인덱스 구축"""
@@ -1318,15 +1319,59 @@ class TiledDetectionOverlay:
         if color_map is not None:
             self.color_map = color_map
             self.class_visibility = {cls_id: True for cls_id in color_map.keys()}
+        self._build_heatmap_cache()
 
     def clear_cells(self):
         """세포 리스트 초기화"""
         self.cells = []
         self.spatial_grid.clear()
+        self._heatmap_cache = None
 
     def set_class_visibility(self, cls_id, visible):
-        """특정 클래스의 가시성 설정"""
+        """특정 클래스의 가시성 설정 (캐시 재계산 불필요 - create_heatmap_mask에서 합산)"""
         self.class_visibility[cls_id] = visible
+
+    def _build_heatmap_cache(self, grid_size=2048):
+        """클래스별 density 그리드를 미리 계산하여 캐시 (set_cells 시 1회만 실행)"""
+        if not self.cells:
+            self._heatmap_cache = None
+            return
+
+        xs_all = np.array([c['x'] for c in self.cells], dtype=np.float64)
+        ys_all = np.array([c['y'] for c in self.cells], dtype=np.float64)
+
+        x_min, x_max = float(xs_all.min()), float(xs_all.max())
+        y_min, y_max = float(ys_all.min()), float(ys_all.max())
+        span_w = max(x_max - x_min, 1.0)
+        span_h = max(y_max - y_min, 1.0)
+
+        # 종횡비 유지한 그리드 크기
+        if span_w >= span_h:
+            gw = grid_size
+            gh = max(1, int(grid_size * span_h / span_w))
+        else:
+            gh = grid_size
+            gw = max(1, int(grid_size * span_w / span_h))
+
+        hist_range = [[y_min, y_max + 1e-6], [x_min, x_max + 1e-6]]
+
+        # 클래스별 density 그리드 누적 (blur 없이 raw count 저장)
+        cls_densities = {}
+        for cls_id in set(c.get('cls_id', 0) for c in self.cells):
+            cls_cells = [c for c in self.cells if c.get('cls_id', 0) == cls_id]
+            xs = np.array([c['x'] for c in cls_cells], dtype=np.float64)
+            ys = np.array([c['y'] for c in cls_cells], dtype=np.float64)
+            density, _, _ = np.histogram2d(ys, xs, bins=[gh, gw], range=hist_range)
+            cls_densities[cls_id] = density.astype(np.float32)
+
+        self._heatmap_cache = {
+            'cls_densities': cls_densities,
+            'x_min': x_min, 'y_min': y_min,
+            'x_max': x_max, 'y_max': y_max,
+            'gw': gw, 'gh': gh,
+            'sx': gw / span_w,
+            'sy': gh / span_h,
+        }
 
     def create_tile_mask(self, tile_x, tile_y, tile_width, tile_height, downsample=1):
         """
@@ -1423,10 +1468,10 @@ class TiledDetectionOverlay:
         return pixmap, x, y
 
     def create_heatmap_mask(self, view_rect, heatmap_size=512):
-        """저배율 LOD용 히트맵 마스크 생성
+        """저배율 LOD용 히트맵 마스크 생성 (사전 계산된 캐시 사용)
 
-        세포 밀도를 heatmap_size 해상도 격자에 누적하고
-        Gaussian blur + COLORMAP_HOT으로 시각화한다.
+        _build_heatmap_cache()에서 미리 계산된 전체 슬라이드 density 그리드를
+        현재 뷰 영역으로 crop + resize하여 반환 → 세포 수에 관계없이 O(1) 속도.
 
         Returns:
             (QPixmap | None, x, y, scale)
@@ -1442,38 +1487,55 @@ class TiledDetectionOverlay:
         if width <= 0 or height <= 0:
             return None, x, y, 1.0
 
-        # 종횡비 유지하여 히트맵 해상도 결정
-        hm_w = heatmap_size
-        hm_h = max(1, int(heatmap_size * height / width))
-
-        # 뷰 영역 내 셀 조회 (SpatialGrid 활용)
-        visible_cells = self.spatial_grid.query(x, y, x + width, y + height)
-        if not visible_cells:
+        cache = self._heatmap_cache
+        if cache is None:
             return None, x, y, 1.0
 
-        # 클래스 가시성 필터
-        visible_cells = [c for c in visible_cells
-                         if self.class_visibility.get(c.get('cls_id', 0), True)]
-        if not visible_cells:
+        cls_densities = cache['cls_densities']
+        x_min, y_min = cache['x_min'], cache['y_min']
+        gw, gh = cache['gw'], cache['gh']
+        sx, sy = cache['sx'], cache['sy']
+
+        # view_rect를 density 그리드 인덱스로 변환
+        gx0c = max(0, int((x - x_min) * sx))
+        gy0c = max(0, int((y - y_min) * sy))
+        gx1c = min(gw, int((x + width - x_min) * sx) + 1)
+        gy1c = min(gh, int((y + height - y_min) * sy) + 1)
+
+        if gx1c <= gx0c or gy1c <= gy0c:
             return None, x, y, 1.0
 
-        # 밀도 격자 누적
-        density = np.zeros((hm_h, hm_w), dtype=np.float32)
-        for cell in visible_cells:
-            cx = int((cell['x'] - x) / width * hm_w)
-            cy = int((cell['y'] - y) / height * hm_h)
-            if 0 <= cx < hm_w and 0 <= cy < hm_h:
-                density[cy, cx] += 1.0
+        # 가시 클래스만 crop 후 합산 (작은 영역에서 연산 → 빠름)
+        combined = None
+        for cls_id, density in cls_densities.items():
+            if not self.class_visibility.get(cls_id, True):
+                continue
+            crop = density[gy0c:gy1c, gx0c:gx1c]
+            if combined is None:
+                combined = crop.copy()
+            else:
+                combined += crop
 
-        # 적응형 Gaussian blur (heatmap 크기에 비례)
-        sigma = max(3.0, hm_w / 40.0)
-        density = cv2.GaussianBlur(density, (0, 0), sigma)
+        if combined is None or combined.max() == 0:
+            return None, x, y, 1.0
 
-        # 정규화
-        max_val = float(density.max())
+        # heatmap_size 해상도로 리사이즈
+        crop_h, crop_w = combined.shape
+        target_w = heatmap_size
+        target_h = max(1, int(heatmap_size * crop_h / crop_w))
+        if crop_w != target_w or crop_h != target_h:
+            combined = cv2.resize(combined, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+
+        # Gaussian blur (리사이즈 후 512 크기에서 → 빠름)
+        sigma = max(3.0, target_w / 60.0)
+        combined = cv2.GaussianBlur(combined, (0, 0), sigma)
+
+        max_val = float(combined.max())
         if max_val == 0:
             return None, x, y, 1.0
-        density_norm = (density / max_val * 255).astype(np.uint8)
+
+        # 로컬 정규화 (뷰 내 상대 밀도)
+        density_norm = (combined / max_val * 255).astype(np.uint8)
 
         # 컬러맵 적용 (COLORMAP_HOT: 검정→빨강→노랑→흰색)
         colored_bgr = cv2.applyColorMap(density_norm, cv2.COLORMAP_HOT)
@@ -1484,6 +1546,7 @@ class TiledDetectionOverlay:
             density_norm.astype(np.float32) * (self.alpha / 255.0), 0, 255
         ).astype(np.uint8)
 
+        hm_h, hm_w = density_norm.shape
         mask = np.zeros((hm_h, hm_w, 4), dtype=np.uint8)
         mask[:, :, 0] = colored_rgb[:, :, 0]
         mask[:, :, 1] = colored_rgb[:, :, 1]
@@ -1492,10 +1555,17 @@ class TiledDetectionOverlay:
 
         bytes_per_line = 4 * hm_w
         qimage = QImage(mask.data, hm_w, hm_h, bytes_per_line, QImage.Format_RGBA8888)
-        pixmap = QPixmap.fromImage(qimage.copy())  # .copy()로 numpy 메모리 독립
+        pixmap = QPixmap.fromImage(qimage.copy())
 
-        scale = width / hm_w  # scene 좌표 기준 pixel 크기
-        return pixmap, x, y, scale
+        # scale: crop이 커버하는 scene 너비 / 출력 픽셀 수
+        scene_w_covered = (gx1c - gx0c) / sx
+        scale = scene_w_covered / hm_w
+
+        # 실제 crop 시작점의 scene 좌표 (클램핑으로 인해 x와 다를 수 있음)
+        actual_x = x_min + gx0c / sx
+        actual_y = y_min + gy0c / sy
+
+        return pixmap, actual_x, actual_y, scale
 
     def get_cells_in_region(self, x, y, width, height):
         """특정 영역 내의 세포 리스트 반환"""
