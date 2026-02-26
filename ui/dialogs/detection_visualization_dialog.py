@@ -81,7 +81,8 @@ class DetectionVisualizationDialog(QDialog):
         self.slide_dimensions = slide_dimensions
         self.thumbnail = thumbnail
         self.roi_bounds = roi_bounds
-        self.seg_prob_map = seg_prob_map
+        self.seg_prob_map = None  # 대형 배열은 인스턴스에 저장하지 않음; _resized_prob_map 사용
+        self._has_prob_map = seg_prob_map is not None
         self.seg_class_names = seg_class_names or ['Background', 'Stroma', 'Non_Tumor', 'Tumor']
         self.roi_polygons = roi_polygons or []
         self.slide_path = slide_path
@@ -96,15 +97,17 @@ class DetectionVisualizationDialog(QDialog):
         else:
             self._pa = self._compute_plot_arrays(cells)
 
-        # seg_prob_map을 썸네일 크기로 미리 리사이즈 (각 패널에서 반복 리사이즈 방지)
+        # seg_prob_map을 썸네일 크기로 미리 리사이즈 후 원본 대형 배열은 해제
+        # (수백 MB 절약: 인스턴스에는 썸네일 크기 축소본만 보관)
         self._resized_prob_map = None
-        if self.seg_prob_map is not None and self.thumbnail is not None:
+        if seg_prob_map is not None and self.thumbnail is not None:
             import cv2
             th, tw = self.thumbnail.shape[:2]
             self._resized_prob_map = [
-                cv2.resize(self.seg_prob_map[i], (tw, th), interpolation=cv2.INTER_LINEAR)
-                for i in range(self.seg_prob_map.shape[0])
+                cv2.resize(seg_prob_map[i], (tw, th), interpolation=cv2.INTER_LINEAR)
+                for i in range(seg_prob_map.shape[0])
             ]
+            # seg_prob_map은 로컬 파라미터로만 존재 → 이 블록 이후 참조 없으면 GC 해제
 
         self._init_ui()
 
@@ -124,7 +127,7 @@ class DetectionVisualizationDialog(QDialog):
 
         self.tab_widget.addTab(self._create_class_distribution_tab(), "클래스 분포")
         self.tab_widget.addTab(self._create_tumor_analysis_tab(), "Tumor 분석")
-        if self.seg_prob_map is not None:
+        if self._has_prob_map:
             self.tab_widget.addTab(self._create_spatial_heatmap_tab(), "공간 히트맵")
         self.tab_widget.addTab(self._create_confidence_tab(), "Confidence 분포")
 
@@ -333,7 +336,7 @@ class DetectionVisualizationDialog(QDialog):
             outer_layout.addWidget(label)
             return outer
 
-        use_prob = self.seg_prob_map is not None
+        use_prob = self._resized_prob_map is not None
 
         panel_h, panel_w = 3.2, 3.5
         cols = 3
@@ -373,11 +376,8 @@ class DetectionVisualizationDialog(QDialog):
                 if self.thumbnail is not None:
                     ax.imshow(self.thumbnail, aspect='auto', origin='upper', zorder=0)
 
-                if cls_id < self.seg_prob_map.shape[0]:
-                    prob_resized = (self._resized_prob_map[cls_id]
-                                   if self._resized_prob_map is not None
-                                   else cv2.resize(self.seg_prob_map[cls_id], (tw, th),
-                                                   interpolation=cv2.INTER_LINEAR))
+                if cls_id < len(self._resized_prob_map):
+                    prob_resized = self._resized_prob_map[cls_id]
                     ax.imshow(prob_resized, aspect='auto', origin='upper',
                               cmap='hot', alpha=0.75, zorder=1,
                               vmin=0, vmax=1, interpolation='bilinear')
@@ -573,7 +573,7 @@ class DetectionVisualizationDialog(QDialog):
                     pdf.savefig(fig, bbox_inches='tight')
                     fig.clear(); del fig; gc.collect()
 
-                if self.seg_prob_map is not None:
+                if self._has_prob_map:
                     fig = self._make_pdf_spatial_heatmap()
                     pdf.savefig(fig, bbox_inches='tight')
                     fig.clear(); del fig; gc.collect()
@@ -789,7 +789,7 @@ class DetectionVisualizationDialog(QDialog):
         import cv2
         from matplotlib.figure import Figure as MplFig
 
-        if self.seg_prob_map is None or self.thumbnail is None:
+        if self._resized_prob_map is None or self.thumbnail is None:
             fig = MplFig(figsize=A4_LANDSCAPE, facecolor='white')
             fig.text(0.5, 0.5, '공간 히트맵 데이터 없음', ha='center', va='center',
                      color=SUBTEXT, fontsize=14)
@@ -813,11 +813,8 @@ class DetectionVisualizationDialog(QDialog):
             ax.set_xticks([]); ax.set_yticks([])
             for sp in ax.spines.values(): sp.set_color(SPINE)
             ax.imshow(self.thumbnail, aspect='auto', origin='upper', zorder=0)
-            if cls_id < self.seg_prob_map.shape[0]:
-                prob_r = (self._resized_prob_map[cls_id]
-                          if self._resized_prob_map is not None
-                          else cv2.resize(self.seg_prob_map[cls_id], (tw, th),
-                                          interpolation=cv2.INTER_LINEAR))
+            if cls_id < len(self._resized_prob_map):
+                prob_r = self._resized_prob_map[cls_id]
                 ax.imshow(prob_r, aspect='auto', origin='upper',
                           cmap='hot', alpha=0.75, zorder=1, vmin=0, vmax=1)
                 max_v = float(prob_r.max())
