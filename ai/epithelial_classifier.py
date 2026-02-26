@@ -11,6 +11,9 @@ Epithelial cell을 조직 영역별로 재분류하는 모듈
 
 import os
 import sys
+import threading
+import queue
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import numpy as np
 from PIL import Image
@@ -22,6 +25,9 @@ import openslide
 import warnings
 warnings.filterwarnings('ignore')
 
+_seg_thread_local = threading.local()
+_autocast_enabled = torch.cuda.is_available()
+
 # Segmentation model import
 try:
     import segmentation_models_pytorch as smp
@@ -30,8 +36,6 @@ except ImportError:
     print("Run: pip install segmentation-models-pytorch")
     smp = None
 
-# Torchvision import
-from torchvision.transforms import ToTensor
 
 
 # ============================================================================
@@ -162,7 +166,7 @@ class WSISegmentationModel:
 
         print(f"Segmentation model loaded from: {self.model_path}")
 
-    def predict_wsi(self, slide, patch_size=512, overlap_ratio=0.3, batch_size=8, progress_callback=None, status_callback=None, roi_bounds=None):
+    def predict_wsi(self, slide, patch_size=512, overlap_ratio=0.3, batch_size=8, progress_callback=None, status_callback=None, roi_bounds=None, image_path=None):
         """
         Predict on entire WSI or ROI region using overlapping patches with weighted blending
 
@@ -245,12 +249,15 @@ class WSISegmentationModel:
 
         print(f"Reading from level {read_level} (downsample: {level_downsample:.2f})")
 
-        # Initialize accumulators at model resolution
-        prediction_sum = np.zeros((self.num_classes, model_res_h, model_res_w), dtype=np.float32)
-        weight_sum = np.zeros((model_res_h, model_res_w), dtype=np.float32)
+        # 패치를 output 해상도로 직접 리사이즈하여 누산 → 메모리 output_scale² 배 절약
+        # (model_res 크기 대신 output_res 크기로 누산: 예) 8GB → 500MB)
+        patch_output_size = max(1, int(patch_size / output_scale))
 
-        # Create weight mask
-        weight_mask = create_gaussian_weight_mask(patch_size, sigma=0.3)
+        prediction_sum = np.zeros((self.num_classes, output_h, output_w), dtype=np.float32)
+        weight_sum = np.zeros((output_h, output_w), dtype=np.float32)
+
+        # Create weight mask at output resolution
+        weight_mask = create_gaussian_weight_mask(patch_output_size, sigma=0.3)
 
         # Calculate number of patches (for processing region)
         n_patches_x = max(1, int(np.ceil((region_w - patch_size_level0) / step_size_level0)) + 1)
@@ -310,89 +317,105 @@ class WSISegmentationModel:
         if status_callback:
             status_callback(f"유효 패치 {n_valid}개 확인 완료, 추론 시작...")
 
-        # Process patches in batches
+        # level-0 좌표 → output 해상도 변환 비율 (루프 밖에서 1회 계산)
+        combined_scale = read_scale * output_scale
+
+        # ── 병렬 I/O: thread-local OpenSlide + GPU 추론 오버랩 ─────────────
         import time
-        tf = ToTensor()
+
+        read_size = int(patch_size_level0 / level_downsample)
+        IO_WORKERS = 4 if image_path else 1  # image_path 없으면 단일 스레드(OpenSlide 비thread-safe)
+
+        def _read_patch(coord):
+            x_abs, y_abs, x_rel, y_rel = coord
+            try:
+                if image_path:
+                    if getattr(_seg_thread_local, 'path', None) != image_path:
+                        _seg_thread_local.slide = openslide.OpenSlide(image_path)
+                        _seg_thread_local.path = image_path
+                    _sl = _seg_thread_local.slide
+                else:
+                    _sl = slide
+                arr = np.array(
+                    _sl.read_region((x_abs, y_abs), read_level, (read_size, read_size))
+                    .convert('RGB')
+                    .resize((patch_size, patch_size), Image.BILINEAR)
+                )
+                if np.mean(arr > 220) >= 0.9:
+                    return None, None
+                return torch.from_numpy(arr).permute(2, 0, 1).float() / 255.0, (x_rel, y_rel)
+            except Exception:
+                return None, None
+
+        prefetch_q = queue.Queue(maxsize=3)
+
+        def _producer():
+            with ThreadPoolExecutor(max_workers=IO_WORKERS) as pool:
+                for b_start in range(0, n_valid, batch_size):
+                    batch_coords = valid_patch_coords[b_start:b_start + batch_size]
+                    results = list(pool.map(_read_patch, batch_coords))
+                    imgs, coords = [], []
+                    for t, c in results:
+                        if t is not None:
+                            imgs.append(t)
+                            coords.append(c)
+                    prefetch_q.put((imgs, coords, b_start))
+            prefetch_q.put(None)  # sentinel
+
+        prod_thread = threading.Thread(target=_producer, daemon=True)
+        prod_thread.start()
+
         processed_valid = 0
         start_time = time.time()
 
-        for batch_start in range(0, len(valid_patch_coords), batch_size):
-            batch_coords = valid_patch_coords[batch_start:batch_start + batch_size]
-            batch_images = []
-            valid_coords = []
+        while True:
+            item = prefetch_q.get()
+            if item is None:
+                break
+            batch_images, valid_coords, b_start = item
+            processed_valid += min(batch_size, n_valid - b_start)
 
-            for (x_abs, y_abs, x_rel, y_rel) in batch_coords:
-                # Read patch at the best level (using absolute coordinates)
-                try:
-                    patch = slide.read_region(
-                        (x_abs, y_abs),
-                        read_level,
-                        (int(patch_size_level0 / level_downsample),
-                         int(patch_size_level0 / level_downsample))
-                    ).convert('RGB')
-
-                    # Resize to model input size
-                    patch = patch.resize((patch_size, patch_size), Image.BILINEAR)
-                    patch_tensor = tf(patch)
-
-                    # 안전 체크 (pre-scan 이 코스 레벨이므로 경계값 재확인)
-                    patch_array = np.array(patch)
-                    if np.mean(patch_array > 220) < 0.9:
-                        batch_images.append(patch_tensor)
-                        valid_coords.append((x_rel, y_rel))
-                except Exception:
-                    continue
-
-            processed_valid += len(batch_coords)
-
-            if len(batch_images) == 0:
-                if progress_callback or status_callback:
-                    pct = processed_valid / n_valid if n_valid > 0 else 1.0
-                    if progress_callback:
-                        progress_callback(int(pct * 100))
+            if not batch_images:
+                if progress_callback:
+                    progress_callback(int(processed_valid / n_valid * 100))
                 continue
 
-            # Stack and predict
-            batch_tensor = torch.stack(batch_images).to(self.device).float()
-
+            # GPU 추론 (autocast로 FP16 가속)
+            batch_tensor = torch.stack(batch_images).to(self.device)
             with torch.no_grad():
-                predictions = self.model(batch_tensor)
-                predictions = F.softmax(predictions, dim=1)
+                with torch.amp.autocast('cuda', enabled=_autocast_enabled):
+                    predictions = self.model(batch_tensor)
+                predictions = F.softmax(predictions.float(), dim=1)
+                if output_scale > 1.0:
+                    predictions = F.interpolate(
+                        predictions,
+                        size=(patch_output_size, patch_output_size),
+                        mode='bilinear',
+                        align_corners=False,
+                    )
                 predictions = predictions.cpu().numpy()
 
-            # Accumulate predictions with weights
+            # 벡터화 누산 (클래스 루프 제거)
             for i, (x_rel, y_rel) in enumerate(valid_coords):
-                # Calculate position in model resolution (using relative coordinates)
-                x_model = int(x_rel / read_scale)
-                y_model = int(y_rel / read_scale)
-
-                # Get the region to update
-                x_end = min(x_model + patch_size, model_res_w)
-                y_end = min(y_model + patch_size, model_res_h)
-
-                patch_w = x_end - x_model
-                patch_h = y_end - y_model
-
-                if patch_w <= 0 or patch_h <= 0:
+                x_out = int(x_rel / combined_scale)
+                y_out = int(y_rel / combined_scale)
+                x_end = min(x_out + patch_output_size, output_w)
+                y_end = min(y_out + patch_output_size, output_h)
+                ph = y_end - y_out
+                pw = x_end - x_out
+                if ph <= 0 or pw <= 0:
                     continue
+                prediction_sum[:, y_out:y_end, x_out:x_end] += \
+                    predictions[i, :, :ph, :pw] * weight_mask[:ph, :pw]
+                weight_sum[y_out:y_end, x_out:x_end] += weight_mask[:ph, :pw]
 
-                # Add weighted prediction
-                for c in range(self.num_classes):
-                    prediction_sum[c, y_model:y_end, x_model:x_end] += \
-                        predictions[i, c, :patch_h, :patch_w] * weight_mask[:patch_h, :patch_w]
-
-                weight_sum[y_model:y_end, x_model:x_end] += weight_mask[:patch_h, :patch_w]
-
-            # 진행률 + ETA 업데이트
+            # 진행률 + ETA
             if progress_callback or status_callback:
                 pct = processed_valid / n_valid if n_valid > 0 else 1.0
                 elapsed = time.time() - start_time
                 if pct > 0.01 and elapsed > 1.0:
                     remaining = int(elapsed / pct * (1.0 - pct))
-                    if remaining >= 60:
-                        eta_str = f"{remaining // 60}분 {remaining % 60}초"
-                    else:
-                        eta_str = f"{remaining}초"
+                    eta_str = f"{remaining // 60}분 {remaining % 60}초" if remaining >= 60 else f"{remaining}초"
                     msg = f"Segmentation {processed_valid}/{n_valid} 패치 처리 중 (~{eta_str} 남음)"
                 else:
                     msg = f"Segmentation {processed_valid}/{n_valid} 패치 처리 중..."
@@ -401,28 +424,17 @@ class WSISegmentationModel:
                 if progress_callback:
                     progress_callback(int(pct * 100))
 
+        prod_thread.join()
+
         # Normalize by weights
         weight_sum = np.maximum(weight_sum, 1e-6)  # Avoid division by zero
         for c in range(self.num_classes):
             prediction_sum[c] /= weight_sum
-        del weight_sum  # 대형 배열 즉시 해제 (수 GB)
+        del weight_sum
 
-        # Probability map at output resolution (for visualization heatmaps)
-        prob_map_output = np.zeros((self.num_classes, output_h, output_w), dtype=np.float32)
-        for c in range(self.num_classes):
-            prob_img = Image.fromarray(prediction_sum[c])
-            prob_map_output[c] = np.array(prob_img.resize((output_w, output_h), Image.BILINEAR))
-
-        # Get final prediction (argmax)
-        prediction_model_res = np.argmax(prediction_sum, axis=0).astype(np.uint8)
-        del prediction_sum  # 대형 누산 배열 즉시 해제 (수 GB)
-
-        # Downsample to output resolution
-        prediction_mask = Image.fromarray(prediction_model_res).resize(
-            (output_w, output_h),
-            Image.NEAREST
-        )
-        prediction_mask = np.array(prediction_mask)
+        # prediction_sum이 이미 output 해상도 → prob_map 및 prediction_mask 바로 생성
+        prob_map_output = prediction_sum  # (num_classes, output_h, output_w) — 추가 resize 불필요
+        prediction_mask = np.argmax(prediction_sum, axis=0).astype(np.uint8)
 
         # Metadata
         metadata = {
