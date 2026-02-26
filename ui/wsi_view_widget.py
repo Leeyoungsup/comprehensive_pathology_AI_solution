@@ -196,6 +196,14 @@ class WSIViewWidget(QGraphicsView):
         print(f"초기 줌 레벨: {self.zoom_level}")
         self.update_field_of_view()
     
+    def get_effective_mpp(self):
+        """현재 화면의 effective MPP (μm/px) = wsi_mpp / zoom_level.
+        슬라이드 크기와 무관한 물리적 해상도 기준값을 반환한다.
+        """
+        if not self.tile_manager or self.zoom_level <= 0:
+            return float('inf')
+        return self.tile_manager.mpp / self.zoom_level
+
     def set_zoom(self, zoom_level, anchor_pos=None):
         """줌 레벨 설정"""
         if not self.tile_manager:
@@ -251,7 +259,7 @@ class WSIViewWidget(QGraphicsView):
         view_rect = self.mapToScene(self.viewport().rect()).boundingRect()
         
         # 4단계 레벨 시스템 사용
-        level = self.tile_manager.get_stage_level(self.zoom_level)
+        level = self.tile_manager.get_stage_level(self.get_effective_mpp())
         
         # 레벨 변경 감지
         level_changed = (self.current_level != level)
@@ -288,7 +296,7 @@ class WSIViewWidget(QGraphicsView):
         
         # 현재 보이는 영역 계산
         view_rect = self.mapToScene(self.viewport().rect()).boundingRect()
-        level = self.tile_manager.get_stage_level(self.zoom_level)
+        level = self.tile_manager.get_stage_level(self.get_effective_mpp())
         level_downsample = self.tile_manager.get_level_downsample(level)
         
         # 타일 크기
@@ -443,20 +451,22 @@ class WSIViewWidget(QGraphicsView):
         # 현재 뷰 영역 가져오기
         view_rect = self.mapToScene(self.viewport().rect()).boundingRect()
         
-        # 다운샘플 계산 (현재 줌 레벨에 따라) - 낮은 줌에서 더 많이 다운샘플
-        if self.zoom_level < 0.05:
-            downsample = 16  # 더 큰 다운샘플 추가
-        elif self.zoom_level < 0.1:
+        # 다운샘플 계산 — effective MPP 기준 (슬라이드 크기 무관)
+        # 세포 직경 ~10-20 μm 기준으로 화면에서 차지하는 크기를 고려
+        mpp = self.get_effective_mpp()
+        if mpp > 8.0:
+            downsample = 16
+        elif mpp > 4.0:
             downsample = 8
-        elif self.zoom_level < 0.5:
+        elif mpp > 1.0:
             downsample = 4
-        elif self.zoom_level < 1.5:
+        elif mpp > 0.4:
             downsample = 2
         else:
             downsample = 1
-        
-        # LOD: L0/L1(zoom>=0.03)은 circle, L2/L3(zoom<0.03)는 히트맵
-        use_heatmap = self.zoom_level < 0.03
+
+        # LOD: mpp > 5 μm/px 이상이면 히트맵, 이하면 circle
+        use_heatmap = mpp > 5.0
 
         if use_heatmap:
             pixmap, mask_x, mask_y, scale = self.detection_overlay.create_heatmap_mask(view_rect)
