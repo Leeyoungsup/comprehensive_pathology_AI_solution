@@ -63,7 +63,7 @@ class DetectionVisualizationDialog(QDialog):
 
     def __init__(self, cells, slide_dimensions=None, thumbnail=None, roi_bounds=None,
                  seg_prob_map=None, seg_class_names=None, roi_polygons=None,
-                 slide_path=None, parent=None):
+                 slide_path=None, parent=None, plot_arrays=None):
         """
         Args:
             cells: 검출 세포 리스트 [{'x', 'y', 'cls_id', 'confidence'}, ...]
@@ -74,6 +74,7 @@ class DetectionVisualizationDialog(QDialog):
             seg_class_names: 클래스 이름 리스트 ['Background','Stroma','Non_Tumor','Tumor']
             slide_path: WSI 파일 경로 (PDF 기본 파일명에 사용)
             parent: 부모 위젯
+            plot_arrays: DetectionWorker가 사전 계산한 numpy 배열 dict (없으면 cells에서 즉시 계산)
         """
         super().__init__(parent)
         self.cells = cells
@@ -88,6 +89,23 @@ class DetectionVisualizationDialog(QDialog):
         self.setMinimumSize(950, 680)
         self.setWindowModality(Qt.NonModal)
         self.setStyleSheet("background-color: white; color: #222222;")
+
+        # plot 배열 초기화: 워커가 미리 계산했으면 그대로 사용, 없으면 여기서 계산
+        if plot_arrays is not None:
+            self._pa = plot_arrays
+        else:
+            self._pa = self._compute_plot_arrays(cells)
+
+        # seg_prob_map을 썸네일 크기로 미리 리사이즈 (각 패널에서 반복 리사이즈 방지)
+        self._resized_prob_map = None
+        if self.seg_prob_map is not None and self.thumbnail is not None:
+            import cv2
+            th, tw = self.thumbnail.shape[:2]
+            self._resized_prob_map = [
+                cv2.resize(self.seg_prob_map[i], (tw, th), interpolation=cv2.INTER_LINEAR)
+                for i in range(self.seg_prob_map.shape[0])
+            ]
+
         self._init_ui()
 
     def _init_ui(self):
@@ -132,12 +150,35 @@ class DetectionVisualizationDialog(QDialog):
         btn_layout.addWidget(close_btn)
         layout.addLayout(btn_layout)
 
+    def _compute_plot_arrays(self, cells):
+        """plot_arrays fallback: cells 리스트에서 직접 계산 (워커 결과 없을 때)"""
+        n = len(cells)
+        if n == 0:
+            empty = np.empty(0, dtype=np.float32)
+            return {'all_x': empty, 'all_y': empty,
+                    'xs_by_class': {}, 'ys_by_class': {}, 'confs_by_class': {},
+                    'counts_by_id': {}}
+        all_x    = np.fromiter((c['x']                   for c in cells), dtype=np.float32, count=n)
+        all_y    = np.fromiter((c['y']                   for c in cells), dtype=np.float32, count=n)
+        all_cls  = np.fromiter((c.get('cls_id', 0)       for c in cells), dtype=np.int32,   count=n)
+        all_conf = np.fromiter((c.get('confidence', 0.0) for c in cells), dtype=np.float32, count=n)
+        xs_by_class = {}; ys_by_class = {}; confs_by_class = {}; counts_by_id = {}
+        for cls_id in np.unique(all_cls).tolist():
+            mask = all_cls == cls_id
+            xs_by_class[cls_id]    = all_x[mask]
+            ys_by_class[cls_id]    = all_y[mask]
+            confs_by_class[cls_id] = all_conf[mask]
+            counts_by_id[cls_id]   = int(mask.sum())
+        return {'all_x': all_x, 'all_y': all_y,
+                'xs_by_class': xs_by_class, 'ys_by_class': ys_by_class,
+                'confs_by_class': confs_by_class, 'counts_by_id': counts_by_id}
+
     def _get_class_counts(self):
+        """클래스별 세포 수 반환 (pre-computed, O(1))"""
         counts = {cls_id: 0 for cls_id in CLASS_NAMES}
-        for cell in self.cells:
-            cls_id = cell.get('cls_id', 0)
+        for cls_id, cnt in self._pa['counts_by_id'].items():
             if cls_id in counts:
-                counts[cls_id] += 1
+                counts[cls_id] = cnt
         return counts
 
     def _styled_ax(self, ax):
@@ -333,9 +374,10 @@ class DetectionVisualizationDialog(QDialog):
                     ax.imshow(self.thumbnail, aspect='auto', origin='upper', zorder=0)
 
                 if cls_id < self.seg_prob_map.shape[0]:
-                    prob_ch = self.seg_prob_map[cls_id]
-                    prob_resized = cv2.resize(prob_ch, (tw, th),
-                                             interpolation=cv2.INTER_LINEAR)
+                    prob_resized = (self._resized_prob_map[cls_id]
+                                   if self._resized_prob_map is not None
+                                   else cv2.resize(self.seg_prob_map[cls_id], (tw, th),
+                                                   interpolation=cv2.INTER_LINEAR))
                     ax.imshow(prob_resized, aspect='auto', origin='upper',
                               cmap='hot', alpha=0.75, zorder=1,
                               vmin=0, vmax=1, interpolation='bilinear')
@@ -396,13 +438,12 @@ class DetectionVisualizationDialog(QDialog):
                               extent=thumb_extent, origin='upper', zorder=0)
 
                 if cls_id is None:
-                    xs = np.array([c['x'] for c in self.cells])
-                    ys = np.array([c['y'] for c in self.cells])
+                    xs   = self._pa['all_x']
+                    ys   = self._pa['all_y']
                     cmap = 'hot'
                 else:
-                    subset = [c for c in self.cells if c.get('cls_id') == cls_id]
-                    xs = np.array([c['x'] for c in subset])
-                    ys = np.array([c['y'] for c in subset])
+                    xs = self._pa['xs_by_class'].get(cls_id, np.empty(0, dtype=np.float32))
+                    ys = self._pa['ys_by_class'].get(cls_id, np.empty(0, dtype=np.float32))
                     rgb = mcolors.to_rgb(CLASS_COLORS_HEX.get(cls_id, '#333333'))
                     cmap = mcolors.LinearSegmentedColormap.from_list(
                         f'cls_{cls_id}', [(0, 0, 0, 0), (*rgb, 1.0)])
@@ -472,7 +513,7 @@ class DetectionVisualizationDialog(QDialog):
             ax.spines['left'].set_visible(True)
             ax.spines['bottom'].set_visible(True)
 
-            confs = [c['confidence'] for c in self.cells if c.get('cls_id') == cls_id]
+            confs = self._pa['confs_by_class'].get(cls_id, np.empty(0, dtype=np.float32))
             color = CLASS_COLORS_HEX.get(cls_id, '#4488CC')
 
             ax.hist(confs, bins=20, color=color, alpha=0.80, edgecolor='white',
@@ -773,8 +814,10 @@ class DetectionVisualizationDialog(QDialog):
             for sp in ax.spines.values(): sp.set_color(SPINE)
             ax.imshow(self.thumbnail, aspect='auto', origin='upper', zorder=0)
             if cls_id < self.seg_prob_map.shape[0]:
-                prob_ch = self.seg_prob_map[cls_id]
-                prob_r = cv2.resize(prob_ch, (tw, th), interpolation=cv2.INTER_LINEAR)
+                prob_r = (self._resized_prob_map[cls_id]
+                          if self._resized_prob_map is not None
+                          else cv2.resize(self.seg_prob_map[cls_id], (tw, th),
+                                          interpolation=cv2.INTER_LINEAR))
                 ax.imshow(prob_r, aspect='auto', origin='upper',
                           cmap='hot', alpha=0.75, zorder=1, vmin=0, vmax=1)
                 max_v = float(prob_r.max())
@@ -811,7 +854,7 @@ class DetectionVisualizationDialog(QDialog):
             for sp in ax.spines.values(): sp.set_color(SPINE)
             ax.spines['top'].set_visible(False); ax.spines['right'].set_visible(False)
 
-            confs = [c['confidence'] for c in self.cells if c.get('cls_id') == cls_id]
+            confs = self._pa['confs_by_class'].get(cls_id, np.empty(0, dtype=np.float32))
             color = CLASS_COLORS_HEX.get(cls_id, '#4488CC')
             ax.hist(confs, bins=20, color=color, alpha=0.80,
                     edgecolor='white', linewidth=0.4, range=(0, 1))
@@ -829,11 +872,13 @@ class DetectionVisualizationDialog(QDialog):
 
 def show_detection_visualization(cells, slide_dimensions=None, thumbnail=None,
                                   roi_bounds=None, seg_prob_map=None, seg_class_names=None,
-                                  roi_polygons=None, slide_path=None, parent=None):
+                                  roi_polygons=None, slide_path=None, parent=None,
+                                  plot_arrays=None):
     """시각화 다이얼로그 표시 헬퍼 함수"""
     dialog = DetectionVisualizationDialog(
         cells, slide_dimensions, thumbnail, roi_bounds,
-        seg_prob_map, seg_class_names, roi_polygons, slide_path, parent
+        seg_prob_map, seg_class_names, roi_polygons, slide_path, parent,
+        plot_arrays=plot_arrays
     )
     dialog.show()
     return dialog
