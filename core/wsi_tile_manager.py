@@ -240,9 +240,11 @@ class WSITileManager(QObject):
         try:
             self.slide = openslide.OpenSlide(slide_path)
             self._setup_level_stages()
+            self.mpp = self._read_mpp()
             print(f"WSI 로딩 완료: {slide_path}")
             print(f"  - 총 레벨 수: {self.slide.level_count}")
             print(f"  - 4단계 레벨 매핑: {self.level_stages}")
+            print(f"  - MPP: {self.mpp:.4f} μm/px")
         except Exception as e:
             print(f"WSI 로딩 실패: {e}")
             raise
@@ -262,6 +264,18 @@ class WSITileManager(QObject):
         self._update_timer.setSingleShot(True)
         self._update_timer.setInterval(16)
         self._update_timer.timeout.connect(self.tilesUpdated)
+
+    def _read_mpp(self):
+        """슬라이드 MPP(μm/px) 읽기. 메타데이터 없으면 0.25 기본값."""
+        try:
+            val = self.slide.properties.get('openslide.mpp-x')
+            if val is not None:
+                mpp = float(val)
+                if mpp > 0:
+                    return mpp
+        except (ValueError, TypeError):
+            pass
+        return 0.25  # 기본값 (40x 스캔 기준)
 
     def _setup_level_stages(self):
         """4단계 레벨 매핑 설정"""
@@ -287,23 +301,26 @@ class WSITileManager(QObject):
                 min(total_levels - 1, int(round(step * 3)))  # 최저 배율
             ]
     
-    def get_stage_level(self, zoom_level):
-        """줌 레벨에 따라 4단계 중 하나 선택"""
+    def get_stage_level(self, effective_mpp):
+        """effective MPP(μm/px)에 따라 4단계 타일 레벨 선택.
+        슬라이드 크기/MPP에 무관하게 동일한 물리적 해상도 기준으로 전환.
+
+        기준 (세포 직경 ~10-20 μm 기준):
+          < 2  μm/px : 세포 개별 식별 가능  → level 0 (최고해상도)
+          < 15 μm/px : 조직 구조 파악 수준  → level 1
+          < 100μm/px : 전체 조직 개요       → level 2
+          ≥ 100μm/px : 슬라이드 전체 뷰     → level 3
+        """
         if not self.level_stages:
             return 0
-        
-        # 줌 레벨에 따라 4단계 중 선택
-        if zoom_level >= 0.2:
-            # 고배율: 레벨 0 (원본)
+
+        if effective_mpp < 2.0:
             return self.level_stages[0]
-        elif zoom_level >= 0.03:
-            # 중상배율: 레벨 1
+        elif effective_mpp < 15.0:
             return self.level_stages[1]
-        elif zoom_level >= 0.004:
-            # 중하배율: 레벨 2
+        elif effective_mpp < 100.0:
             return self.level_stages[2]
         else:
-            # 저배율: 레벨 3
             return self.level_stages[3]
     
     def get_level_count(self):
