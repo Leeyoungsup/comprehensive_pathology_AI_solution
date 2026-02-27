@@ -32,7 +32,7 @@ if exist icon\app_icon.ico (
 
 echo   빌드 시작...
 :: PyInstaller 실행
-call pyinstaller --onefile --noconsole --name=PathologyAIViewer %ICON_OPTION% --clean run_app.py
+call pyinstaller --onedir --noconsole --name=PathologyAIViewer %ICON_OPTION% --clean run_app.py
 
 if %errorlevel% neq 0 (
     echo.
