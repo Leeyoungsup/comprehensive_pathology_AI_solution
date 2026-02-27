@@ -7,17 +7,28 @@ import sys
 import os
 from pathlib import Path
 
-# PyInstaller 실행 파일인 경우와 스크립트 실행 구분
-if getattr(sys, 'frozen', False):
-    # PyInstaller로 빌드된 실행 파일의 디렉토리
+# Nuitka 빌드 감지 (__compiled__ 는 Nuitka 전용 bulitin)
+_is_nuitka = False
+try:
+    import __compiled__
+    _is_nuitka = True
+except ImportError:
+    pass
+
+# PyInstaller / Nuitka 실행 파일인 경우와 스크립트 실행 구분
+if getattr(sys, 'frozen', False) or _is_nuitka:
     application_path = Path(sys.executable).parent
-    # _MEIPASS는 PyInstaller의 임시 폴더
     if hasattr(sys, '_MEIPASS'):
+        # PyInstaller --onefile: 임시 압축 해제 폴더
         bundle_dir = Path(sys._MEIPASS)
     else:
+        # PyInstaller --onedir 또는 Nuitka --standalone: EXE와 같은 폴더
         bundle_dir = application_path
+
+    # Nuitka standalone에서 Torch JIT 명시적 활성화
+    os.environ.setdefault('PYTORCH_JIT', '1')
 else:
-    # 스크립트로 실행
+    # 스크립트로 실행 (개발 모드)
     application_path = Path(__file__).parent
     bundle_dir = application_path
 
