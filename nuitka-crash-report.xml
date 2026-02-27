@@ -1,0 +1,124 @@
+<?xml version='1.0' encoding='utf8'?>
+<nuitka-compilation-report nuitka_version="2.8.9" nuitka_commercial_version="not installed" mode="standalone" completion="exception">
+  <exception exception_type="PermissionError" exception_value="[WinError 5] 액세스가 거부되었습니다: 'dist_nuitka\\main.build\\module.sklearn.neighbors._nca.c'">
+Traceback (most recent call last):
+  File "C:\Users\liive\.conda\envs\yslee\Lib\site-packages\nuitka\MainControl.py", line 1214, in main
+    _main()
+  File "C:\Users\liive\.conda\envs\yslee\Lib\site-packages\nuitka\MainControl.py", line 1033, in _main
+    main_module = _createMainModule()
+                  ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\liive\.conda\envs\yslee\Lib\site-packages\nuitka\MainControl.py", line 196, in _createMainModule
+    cleanSconsDirectory(source_dir)
+  File "C:\Users\liive\.conda\envs\yslee\Lib\site-packages\nuitka\build\SconsInterface.py", line 469, in cleanSconsDirectory
+    check(path)
+  File "C:\Users\liive\.conda\envs\yslee\Lib\site-packages\nuitka\build\SconsInterface.py", line 465, in check
+    deleteFile(path, must_exist=True)
+  File "C:\Users\liive\.conda\envs\yslee\Lib\site-packages\nuitka\utils\FileOperations.py", line 658, in deleteFile
+    os.unlink(path)
+PermissionError: [WinError 5] 액세스가 거부되었습니다: 'dist_nuitka\\main.build\\module.sklearn.neighbors._nca.c'
+</exception>
+  <performance>
+    <memory_usage name="after_launch" value="45297664" />
+  </performance>
+  <data_file name="model\HnE_BR_segmentation.pt" source="${cwd}\model\HnE_BR_segmentation.pt" size="119013369" reason="specified data dir 'model' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="model\HnE_ST_segmentation.pt" source="${cwd}\model\HnE_ST_segmentation.pt" size="119013369" reason="specified data dir 'model' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="model\HnE_detection.pt" source="${cwd}\model\HnE_detection.pt" size="241396471" reason="specified data dir 'model' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="model\HnE_detection_backup.pt" source="${cwd}\model\HnE_detection_backup.pt" size="160980881" reason="specified data dir 'model' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="model\PDL1_TPS_detection.pt" source="${cwd}\model\PDL1_TPS_detection.pt" size="241366628" reason="specified data dir 'model' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="libs\openslide_lib\CHANGELOG.md" source="${cwd}\libs\openslide_lib\CHANGELOG.md" size="3402" reason="specified data dir 'libs' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="libs\openslide_lib\README.md" source="${cwd}\libs\openslide_lib\README.md" size="2857" reason="specified data dir 'libs' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="libs\openslide_lib\VERSIONS.md" source="${cwd}\libs\openslide_lib\VERSIONS.md" size="1782" reason="specified data dir 'libs' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="libs\openslide_lib\versions.json" source="${cwd}\libs\openslide_lib\versions.json" size="2461" reason="specified data dir 'libs' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="libs\openslide_lib\bin\libopenslide-1.dll.debug" source="${cwd}\libs\openslide_lib\bin\libopenslide-1.dll.debug" size="40930747" reason="specified data dir 'libs' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="libs\openslide_lib\bin\slidetool.exe.debug" source="${cwd}\libs\openslide_lib\bin\slidetool.exe.debug" size="5221769" reason="specified data dir 'libs' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="libs\openslide_lib\include\openslide\openslide-features.h" source="${cwd}\libs\openslide_lib\include\openslide\openslide-features.h" size="2161" reason="specified data dir 'libs' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="libs\openslide_lib\include\openslide\openslide.h" source="${cwd}\libs\openslide_lib\include\openslide\openslide.h" size="19351" reason="specified data dir 'libs' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="libs\openslide_lib\lib\libopenslide.lib" source="${cwd}\libs\openslide_lib\lib\libopenslide.lib" size="17550" reason="specified data dir 'libs' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="libs\openslide_lib\licenses\OpenJPEG\LICENSE" source="${cwd}\libs\openslide_lib\licenses\OpenJPEG\LICENSE" size="2112" reason="specified data dir 'libs' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="libs\openslide_lib\licenses\OpenSlide\COPYING.LESSER" source="${cwd}\libs\openslide_lib\licenses\OpenSlide\COPYING.LESSER" size="26434" reason="specified data dir 'libs' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="libs\openslide_lib\licenses\PCRE2\LICENCE.md" source="${cwd}\libs\openslide_lib\licenses\PCRE2\LICENCE.md" size="4011" reason="specified data dir 'libs' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="libs\openslide_lib\licenses\SQLite\PUBLIC-DOMAIN.txt" source="${cwd}\libs\openslide_lib\licenses\SQLite\PUBLIC-DOMAIN.txt" size="291" reason="specified data dir 'libs' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="libs\openslide_lib\licenses\cairo\COPYING" source="${cwd}\libs\openslide_lib\licenses\cairo\COPYING" size="1576" reason="specified data dir 'libs' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="libs\openslide_lib\licenses\cairo\COPYING-LGPL-2.1" source="${cwd}\libs\openslide_lib\licenses\cairo\COPYING-LGPL-2.1" size="26533" reason="specified data dir 'libs' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="libs\openslide_lib\licenses\cairo\COPYING-MPL-1.1" source="${cwd}\libs\openslide_lib\licenses\cairo\COPYING-MPL-1.1" size="25755" reason="specified data dir 'libs' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="libs\openslide_lib\licenses\gdk-pixbuf\COPYING" source="${cwd}\libs\openslide_lib\licenses\gdk-pixbuf\COPYING" size="26530" reason="specified data dir 'libs' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="libs\openslide_lib\licenses\glib\COPYING" source="${cwd}\libs\openslide_lib\licenses\glib\COPYING" size="25967" reason="specified data dir 'libs' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="libs\openslide_lib\licenses\libdicom\LICENSE" source="${cwd}\libs\openslide_lib\licenses\libdicom\LICENSE" size="1075" reason="specified data dir 'libs' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="libs\openslide_lib\licenses\libffi\LICENSE" source="${cwd}\libs\openslide_lib\licenses\libffi\LICENSE" size="1132" reason="specified data dir 'libs' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="libs\openslide_lib\licenses\libjpeg-turbo\LICENSE.md" source="${cwd}\libs\openslide_lib\licenses\libjpeg-turbo\LICENSE.md" size="5620" reason="specified data dir 'libs' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="libs\openslide_lib\licenses\libjpeg-turbo\README.ijg" source="${cwd}\libs\openslide_lib\licenses\libjpeg-turbo\README.ijg" size="12799" reason="specified data dir 'libs' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="libs\openslide_lib\licenses\libpng\LICENSE" source="${cwd}\libs\openslide_lib\licenses\libpng\LICENSE" size="5345" reason="specified data dir 'libs' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="libs\openslide_lib\licenses\libtiff\LICENSE.md" source="${cwd}\libs\openslide_lib\licenses\libtiff\LICENSE.md" size="2416" reason="specified data dir 'libs' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="libs\openslide_lib\licenses\libxml2\Copyright" source="${cwd}\libs\openslide_lib\licenses\libxml2\Copyright" size="1314" reason="specified data dir 'libs' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="libs\openslide_lib\licenses\pixman\COPYING" source="${cwd}\libs\openslide_lib\licenses\pixman\COPYING" size="2087" reason="specified data dir 'libs' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="libs\openslide_lib\licenses\proxy-libintl\COPYING" source="${cwd}\libs\openslide_lib\licenses\proxy-libintl\COPYING" size="25292" reason="specified data dir 'libs' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="libs\openslide_lib\licenses\uthash\LICENSE" source="${cwd}\libs\openslide_lib\licenses\uthash\LICENSE" size="1141" reason="specified data dir 'libs' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="libs\openslide_lib\licenses\zlib-ng\LICENSE.md" source="${cwd}\libs\openslide_lib\licenses\zlib-ng\LICENSE.md" size="867" reason="specified data dir 'libs' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="icon\Info.png" source="${cwd}\icon\Info.png" size="10313" reason="specified data dir 'icon' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="icon\Open.png" source="${cwd}\icon\Open.png" size="5945" reason="specified data dir 'icon' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="icon\Point.png" source="${cwd}\icon\Point.png" size="14680" reason="specified data dir 'icon' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="icon\Polygon.png" source="${cwd}\icon\Polygon.png" size="16850" reason="specified data dir 'icon' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="icon\Rectangular_ROI_measurement.png" source="${cwd}\icon\Rectangular_ROI_measurement.png" size="4052" reason="specified data dir 'icon' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="icon\ScreenFill.png" source="${cwd}\icon\ScreenFill.png" size="5676" reason="specified data dir 'icon' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="icon\app_icon.ico" source="${cwd}\icon\app_icon.ico" size="37784" reason="specified data dir 'icon' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="icon\cursor.png" source="${cwd}\icon\cursor.png" size="1515" reason="specified data dir 'icon' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="icon\save.png" source="${cwd}\icon\save.png" size="2454" reason="specified data dir 'icon' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="ui\tmpclaude-cb6d-cwd" source="${cwd}\ui\tmpclaude-cb6d-cwd" size="79" reason="specified data dir 'ui' on command line" tags="user,copy,data-dir-contents" />
+  <data_file name="ui\viewer.ui" source="${cwd}\ui\viewer.ui" size="20156" reason="specified data dir 'ui' on command line" tags="user,copy,data-dir-contents" />
+  <data_composer blob_size="None" />
+  <command_line>
+    <option value="--standalone" />
+    <option value="--plugin-enable=pyqt5" />
+    <option value="--nofollow-import-to=torch,torchvision,torchaudio" />
+    <option value="--nofollow-import-to=ultralytics,segmentation_models_pytorch,timm" />
+    <option value="--nofollow-import-to=cv2,skimage,scipy,PIL,yaml,pandas,matplotlib,openslide" />
+    <option value="--nofollow-import-to=pyparsing,packaging,cycler,kiwisolver,contourpy,fonttools" />
+    <option value="--nofollow-import-to=dateutil,pytz,requests,urllib3,certifi,tqdm,psutil" />
+    <option value="--include-data-dir=model=model" />
+    <option value="--include-data-dir=libs=libs" />
+    <option value="--include-data-dir=icon=icon" />
+    <option value="--include-data-dir=ui=ui" />
+    <option value="--module-parameter=torch-disable-jit=no" />
+    <option value="--windows-console-mode=attach" />
+    <option value="--windows-icon-from-ico=icon\app_icon.ico" />
+    <option value="--output-dir=dist_nuitka" />
+    <option value="main.py" />
+  </command_line>
+  <plugins>
+    <plugin name="anti-bloat" user_enabled="no" />
+    <plugin name="data-files" user_enabled="no" />
+    <plugin name="delvewheel" user_enabled="no" />
+    <plugin name="dll-files" user_enabled="no" />
+    <plugin name="eventlet" user_enabled="no" />
+    <plugin name="gevent" user_enabled="no" />
+    <plugin name="gi" user_enabled="no" />
+    <plugin name="glfw" user_enabled="no" />
+    <plugin name="implicit-imports" user_enabled="no" />
+    <plugin name="kivy" user_enabled="no" />
+    <plugin name="matplotlib" user_enabled="no" />
+    <plugin name="multiprocessing" user_enabled="no" />
+    <plugin name="options-nanny" user_enabled="no" />
+    <plugin name="pbr-compat" user_enabled="no" />
+    <plugin name="pkg-resources" user_enabled="no" />
+    <plugin name="playwright" user_enabled="no" />
+    <plugin name="pyqt5" user_enabled="yes" />
+    <plugin name="pywebview" user_enabled="no" />
+    <plugin name="spacy" user_enabled="no" />
+    <plugin name="transformers" user_enabled="no" />
+  </plugins>
+  <distributions />
+  <python python_exe="${sys.prefix}\python.exe" python_flavor="Anaconda Python" python_version="3.12.12" os_name="Windows" os_release="11" arch_name="x86_64" filesystem_encoding="utf-8">
+    <search_path>
+      <path value="${cwd}" />
+      <path value="${sys.prefix}\DLLs" />
+      <path value="${sys.prefix}\Lib" />
+      <path value="${sys.prefix}" />
+      <path value="${sys.prefix}\Lib\site-packages" />
+      <path value="${sys.prefix}\Lib\site-packages\win32" />
+      <path value="${sys.prefix}\Lib\site-packages\win32\lib" />
+      <path value="${sys.prefix}\Lib\site-packages\Pythonwin" />
+      <path value="${sys.prefix}\Lib\site-packages\setuptools\_vendor" />
+    </search_path>
+  </python>
+  <output run_filename="${cwd}\dist_nuitka\main.dist\main.exe" />
+</nuitka-compilation-report>
