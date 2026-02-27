@@ -4,11 +4,12 @@ model/HnE_BR_segmentation.pt
 model/PDL1_TPS_detection.pt
 model/HnE_detection_backup.pt
 dist/
+dist_nuitka/
 build/
 PathologyAIViewer_Portable/
 __pycache__/
 ai/__pycache__/
-ai/nets/__pycache__/
+ai/nets/__pycache__/>
 ai/utils/__pycache__/
 ui/__pycache__/
 ui/dialogs/__pycache__/
