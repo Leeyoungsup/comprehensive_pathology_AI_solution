@@ -30,12 +30,7 @@ AI_ROOT = Path(__file__).parent
 NETS_PATH = AI_ROOT / "nets"
 UTILS_PATH = AI_ROOT / "utils"
 
-import sys
-# AI 폴더를 sys.path에 추가 (nets, utils 접근용)
-if str(AI_ROOT) not in sys.path:
-    sys.path.insert(0, str(AI_ROOT))
-
-from nets import nn
+from .nets import nn
 
 
 # 클래스 설정
