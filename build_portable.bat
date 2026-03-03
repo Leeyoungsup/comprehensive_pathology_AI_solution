@@ -106,6 +106,7 @@ if exist utils (xcopy utils PathologyAIViewer_Portable\utils\ /E /I /Y /Q >nul &
 if exist libs (xcopy libs PathologyAIViewer_Portable\libs\ /E /I /Y /Q >nul && echo   libs\ 폴더 복사)
 if exist model (xcopy model PathologyAIViewer_Portable\model\ /E /I /Y /Q >nul && echo   model\ 폴더 복사)
 if exist icon (xcopy icon PathologyAIViewer_Portable\icon\ /E /I /Y /Q >nul && echo   icon\ 폴더 복사)
+if exist logo (xcopy logo PathologyAIViewer_Portable\logo\ /E /I /Y /Q >nul && echo   logo\ 폴더 복사)
 
 echo   파일 복사 완료!
 echo.
