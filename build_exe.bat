@@ -32,7 +32,7 @@ if exist icon\app_icon.ico (
 
 echo   빌드 시작...
 :: PyInstaller 실행
-call pyinstaller --onefile --noconsole --name=PathologyAIViewer %ICON_OPTION% --clean run_app.py
+call pyinstaller --onedir --noconsole --name=PathologyAIViewer %ICON_OPTION% --clean run_app.py
 
 if %errorlevel% neq 0 (
     echo.
@@ -57,21 +57,19 @@ echo.
 if exist PathologyAIViewer_Portable (
     echo 자동으로 Portable 폴더에 복사 중...
     
-    :: 기존 파일 삭제 (아이콘 캐시 문제 방지)
+    :: 기존 파일/폴더 삭제
     if exist PathologyAIViewer_Portable\PathologyAIViewer.exe (
         del PathologyAIViewer_Portable\PathologyAIViewer.exe
     )
-    
-    :: 아이콘 캐시 삭제 (Windows 10/11)
-    echo   아이콘 캐시 초기화 중...
-    taskkill /f /im explorer.exe >nul 2>&1
-    del /f /s /q /a "%LOCALAPPDATA%\IconCache.db" >nul 2>&1
-    del /f /s /q /a "%LOCALAPPDATA%\Microsoft\Windows\Explorer\iconcache*" >nul 2>&1
-    start explorer.exe
-    timeout /t 2 /nobreak >nul
-    
-    :: 새 파일 복사
-    copy dist\PathologyAIViewer.exe PathologyAIViewer_Portable\ >nul
+    if exist PathologyAIViewer_Portable\_internal (
+        rd /s /q PathologyAIViewer_Portable\_internal
+    )
+
+    :: exe + _internal 폴더 복사 (--onedir 방식: 압축 해제 없이 즉시 실행)
+    copy dist\PathologyAIViewer\PathologyAIViewer.exe PathologyAIViewer_Portable\ >nul
+    if exist dist\PathologyAIViewer\_internal (
+        xcopy dist\PathologyAIViewer\_internal PathologyAIViewer_Portable\_internal\ /E /I /Y /Q >nul
+    )
     echo   복사 완료: PathologyAIViewer_Portable\PathologyAIViewer.exe
     echo   아이콘이 적용되었습니다!
     echo.
