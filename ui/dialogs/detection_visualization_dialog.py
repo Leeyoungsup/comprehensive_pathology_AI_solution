@@ -338,8 +338,8 @@ class DetectionVisualizationDialog(QDialog):
 
         use_prob = self._resized_prob_map is not None
 
-        panel_h, panel_w = 3.2, 3.5
-        cols = 3
+        panel_h, panel_w = 3.2, 5.0
+        cols = 1
 
         if use_prob:
             # 썸네일 크기
@@ -356,10 +356,10 @@ class DetectionVisualizationDialog(QDialog):
                 if cls_id != 0
             ]
 
-            rows = max(1, (len(active_panels) + cols - 1) // cols)
+            rows = len(active_panels)
             fig = Figure(figsize=(panel_w * cols, panel_h * rows), facecolor=BG)
-            fig.subplots_adjust(hspace=0.45, wspace=0.2, left=0.02, right=0.98,
-                                top=0.91, bottom=0.03)
+            fig.subplots_adjust(hspace=0.35, wspace=0.0, left=0.02, right=0.98,
+                                top=0.97, bottom=0.01)
             canvas = FigureCanvas(fig)
             canvas.setMinimumHeight(int(panel_h * rows * 96))
             canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -414,11 +414,11 @@ class DetectionVisualizationDialog(QDialog):
             counts = self._get_class_counts()
             active_classes = [k for k, v in counts.items() if v > 0]
             panels = [('전체 세포', None)] + [(CLASS_NAMES[k], k) for k in active_classes]
-            rows = (len(panels) + cols - 1) // cols
+            rows = len(panels)
 
             fig = Figure(figsize=(panel_w * cols, panel_h * rows), facecolor=BG)
-            fig.subplots_adjust(hspace=0.45, wspace=0.25, left=0.03, right=0.97,
-                                top=0.91, bottom=0.03)
+            fig.subplots_adjust(hspace=0.35, wspace=0.0, left=0.03, right=0.97,
+                                top=0.97, bottom=0.01)
             canvas = FigureCanvas(fig)
             canvas.setMinimumHeight(int(panel_h * rows * 96))
             canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -466,7 +466,7 @@ class DetectionVisualizationDialog(QDialog):
                         bbox=dict(boxstyle='round,pad=0.3', facecolor='#333', alpha=0.65))
 
             for i, (title, cls_id) in enumerate(panels):
-                ax = fig.add_subplot(rows, cols, i + 1)
+                ax = fig.add_subplot(rows, 1, i + 1)
                 _draw_density_panel(ax, title, cls_id)
 
         scroll = QScrollArea()
@@ -574,9 +574,9 @@ class DetectionVisualizationDialog(QDialog):
                     fig.clear(); del fig; gc.collect()
 
                 if self._has_prob_map:
-                    fig = self._make_pdf_spatial_heatmap()
-                    pdf.savefig(fig, bbox_inches='tight')
-                    fig.clear(); del fig; gc.collect()
+                    for fig in self._make_pdf_spatial_heatmap():
+                        pdf.savefig(fig, bbox_inches='tight')
+                        fig.clear(); del fig; gc.collect()
 
                 fig = self._make_pdf_confidence()
                 pdf.savefig(fig, bbox_inches='tight')
@@ -786,6 +786,7 @@ class DetectionVisualizationDialog(QDialog):
 
     # ── 공간 히트맵 ───────────────────────────────
     def _make_pdf_spatial_heatmap(self):
+        """히트맵 클래스당 하나씩 Figure 리스트를 반환."""
         import cv2
         from matplotlib.figure import Figure as MplFig
 
@@ -793,23 +794,20 @@ class DetectionVisualizationDialog(QDialog):
             fig = MplFig(figsize=A4_LANDSCAPE, facecolor='white')
             fig.text(0.5, 0.5, '공간 히트맵 데이터 없음', ha='center', va='center',
                      color=SUBTEXT, fontsize=14)
-            return fig
+            return [fig]
 
-        th, tw = self.thumbnail.shape[:2]
         active_panels = [(cid, cn) for cid, cn in enumerate(self.seg_class_names) if cid != 0]
-        cols = min(3, len(active_panels))
-        rows = max(1, (len(active_panels) + cols - 1) // cols)
-
-        fig = MplFig(figsize=A4_LANDSCAPE, facecolor='white')
-        fig.suptitle('공간 확률 히트맵 (Segmentation)', fontsize=16,
-                     fontweight='bold', color=TEXT, y=0.97)
-        fig.subplots_adjust(hspace=0.40, wspace=0.15,
-                            left=0.02, right=0.98, top=0.91, bottom=0.04)
-
+        figs = []
+        total = len(active_panels)
         for i, (cls_id, cls_name) in enumerate(active_panels):
-            ax = fig.add_subplot(rows, cols, i + 1)
+            fig = MplFig(figsize=A4_LANDSCAPE, facecolor='white')
+            fig.suptitle(f'공간 확률 히트맵 (Segmentation)  –  {cls_name}  [{i+1}/{total}]',
+                         fontsize=14, fontweight='bold', color=TEXT, y=0.97)
+            fig.subplots_adjust(left=0.04, right=0.96, top=0.91, bottom=0.04)
+
+            ax = fig.add_subplot(1, 1, 1)
             ax.set_facecolor('#e8e8e8')
-            ax.set_title(cls_name, color=TEXT, fontsize=10, pad=5, fontweight='bold')
+            ax.set_title(cls_name, color=TEXT, fontsize=13, pad=6, fontweight='bold')
             ax.set_xticks([]); ax.set_yticks([])
             for sp in ax.spines.values(): sp.set_color(SPINE)
             ax.imshow(self.thumbnail, aspect='auto', origin='upper', zorder=0)
@@ -820,10 +818,11 @@ class DetectionVisualizationDialog(QDialog):
                 max_v = float(prob_r.max())
                 mean_v = float(prob_r[prob_r > 0.05].mean()) if np.any(prob_r > 0.05) else 0.0
                 ax.text(0.02, 0.03, f'max={max_v:.2f}  avg={mean_v:.2f}',
-                        transform=ax.transAxes, color='white', fontsize=8,
+                        transform=ax.transAxes, color='white', fontsize=10,
                         va='bottom', fontweight='bold',
                         bbox=dict(boxstyle='round,pad=0.3', facecolor='#333', alpha=0.65))
-        return fig
+            figs.append(fig)
+        return figs
 
     # ── Confidence 분포 ───────────────────────────
     def _make_pdf_confidence(self):
