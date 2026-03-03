@@ -53,6 +53,7 @@ python -m nuitka ^
   --include-data-dir=model=model ^
   --include-data-dir=libs=libs ^
   --include-data-dir=icon=icon ^
+  --include-data-dir=logo=logo ^
   --include-data-dir=ui=ui ^
   --module-parameter=torch-disable-jit=no ^
   --windows-console-mode=attach ^
