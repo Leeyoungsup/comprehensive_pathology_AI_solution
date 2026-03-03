@@ -1313,7 +1313,11 @@ class TiledDetectionOverlay:
         self.spatial_grid.build(cells)
         if color_map is not None:
             self.color_map = color_map
-            self.class_visibility = {cls_id: True for cls_id in color_map.keys()}
+            # 기존 visibility 유지, 새 클래스만 True로 추가
+            self.class_visibility = {
+                cls_id: self.class_visibility.get(cls_id, True)
+                for cls_id in color_map.keys()
+            }
         self._build_heatmap_cache()
 
     def clear_cells(self):
