@@ -74,7 +74,9 @@ for dll_path in dll_paths:
         except (AttributeError, OSError):
             pass
 
-from PyQt5.QtWidgets import QApplication, QMessageBox
+from PyQt5.QtWidgets import QApplication, QMessageBox, QSplashScreen
+from PyQt5.QtGui import QPixmap
+from PyQt5.QtCore import Qt
 from ui.viewer import PathologyViewer
 import traceback
 import logging
@@ -111,6 +113,17 @@ def main():
         except Exception:
             pass
         
+        # 스플래시 스크린 표시
+        splash = None
+        logo_path = bundle_dir / "logo" / "Logo.png"
+        if not logo_path.exists():
+            logo_path = application_path / "logo" / "Logo.png"
+        if logo_path.exists():
+            splash_pixmap = QPixmap(str(logo_path))
+            splash = QSplashScreen(splash_pixmap, Qt.WindowStaysOnTopHint)
+            splash.show()
+            app.processEvents()
+
         # logger.info("메인 뷰어 윈도우 생성 중...")
         viewer = PathologyViewer()
         try:
@@ -119,6 +132,9 @@ def main():
                 viewer.setWindowIcon(QIcon(str(icon_path)))
         except Exception:
             pass
+
+        if splash:
+            splash.finish(viewer)
         viewer.show()
         
         
