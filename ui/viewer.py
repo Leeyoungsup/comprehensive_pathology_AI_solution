@@ -217,6 +217,13 @@ class PathologyViewer(QMainWindow):
         self.current_color_map = None
         self.is_pdl1_mode = False
 
+        # confidence 슬라이더 debounce 타이머 (무거운 overlay 재구축을 지연)
+        from PyQt5.QtCore import QTimer
+        self._conf_debounce_timer = QTimer(self)
+        self._conf_debounce_timer.setSingleShot(True)
+        self._conf_debounce_timer.setInterval(250)
+        self._conf_debounce_timer.timeout.connect(self._apply_confidence_filter)
+
         # 결과 관리 버튼
         self.btnClearResults.clicked.connect(self.clear_results)
         self.btnSaveResults.clicked.connect(self.save_detection_results)
@@ -1103,35 +1110,45 @@ class PathologyViewer(QMainWindow):
         return filtered
 
     def _on_class_confidence_changed(self, cls_id, value):
-        """클래스별 confidence threshold 슬라이더 변경"""
+        """클래스별 confidence threshold 슬라이더 변경 — 라벨만 즉시 갱신, overlay는 debounce"""
         from PyQt5.QtWidgets import QLabel
 
         self.current_class_thresholds[cls_id] = value
 
-        # 전체 필터링된 셀 재계산
-        filtered_cells = self._get_filtered_cells()
-
-        # UI 라벨 업데이트 (리스트 재생성 없이)
+        # 라벨만 즉시 업데이트 (빠름)
         for i in range(self.resultList.count()):
             item = self.resultList.item(i)
             widget = self.resultList.itemWidget(item)
             if widget is None:
                 continue
-
             val_label = widget.findChild(QLabel, f"valLabel_{cls_id}")
             if val_label:
                 val_label.setText(f"{value / 100:.2f}")
 
-            count_label = widget.findChild(QLabel, f"countLabel_{cls_id}")
-            if count_label:
-                cls_count = sum(1 for c in filtered_cells if c['cls_id'] == cls_id)
-                # class_names에서 이름 가져오기
-                label_text = count_label.text()
-                cls_name = label_text.split(":")[0]
-                count_label.setText(f"{cls_name}: {cls_count:,}")
+        # 무거운 작업(필터링 + overlay 재구축)은 debounce
+        self._conf_debounce_timer.start()
+
+    def _apply_confidence_filter(self):
+        """debounce 후 실제 필터링 및 overlay 갱신"""
+        from PyQt5.QtWidgets import QLabel
+        from PyQt5.QtCore import Qt
+
+        filtered_cells = self._get_filtered_cells()
+
+        # 클래스별 카운트 라벨 업데이트
+        for i in range(self.resultList.count()):
+            item = self.resultList.item(i)
+            widget = self.resultList.itemWidget(item)
+            if widget is None:
+                continue
+            for cls_id in self.current_class_thresholds:
+                count_label = widget.findChild(QLabel, f"countLabel_{cls_id}")
+                if count_label:
+                    cls_count = sum(1 for c in filtered_cells if c['cls_id'] == cls_id)
+                    cls_name = count_label.text().split(":")[0]
+                    count_label.setText(f"{cls_name}: {cls_count:,}")
 
         # 전체 카운트 업데이트
-        from PyQt5.QtCore import Qt
         for i in range(self.resultList.count()):
             item = self.resultList.item(i)
             if item.data(Qt.UserRole) is None and "전체:" in item.text():
@@ -1151,11 +1168,22 @@ class PathologyViewer(QMainWindow):
                     break
             self.statusbar.showMessage(f"TPS: {tps:.1f}% ({self._get_tps_category(tps)}) | {len(filtered_cells)}개")
 
+        # 현재 visibility 상태 보존
+        visibility_state = {}
+        if self.wsi_viewer.detection_overlay:
+            visibility_state = dict(self.wsi_viewer.detection_overlay.class_visibility)
+
         # 오버레이 갱신
         if filtered_cells:
             self.wsi_viewer.set_detection_results(filtered_cells, color_map=self.current_color_map)
         else:
             self.wsi_viewer.clear_detection_overlay()
+
+        # visibility 복원
+        if visibility_state and self.wsi_viewer.detection_overlay:
+            for cls_id, visible in visibility_state.items():
+                self.wsi_viewer.detection_overlay.set_class_visibility(cls_id, visible)
+            self.wsi_viewer.schedule_overlay_update()
     
     def on_result_list_item_clicked(self, item):
         """리스트 클릭 시 체크박스 토글(버튼/마우스 클릭 친화적)"""
