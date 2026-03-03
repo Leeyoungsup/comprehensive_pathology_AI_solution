@@ -75,12 +75,10 @@ for dll_path in dll_paths:
             pass
 
 from PyQt5.QtWidgets import QApplication, QMessageBox, QSplashScreen
-from PyQt5.QtGui import QPixmap
+from PyQt5.QtGui import QPixmap, QIcon
 from PyQt5.QtCore import Qt
-from ui.viewer import PathologyViewer
 import traceback
 import logging
-from datetime import datetime
 
 # 로깅 설정 (파일 출력 비활성화, 콘솔만 사용)
 logging.basicConfig(
@@ -98,22 +96,18 @@ def main():
 
         app = QApplication(sys.argv)
         app.setApplicationName("Pathology AI Viewer")
-        
-        # 애플리케이션 아이콘 설정 (bundle_dir 기준으로 icon/app_icon.ico 사용)
+
+        # 애플리케이션 아이콘 설정
         try:
-            from PyQt5.QtGui import QIcon
             icon_path = bundle_dir / "icon" / "app_icon.ico"
+            if not icon_path.exists():
+                icon_path = application_path / "icon" / "app_icon.ico"
             if icon_path.exists():
                 app.setWindowIcon(QIcon(str(icon_path)))
-            else:
-                # fallback: check application_path/icon
-                alt_icon = application_path / "icon" / "app_icon.ico"
-                if alt_icon.exists():
-                    app.setWindowIcon(QIcon(str(alt_icon)))
         except Exception:
             pass
-        
-        # 스플래시 스크린 표시
+
+        # 스플래시 스크린 표시 (무거운 임포트 전에 먼저 띄움)
         splash = None
         logo_path = bundle_dir / "logo" / "Logo.png"
         if not logo_path.exists():
@@ -124,10 +118,11 @@ def main():
             splash.show()
             app.processEvents()
 
-        # logger.info("메인 뷰어 윈도우 생성 중...")
+        # 무거운 임포트 (스플래시 이후)
+        from ui.viewer import PathologyViewer
+
         viewer = PathologyViewer()
         try:
-            # 메인 윈도우에도 아이콘 명시적으로 설정
             if 'icon_path' in locals() and icon_path.exists():
                 viewer.setWindowIcon(QIcon(str(icon_path)))
         except Exception:
