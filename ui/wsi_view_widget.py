@@ -465,8 +465,8 @@ class WSIViewWidget(QGraphicsView):
         else:
             downsample = 1
 
-        # LOD: mpp > 5 μm/px 이상이면 히트맵, 이하면 circle
-        use_heatmap = mpp > 5.0
+        # LOD: mpp > 3 μm/px 이상이면 히트맵, 이하면 circle
+        use_heatmap = mpp > 3.0
 
         if use_heatmap:
             pixmap, mask_x, mask_y, scale = self.detection_overlay.create_heatmap_mask(view_rect)
