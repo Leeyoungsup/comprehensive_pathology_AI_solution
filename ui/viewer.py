@@ -1148,14 +1148,14 @@ class PathologyViewer(QMainWindow):
                     cls_name = count_label.text().split(":")[0]
                     count_label.setText(f"{cls_name}: {cls_count:,}")
 
-        # 전체 카운트 업데이트
+        # 전체 카운트 / TPS 업데이트 — item.setText가 itemChanged를 발화하므로 시그널 차단
+        self.resultList.blockSignals(True)
         for i in range(self.resultList.count()):
             item = self.resultList.item(i)
             if item.data(Qt.UserRole) is None and "전체:" in item.text():
                 item.setText(f"전체: {len(filtered_cells):,}개")
                 break
 
-        # PD-L1 TPS 업데이트
         if self.is_pdl1_mode:
             positive = sum(1 for c in filtered_cells if c['cls_id'] == 1)
             negative = sum(1 for c in filtered_cells if c['cls_id'] == 0)
@@ -1167,23 +1167,13 @@ class PathologyViewer(QMainWindow):
                     item.setText(f"TPS: {tps:.1f}% ({self._get_tps_category(tps)})")
                     break
             self.statusbar.showMessage(f"TPS: {tps:.1f}% ({self._get_tps_category(tps)}) | {len(filtered_cells)}개")
+        self.resultList.blockSignals(False)
 
-        # 현재 visibility 상태 보존
-        visibility_state = {}
-        if self.wsi_viewer.detection_overlay:
-            visibility_state = dict(self.wsi_viewer.detection_overlay.class_visibility)
-
-        # 오버레이 갱신
+        # 오버레이 갱신 (set_cells 내부에서 visibility 보존됨)
         if filtered_cells:
             self.wsi_viewer.set_detection_results(filtered_cells, color_map=self.current_color_map)
         else:
             self.wsi_viewer.clear_detection_overlay()
-
-        # visibility 복원
-        if visibility_state and self.wsi_viewer.detection_overlay:
-            for cls_id, visible in visibility_state.items():
-                self.wsi_viewer.detection_overlay.set_class_visibility(cls_id, visible)
-            self.wsi_viewer.schedule_overlay_update()
     
     def on_result_list_item_clicked(self, item):
         """리스트 클릭 시 체크박스 토글(버튼/마우스 클릭 친화적)"""
