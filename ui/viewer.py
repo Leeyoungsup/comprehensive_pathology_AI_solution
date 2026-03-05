@@ -1765,22 +1765,22 @@ class PathologyViewer(QMainWindow):
         if len(annotations) == 0:
             QMessageBox.information(self, "알림", "저장할 ROI가 없습니다.")
             return
-        
+
         file_path, _ = QFileDialog.getSaveFileName(
             self,
             "ROI 저장",
             "",
             "JSON Files (*.json);;All Files (*)"
         )
-        
-        if file_path:
-            # 서비스를 통한 저장
-            success, message = self.annotation_service.save_annotations(annotations, file_path)
-            
-            if success:
-                self.statusbar.showMessage(message)
-            else:
-                QMessageBox.critical(self, "오류", message)
+
+        if not file_path:
+            return
+
+        try:
+            self.wsi_viewer.save_annotations(file_path)
+            self.statusbar.showMessage(f"ROI 저장 완료: {Path(file_path).name} ({len(annotations)}개)")
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"ROI 저장 실패:\n{str(e)}")
     
     def load_annotations(self):
         """Annotation 로드"""
@@ -1790,32 +1790,17 @@ class PathologyViewer(QMainWindow):
             "",
             "JSON Files (*.json);;All Files (*)"
         )
-        
-        if file_path:
-            # 서비스를 통한 로드
-            data, message = self.annotation_service.load_annotations(file_path)
-            
-            if data is None:
-                QMessageBox.critical(self, "오류", message)
-                return
-            
-            # 데이터 유효성 검사
-            valid, validation_msg = self.annotation_service.validate_annotation_data(data)
-            if not valid:
-                QMessageBox.critical(self, "오류", f"잘못된 데이터:\n{validation_msg}")
-                return
-            
-            try:
-                # WSI 뷰어를 통해 annotation 복원
-                self.wsi_viewer.load_annotations(file_path)
-                num_annotations = len(self.wsi_viewer.get_annotations())
-                
-                # Annotation 패널 새로고침
-                self.annotation_panel.refresh_table()
-                self.statusbar.showMessage(message)
-                
-            except Exception as e:
-                QMessageBox.critical(self, "오류", f"ROI 로드 실패:\n{str(e)}")
+
+        if not file_path:
+            return
+
+        try:
+            self.wsi_viewer.load_annotations(file_path)
+            num_annotations = len(self.wsi_viewer.get_annotations())
+            self.annotation_panel.refresh_table()
+            self.statusbar.showMessage(f"ROI 로드 완료: {Path(file_path).name} ({num_annotations}개)")
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"ROI 로드 실패:\n{str(e)}")
     
     def on_annotation_added(self, annotation):
         """Annotation 추가 시 호출"""
