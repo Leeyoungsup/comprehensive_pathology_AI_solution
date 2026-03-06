@@ -27,9 +27,8 @@ if _openslide_lib.exists():
     os.add_dll_directory(str(_openslide_lib))
     os.environ["PATH"] = str(_openslide_lib) + os.pathsep + os.environ.get("PATH", "")
 
-from api.task_manager import TaskManager
 from api.services.detection_api_service import get_detection_service
-from api.routers.detection import router as detection_router, set_task_manager
+from api.routers.detection import router as detection_router
 
 # ============================================================================
 # 서버 시작 시간 (uptime 계산용)
@@ -54,10 +53,6 @@ async def lifespan(app: FastAPI):
     print("=" * 60)
     print("  HnE Cell Detection API Server Starting...")
     print("=" * 60)
-
-    # Task Manager 초기화
-    task_manager = TaskManager(max_concurrent=2, result_ttl_sec=86400)
-    set_task_manager(task_manager)
 
     # Detection 모델 사전 로드
     service = get_detection_service()

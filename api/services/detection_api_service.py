@@ -5,8 +5,8 @@ PyQt5 의존 없이 AI 모듈(detection, segmentation, epithelial_classifier)을
 직접 호출하여 검출·재분류를 수행하는 서비스 레이어.
 
 - 모델 로드/언로드
-- 동기/비동기 검출 파이프라인
-- 진행률 콜백 → TaskState 업데이트
+- 검출 파이프라인
+- 진행률 콜백 지원
 """
 
 from __future__ import annotations
@@ -242,7 +242,7 @@ class DetectionAPIService:
         cancel_check: Optional[Callable[[], bool]] = None,
     ) -> Dict[str, Any]:
         """
-        동기 검출 파이프라인 (호출 스레드에서 실행)
+        검출 파이프라인
 
         Args:
             slide_path: WSI 파일 경로

@@ -5,8 +5,6 @@ HnE Cell Detection API의 요청/응답 모델
 
 from __future__ import annotations
 
-import re
-from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
 
@@ -21,27 +19,6 @@ class TissueType(str, Enum):
     BREAST = "Breast"
     STOMACH = "Stomach"
     OTHER = "Other"
-
-
-class TaskStatus(str, Enum):
-    QUEUED = "queued"
-    PROCESSING = "processing"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-
-
-class StepStatus(str, Enum):
-    PENDING = "pending"
-    PROCESSING = "processing"
-    COMPLETED = "completed"
-    FAILED = "failed"
-
-
-class Priority(str, Enum):
-    LOW = "low"
-    NORMAL = "normal"
-    HIGH = "high"
 
 
 # ============================================================================
@@ -157,7 +134,7 @@ class SegmentationResult(BaseModel):
 # ============================================================================
 
 class DetectionResponse(BaseModel):
-    """동기 검출 성공 응답"""
+    """검출 성공 응답"""
     status: str = "success"
     task_id: str = ""
     processing_time_sec: float = 0.0
@@ -166,46 +143,6 @@ class DetectionResponse(BaseModel):
     cells: List[CellDetectionItem] = Field(default_factory=list)
     segmentation: Optional[SegmentationResult] = None
 
-
-class AsyncAcceptedResponse(BaseModel):
-    """비동기 작업 접수 응답"""
-    status: str = "accepted"
-    task_id: str = ""
-    message: str = "작업이 큐에 등록되었습니다."
-    estimated_time_sec: Optional[float] = None
-    poll_url: str = ""
-    result_url: str = ""
-
-
-# ============================================================================
-# Task Status
-# ============================================================================
-
-class TaskStep(BaseModel):
-    """작업 단계"""
-    name: str
-    status: StepStatus = StepStatus.PENDING
-    progress: Optional[int] = None
-
-
-class TaskStatusResponse(BaseModel):
-    """작업 상태 조회 응답"""
-    task_id: str
-    status: TaskStatus
-    progress: int = 0
-    current_step: str = ""
-    steps: List[TaskStep] = Field(default_factory=list)
-    created_at: Optional[str] = None
-    started_at: Optional[str] = None
-    elapsed_sec: float = 0.0
-    estimated_remaining_sec: Optional[float] = None
-
-
-class TaskCancelResponse(BaseModel):
-    """작업 취소 응답"""
-    status: str = "cancelled"
-    task_id: str = ""
-    message: str = "작업이 취소되었습니다."
 
 
 # ============================================================================
@@ -252,8 +189,6 @@ class HealthResponse(BaseModel):
     gpu: GPUInfo = Field(default_factory=GPUInfo)
     models: Dict[str, Any] = Field(default_factory=dict)
     uptime_sec: float = 0.0
-    active_tasks: int = 0
-    queued_tasks: int = 0
 
 
 # ============================================================================

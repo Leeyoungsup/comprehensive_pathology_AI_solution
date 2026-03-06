@@ -1,32 +1,26 @@
 """
 Detection 라우터
 
-HnE Cell Detection API의 모든 엔드포인트를 정의합니다.
-  - POST /analyze          : 동기 검출
-  - POST /analyze/async    : 비동기 검출
-  - GET  /tasks/{task_id}  : 작업 상태 조회
-  - GET  /tasks/{task_id}/result : 작업 결과 조회
-  - DELETE /tasks/{task_id}      : 작업 취소/삭제
-  - GET  /models           : 모델 목록
-  - GET  /health           : 서비스 상태
+HnE Cell Detection API의 엔드포인트를 정의합니다.
+  - POST /analyze  : 세포 검출
+  - GET  /status   : 현재 상태 확인
+  - GET  /models   : 모델 목록
+  - GET  /health   : 서비스 헬스 체크
 """
 
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import tempfile
 import time
-from datetime import datetime, timezone
+import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
-from fastapi.responses import JSONResponse
 
 from api.schemas import (
-    AsyncAcceptedResponse,
     CellDetectionItem,
     CLASS_NAMES,
     DetectionResponse,
@@ -40,20 +34,10 @@ from api.schemas import (
     ModelInfo,
     ModelsResponse,
     SegmentationResult,
-    StepStatus,
-    TaskCancelResponse,
-    TaskStatus,
-    TaskStatusResponse,
-    TaskStep,
-    TissueType,
 )
-from api.task_manager import TaskManager, TaskState
 from api.services.detection_api_service import get_detection_service
 
 router = APIRouter(prefix="/detection", tags=["detection"])
-
-# 전역 TaskManager — app lifespan에서 설정
-_task_manager: Optional[TaskManager] = None
 
 # 업로드 파일 임시 디렉토리
 UPLOAD_DIR = Path(tempfile.gettempdir()) / "pathology_api_uploads"
@@ -67,35 +51,88 @@ ALLOWED_EXTENSIONS = {".svs", ".ndpi", ".tiff", ".tif", ".mrxs", ".scn",
 MAX_FILE_SIZE = 10 * 1024 * 1024 * 1024
 
 
-def set_task_manager(tm: TaskManager):
-    global _task_manager
-    _task_manager = tm
+# ============================================================================
+# 분석 상태 추적기
+# ============================================================================
+
+import threading
+from datetime import datetime
+
+_analysis_lock = threading.Lock()
+_analysis_state: Dict = {
+    "is_running": False,
+    "current": None,      # 현재 진행 중인 분석 정보
+    "last_completed": None,  # 마지막 완료된 분석 정보
+    "total_analyses": 0,
+    "total_cells_detected": 0,
+}
 
 
-def get_task_manager() -> TaskManager:
-    global _task_manager
-    if _task_manager is None:
-        _task_manager = TaskManager()
-    return _task_manager
+def _start_analysis(file_name: str, tissue_type: str):
+    """분석 시작 시 호출"""
+    with _analysis_lock:
+        _analysis_state["is_running"] = True
+        _analysis_state["current"] = {
+            "file_name": file_name,
+            "tissue_type": tissue_type,
+            "started_at": datetime.now().isoformat(),
+        }
+
+
+def _finish_analysis(file_name: str, tissue_type: str, total_cells: int,
+                     processing_time: float, success: bool, error: Optional[str] = None):
+    """분석 완료 시 호출"""
+    with _analysis_lock:
+        _analysis_state["is_running"] = False
+        _analysis_state["current"] = None
+        if success:
+            _analysis_state["total_analyses"] += 1
+            _analysis_state["total_cells_detected"] += total_cells
+            _analysis_state["last_completed"] = {
+                "file_name": file_name,
+                "tissue_type": tissue_type,
+                "completed_at": datetime.now().isoformat(),
+                "processing_time_sec": round(processing_time, 2),
+                "total_cells": total_cells,
+            }
+        else:
+            _analysis_state["last_completed"] = {
+                "file_name": file_name,
+                "tissue_type": tissue_type,
+                "completed_at": datetime.now().isoformat(),
+                "status": "failed",
+                "error": error,
+            }
+
+
+def _get_analysis_tracker() -> Dict:
+    """현재 분석 상태 반환"""
+    with _analysis_lock:
+        result = {
+            "is_running": _analysis_state["is_running"],
+            "total_analyses": _analysis_state["total_analyses"],
+            "total_cells_detected": _analysis_state["total_cells_detected"],
+        }
+        if _analysis_state["current"]:
+            current = dict(_analysis_state["current"])
+            started = datetime.fromisoformat(current["started_at"])
+            current["elapsed_sec"] = round((datetime.now() - started).total_seconds(), 1)
+            result["current"] = current
+        else:
+            result["current"] = None
+        result["last_completed"] = _analysis_state["last_completed"]
+        return result
 
 
 # ============================================================================
 # Helper
 # ============================================================================
 
-def _validate_tissue_type(tissue_type: str) -> str:
-    valid = {"Breast", "Stomach", "Other"}
-    if tissue_type not in valid:
-        raise HTTPException(
-            status_code=400,
-            detail=ErrorResponse(
-                error=ErrorDetail(
-                    code="INVALID_TISSUE_TYPE",
-                    message=f"잘못된 tissue_type: '{tissue_type}'. 허용: {valid}",
-                )
-            ).model_dump(),
-        )
-    return tissue_type
+def _validate_tissue_type(tissue_type: Optional[str]) -> str:
+    """Breast/Stomach 이외의 값은 모두 Other로 취급"""
+    if tissue_type and tissue_type.strip() in {"Breast", "Stomach"}:
+        return tissue_type.strip()
+    return "Other"
 
 
 def _validate_threshold(value: float, name: str) -> float:
@@ -187,18 +224,18 @@ def _cleanup_upload(slide_path: Path):
 
 
 # ============================================================================
-# 1. 동기 검출
+# 1. 세포 검출
 # ============================================================================
 
 @router.post(
     "/analyze",
     response_model=DetectionResponse,
-    summary="WSI 세포 검출 (동기)",
-    description="ROI가 지정되었거나 소규모 이미지인 경우, 결과를 즉시 반환합니다.",
+    summary="WSI 세포 검출",
+    description="업로드된 WSI/이미지에서 세포를 검출하고, Breast/Stomach 조직은 Epithelial 재분류를 수행합니다.",
 )
-async def analyze_sync(
+async def analyze(
     file: UploadFile = File(..., description="WSI 파일"),
-    tissue_type: str = Form(..., description="조직 타입: Breast, Stomach, Other"),
+    tissue_type: Optional[str] = Form(None, description="조직 타입: Breast, Stomach (미입력 시 Other)"),
     roi: Optional[str] = Form(None, description="ROI JSON 배열"),
     confidence_threshold: float = Form(0.01, description="전역 confidence 임계값"),
     class_thresholds: Optional[str] = Form(None, description="클래스별 confidence 임계값 JSON"),
@@ -215,6 +252,9 @@ async def analyze_sync(
 
     # 파일 저장
     slide_path = _save_upload_file(file)
+    file_name = file.filename or "unknown"
+    _start_analysis(file_name, tissue_type)
+    start_time = time.time()
 
     try:
         service = get_detection_service()
@@ -230,8 +270,7 @@ async def analyze_sync(
         )
 
         # 응답 구성
-        tm = get_task_manager()
-        task_id = tm.generate_task_id()
+        task_id = uuid.uuid4().hex[:12]
 
         response = DetectionResponse(
             status="success",
@@ -254,9 +293,14 @@ async def analyze_sync(
                 else None
             ),
         )
+        _finish_analysis(file_name, tissue_type,
+                         result["summary"]["total_cells"],
+                         result["processing_time_sec"], success=True)
         return response
 
     except FileNotFoundError as e:
+        _finish_analysis(file_name, tissue_type, 0,
+                         time.time() - start_time, success=False, error=str(e))
         raise HTTPException(
             status_code=422,
             detail=ErrorResponse(
@@ -265,6 +309,8 @@ async def analyze_sync(
         )
     except RuntimeError as e:
         err_str = str(e)
+        _finish_analysis(file_name, tissue_type, 0,
+                         time.time() - start_time, success=False, error=err_str)
         if "out of memory" in err_str.lower():
             raise HTTPException(
                 status_code=503,
@@ -279,6 +325,8 @@ async def analyze_sync(
             ).model_dump(),
         )
     except Exception as e:
+        _finish_analysis(file_name, tissue_type, 0,
+                         time.time() - start_time, success=False, error=str(e))
         raise HTTPException(
             status_code=500,
             detail=ErrorResponse(
@@ -290,317 +338,66 @@ async def analyze_sync(
 
 
 # ============================================================================
-# 2. 비동기 검출
+# 2. 현재 상태 확인
 # ============================================================================
 
-@router.post(
-    "/analyze/async",
-    response_model=AsyncAcceptedResponse,
-    status_code=202,
-    summary="WSI 세포 검출 (비동기)",
-    description="대용량 WSI의 경우, 작업을 큐에 등록하고 task_id를 즉시 반환합니다.",
+@router.get(
+    "/status",
+    summary="현재 서비스 상태 확인",
+    description="현재 분석 진행 상태, 마지막 분석 결과, GPU 사용량 등 실시간 정보를 반환합니다.",
 )
-async def analyze_async(
-    file: UploadFile = File(..., description="WSI 파일"),
-    tissue_type: str = Form(..., description="조직 타입: Breast, Stomach, Other"),
-    roi: Optional[str] = Form(None, description="ROI JSON 배열"),
-    confidence_threshold: float = Form(0.01, description="전역 confidence 임계값"),
-    class_thresholds: Optional[str] = Form(None, description="클래스별 confidence 임계값 JSON"),
-    iou_threshold: float = Form(0.35, description="NMS IoU 임계값"),
-    auto_epithelial_classify: bool = Form(True, description="Epithelial 자동 재분류 여부"),
-    include_segmentation: bool = Form(False, description="Segmentation 마스크 포함 여부"),
-    callback_url: Optional[str] = Form(None, description="완료 시 결과를 POST할 webhook URL"),
-    priority: str = Form("normal", description="작업 우선순위: low, normal, high"),
-):
-    # 입력 검증
-    tissue_type = _validate_tissue_type(tissue_type)
-    confidence_threshold = _validate_threshold(confidence_threshold, "confidence_threshold")
-    iou_threshold = _validate_threshold(iou_threshold, "iou_threshold")
-    roi_list = _parse_roi(roi)
-    ct = _parse_class_thresholds(class_thresholds)
+async def get_status():
+    import torch
+    from api.main import get_start_time
 
-    # 파일 저장 (비동기용 — 작업 완료 시 정리)
-    slide_path = _save_upload_file(file)
+    service = get_detection_service()
 
-    # 작업 실행 함수 정의
-    def runner(state: TaskState):
-        """백그라운드 스레드에서 실행"""
-        try:
-            service = get_detection_service()
+    # GPU 실시간 메모리
+    gpu = {}
+    if torch.cuda.is_available():
+        gpu["device"] = torch.cuda.get_device_name(0)
+        props = torch.cuda.get_device_properties(0)
+        total_mem = getattr(props, 'total_memory', None) or getattr(props, 'total_mem', 0)
+        gpu["memory_total_gb"] = round(total_mem / (1024**3), 2)
+        gpu["memory_allocated_gb"] = round(torch.cuda.memory_allocated(0) / (1024**3), 2)
+        gpu["memory_reserved_gb"] = round(torch.cuda.memory_reserved(0) / (1024**3), 2)
+        free = total_mem - torch.cuda.memory_reserved(0)
+        gpu["memory_free_gb"] = round(free / (1024**3), 2)
+        gpu["utilization_percent"] = round(torch.cuda.memory_allocated(0) / total_mem * 100, 1) if total_mem > 0 else 0
+    else:
+        gpu["device"] = "CPU only"
 
-            def progress_cb(pct: int, msg: str):
-                if pct >= 0:
-                    state.progress = pct
-                state.current_step = msg
-                # 단계 상태 업데이트
-                _update_step_status(state, pct)
-
-            def cancel_check() -> bool:
-                return state.is_cancelled
-
-            result = service.run_detection(
-                slide_path=str(slide_path),
-                tissue_type=tissue_type,
-                roi_list=roi_list,
-                confidence_threshold=confidence_threshold,
-                class_thresholds=ct,
-                iou_threshold=iou_threshold,
-                auto_epithelial_classify=auto_epithelial_classify,
-                include_segmentation=include_segmentation,
-                progress_callback=progress_cb,
-                cancel_check=cancel_check,
-            )
-
-            state.result = result
-
-            # Webhook 콜백
-            if callback_url:
-                _send_webhook(callback_url, state)
-
-        except InterruptedError:
-            state.status = TaskStatus.CANCELLED
-        except Exception as e:
-            state.status = TaskStatus.FAILED
-            state.error_message = str(e)
-            state.error_code = "DETECTION_FAILED"
-
-            if callback_url:
-                _send_webhook_error(callback_url, state)
-        finally:
-            _cleanup_upload(slide_path)
-
-    # 작업 등록
-    tm = get_task_manager()
-    task_state = tm.create_task(
-        runner=runner,
-        request_params={
-            "tissue_type": tissue_type,
-            "slide_name": file.filename,
-            "priority": priority,
+    # 모델 로드 상태
+    models = {
+        "detection": {
+            "loaded": service.is_detection_model_loaded,
+            "file": "HnE_detection.pt",
         },
-    )
-
-    base_url = "/api/v1/detection"
-    return AsyncAcceptedResponse(
-        status="accepted",
-        task_id=task_state.task_id,
-        message="작업이 큐에 등록되었습니다.",
-        estimated_time_sec=120,
-        poll_url=f"{base_url}/tasks/{task_state.task_id}",
-        result_url=f"{base_url}/tasks/{task_state.task_id}/result",
-    )
-
-
-def _update_step_status(state: TaskState, pct: int):
-    """진행률에 따라 step 상태 업데이트"""
-    if not state.steps:
-        return
-
-    step_thresholds = [
-        (1, 0),    # 슬라이드 로딩
-        (5, 1),    # 조직 영역 감지
-        (50, 2),   # 세포 검출
-        (85, 3),   # Segmentation
-        (95, 4),   # Epithelial 재분류
-        (100, 5),  # 결과 정리
-    ]
-
-    current_idx = 0
-    for threshold, idx in step_thresholds:
-        if pct >= threshold:
-            current_idx = idx
-
-    for i, step in enumerate(state.steps):
-        if i < current_idx:
-            step.status = StepStatus.COMPLETED
-        elif i == current_idx:
-            step.status = StepStatus.PROCESSING
-        else:
-            step.status = StepStatus.PENDING
-
-
-def _send_webhook(callback_url: str, state: TaskState):
-    """완료 Webhook 전송"""
-    try:
-        import httpx
-        payload = {
-            "event": "task.completed",
-            "task_id": state.task_id,
-            "result_url": f"/api/v1/detection/tasks/{state.task_id}/result",
-            "summary": {
-                "total_cells": state.result.get("summary", {}).get("total_cells", 0)
-                if state.result else 0,
-                "processing_time_sec": state.result.get("processing_time_sec", 0)
-                if state.result else 0,
-            },
+    }
+    project_root = Path(__file__).resolve().parent.parent.parent
+    for name, key in [("HnE_BR_segmentation.pt", "segmentation_breast"), ("HnE_ST_segmentation.pt", "segmentation_stomach")]:
+        models[key] = {
+            "available": (project_root / "model" / name).exists(),
+            "file": name,
         }
-        httpx.post(callback_url, json=payload, timeout=10)
-    except Exception as e:
-        print(f"Webhook 전송 실패: {e}")
 
+    # 분석 이력
+    analysis_info = _get_analysis_tracker()
 
-def _send_webhook_error(callback_url: str, state: TaskState):
-    """실패 Webhook 전송"""
-    try:
-        import httpx
-        payload = {
-            "event": "task.failed",
-            "task_id": state.task_id,
-            "error": {
-                "code": state.error_code or "DETECTION_FAILED",
-                "message": state.error_message or "Unknown error",
-            },
-        }
-        httpx.post(callback_url, json=payload, timeout=10)
-    except Exception as e:
-        print(f"Webhook 전송 실패: {e}")
-
-
-# ============================================================================
-# 3. 작업 상태 조회
-# ============================================================================
-
-@router.get(
-    "/tasks/{task_id}",
-    response_model=TaskStatusResponse,
-    summary="비동기 작업 상태 조회",
-)
-async def get_task_status(task_id: str):
-    tm = get_task_manager()
-    state = tm.get_task(task_id)
-
-    if state is None:
-        raise HTTPException(
-            status_code=404,
-            detail=ErrorResponse(
-                error=ErrorDetail(code="TASK_NOT_FOUND", message="작업을 찾을 수 없습니다.")
-            ).model_dump(),
-        )
-
-    elapsed = state.elapsed_sec
-    # 예상 잔여 시간 계산
-    estimated_remaining = None
-    if state.progress > 0 and state.status == TaskStatus.PROCESSING:
-        estimated_remaining = (elapsed / state.progress) * (100 - state.progress)
-
-    return TaskStatusResponse(
-        task_id=state.task_id,
-        status=state.status,
-        progress=state.progress,
-        current_step=state.current_step,
-        steps=state.steps,
-        created_at=state.created_at.isoformat() if state.created_at else None,
-        started_at=state.started_at.isoformat() if state.started_at else None,
-        elapsed_sec=round(elapsed, 1),
-        estimated_remaining_sec=round(estimated_remaining, 1) if estimated_remaining else None,
-    )
-
-
-# ============================================================================
-# 4. 작업 결과 조회
-# ============================================================================
-
-@router.get(
-    "/tasks/{task_id}/result",
-    summary="비동기 작업 결과 조회",
-)
-async def get_task_result(task_id: str):
-    tm = get_task_manager()
-    state = tm.get_task(task_id)
-
-    if state is None:
-        raise HTTPException(
-            status_code=404,
-            detail=ErrorResponse(
-                error=ErrorDetail(code="TASK_NOT_FOUND", message="작업을 찾을 수 없습니다.")
-            ).model_dump(),
-        )
-
-    if state.status == TaskStatus.PROCESSING or state.status == TaskStatus.QUEUED:
-        return JSONResponse(
-            status_code=202,
-            content={
-                "status": "processing",
-                "task_id": state.task_id,
-                "progress": state.progress,
-                "message": "작업이 아직 처리 중입니다.",
-            },
-        )
-
-    if state.status == TaskStatus.FAILED:
-        raise HTTPException(
-            status_code=500,
-            detail=ErrorResponse(
-                error=ErrorDetail(
-                    code=state.error_code or "DETECTION_FAILED",
-                    message=state.error_message or "검출 중 오류 발생",
-                )
-            ).model_dump(),
-        )
-
-    if state.status == TaskStatus.CANCELLED:
-        return JSONResponse(
-            status_code=200,
-            content={
-                "status": "cancelled",
-                "task_id": state.task_id,
-                "message": "작업이 취소되었습니다.",
-            },
-        )
-
-    # COMPLETED
-    if state.result is None:
-        raise HTTPException(
-            status_code=500,
-            detail=ErrorResponse(
-                error=ErrorDetail(code="DETECTION_FAILED", message="결과가 없습니다.")
-            ).model_dump(),
-        )
-
-    result = state.result
-    response_data = {
-        "status": "success",
-        "task_id": state.task_id,
-        "processing_time_sec": result.get("processing_time_sec", 0),
-        "metadata": result.get("metadata", {}),
-        "summary": result.get("summary", {}),
-        "cells": result.get("cells", []),
-        "segmentation": result.get("segmentation"),
+    return {
+        "server": {
+            "status": "running",
+            "version": "1.0.0",
+            "uptime_sec": round(time.time() - get_start_time(), 1),
+        },
+        "gpu": gpu,
+        "models": models,
+        "analysis": analysis_info,
     }
 
-    return JSONResponse(status_code=200, content=response_data)
-
 
 # ============================================================================
-# 5. 작업 취소/삭제
-# ============================================================================
-
-@router.delete(
-    "/tasks/{task_id}",
-    response_model=TaskCancelResponse,
-    summary="작업 취소 / 결과 삭제",
-)
-async def cancel_task(task_id: str):
-    tm = get_task_manager()
-    success = tm.cancel_task(task_id)
-
-    if not success:
-        raise HTTPException(
-            status_code=404,
-            detail=ErrorResponse(
-                error=ErrorDetail(code="TASK_NOT_FOUND", message="작업을 찾을 수 없습니다.")
-            ).model_dump(),
-        )
-
-    return TaskCancelResponse(
-        status="cancelled",
-        task_id=task_id,
-        message="작업이 취소되었습니다.",
-    )
-
-
-# ============================================================================
-# 6. 모델 목록
+# 3. 모델 목록
 # ============================================================================
 
 @router.get(
@@ -615,7 +412,7 @@ async def list_models():
 
 
 # ============================================================================
-# 7. 서비스 상태
+# 4. 헬스 체크
 # ============================================================================
 
 @router.get(
@@ -627,7 +424,6 @@ async def health_check():
     import torch
 
     service = get_detection_service()
-    tm = get_task_manager()
 
     # GPU 정보
     gpu_info = GPUInfo(available=torch.cuda.is_available())
@@ -658,6 +454,4 @@ async def health_check():
         gpu=gpu_info,
         models=models_status,
         uptime_sec=round(uptime, 1),
-        active_tasks=tm.active_count,
-        queued_tasks=tm.queued_count,
     )
