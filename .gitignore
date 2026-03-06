@@ -20,5 +20,5 @@ utils/__pycache__/>
 *.py[cod]
 *$py.class
 *.so
-Clade.md
+Claude.md
 log_claude.md
