@@ -34,6 +34,7 @@ from api.schemas import (
     ModelInfo,
     ModelsResponse,
     SegmentationResult,
+    TissueType,
 )
 from api.services.detection_api_service import get_detection_service
 
@@ -43,9 +44,14 @@ router = APIRouter(prefix="/detection", tags=["detection"])
 UPLOAD_DIR = Path(tempfile.gettempdir()) / "pathology_api_uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-# 지원 파일 확장자
-ALLOWED_EXTENSIONS = {".svs", ".ndpi", ".tiff", ".tif", ".mrxs", ".scn",
-                      ".vms", ".vmu", ".png", ".jpg", ".jpeg"}
+# OpenSlide 지원 파일 확장자
+ALLOWED_EXTENSIONS = {
+    ".svs", ".ndpi", ".vms", ".vmu", ".scn", ".mrxs",
+    ".tiff", ".tif", ".svslide", ".bif",
+    ".png", ".jpg", ".jpeg",
+}
+# Swagger UI 파일 선택 필터용
+_ACCEPT_WSI = ",".join(sorted(ALLOWED_EXTENSIONS))
 
 # 최대 업로드 크기 (10 GB)
 MAX_FILE_SIZE = 10 * 1024 * 1024 * 1024
@@ -128,13 +134,6 @@ def _get_analysis_tracker() -> Dict:
 # Helper
 # ============================================================================
 
-def _validate_tissue_type(tissue_type: Optional[str]) -> str:
-    """Breast/Stomach 이외의 값은 모두 Other로 취급"""
-    if tissue_type and tissue_type.strip() in {"Breast", "Stomach"}:
-        return tissue_type.strip()
-    return "Other"
-
-
 def _validate_threshold(value: float, name: str) -> float:
     if not (0.0 <= value <= 1.0):
         raise HTTPException(
@@ -173,44 +172,90 @@ def _save_upload_file(file: UploadFile) -> Path:
     return dest
 
 
-def _parse_roi(roi_str: Optional[str]) -> Optional[List[dict]]:
-    """ROI JSON 문자열 파싱"""
-    if not roi_str:
+def _parse_roi_file(roi_file: Optional[UploadFile]) -> Optional[List[dict]]:
+    """ROI JSON 파일 파싱"""
+    if roi_file is None or roi_file.filename is None or roi_file.filename == "":
         return None
     try:
-        roi = json.loads(roi_str)
+        content = roi_file.file.read().decode("utf-8")
+        if not content.strip():
+            return None
+        roi = json.loads(content)
+        # JSON 최상위가 dict이고 annotations 키가 있으면 추출
+        if isinstance(roi, dict) and "annotations" in roi:
+            roi = roi["annotations"]
         if not isinstance(roi, list):
             raise ValueError("ROI는 JSON 배열이어야 합니다.")
         return roi
-    except (json.JSONDecodeError, ValueError) as e:
+    except (json.JSONDecodeError, ValueError, UnicodeDecodeError) as e:
         raise HTTPException(
             status_code=400,
             detail=ErrorResponse(
                 error=ErrorDetail(
                     code="INVALID_ROI",
-                    message=f"ROI 파싱 오류: {str(e)}",
+                    message=f"ROI 파일 파싱 오류: {str(e)}",
                 )
             ).model_dump(),
         )
 
 
-def _parse_class_thresholds(ct_str: Optional[str]) -> Optional[Dict[int, float]]:
-    """클래스별 threshold JSON 파싱"""
-    if not ct_str:
-        return None
-    try:
-        raw = json.loads(ct_str)
-        return {int(k): float(v) for k, v in raw.items()}
-    except Exception as e:
-        raise HTTPException(
-            status_code=400,
-            detail=ErrorResponse(
-                error=ErrorDetail(
-                    code="INVALID_THRESHOLD",
-                    message=f"class_thresholds 파싱 오류: {str(e)}",
-                )
-            ).model_dump(),
-        )
+def _save_result_json(response, output_path: str, file_name: str) -> str:
+    """검출 결과를 데스크톱 앱 호환 JSON 포맷으로 저장
+
+    데스크톱 앱의 load_detection_results()가 읽을 수 있는
+    {"metadata": {...}, "result": {...}} 형식으로 저장합니다.
+
+    Args:
+        response: DetectionResponse 객체
+        output_path: 폴더 경로 또는 .json 파일 경로
+        file_name: 원본 슬라이드 파일명 (자동 파일명 생성용)
+
+    Returns:
+        실제 저장된 파일 경로 문자열
+    """
+    from datetime import datetime
+
+    out = Path(output_path)
+
+    # 폴더 지정인 경우 자동 파일명 생성
+    if out.suffix.lower() != ".json":
+        out.mkdir(parents=True, exist_ok=True)
+        stem = Path(file_name).stem if file_name else "result"
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        out = out / f"{stem}_{timestamp}.json"
+    else:
+        out.parent.mkdir(parents=True, exist_ok=True)
+
+    resp_data = response.model_dump()
+
+    # 데스크톱 앱 호환 포맷으로 변환
+    # cells: cls_name 제거 (데스크톱 앱은 cls_id만 사용)
+    cells = [
+        {"x": c["x"], "y": c["y"], "cls_id": c["cls_id"], "confidence": c["confidence"]}
+        for c in resp_data.get("cells", [])
+    ]
+
+    data = {
+        "metadata": {
+            "model_type": "detection",
+            "model_name": "HnE Cell Detection",
+            "version": "1.0",
+            "timestamp": datetime.now().isoformat(),
+            "image_name": resp_data.get("metadata", {}).get("image_name"),
+        },
+        "result": {
+            "status": "success",
+            "num_cells": resp_data.get("summary", {}).get("total_cells", 0),
+            "class_counts": resp_data.get("summary", {}).get("class_counts", {}),
+            "cells": cells,
+            "message": f"총 {resp_data.get('summary', {}).get('total_cells', 0)}개 세포 검출 완료",
+        },
+    }
+
+    with open(out, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+    return str(out)
 
 
 def _cleanup_upload(slide_path: Path):
@@ -234,21 +279,33 @@ def _cleanup_upload(slide_path: Path):
     description="업로드된 WSI/이미지에서 세포를 검출하고, Breast/Stomach 조직은 Epithelial 재분류를 수행합니다.",
 )
 async def analyze(
-    file: UploadFile = File(..., description="WSI 파일"),
-    tissue_type: Optional[str] = Form(None, description="조직 타입: Breast, Stomach (미입력 시 Other)"),
-    roi: Optional[str] = Form(None, description="ROI JSON 배열"),
+    file: UploadFile = File(
+        ...,
+        description=f"WSI 파일 (지원 형식: {', '.join(sorted(ALLOWED_EXTENSIONS))})",
+        media_type="application/octet-stream",
+        openapi_extra={"accept": _ACCEPT_WSI},
+    ),
+    tissue_type: TissueType = Form(TissueType.OTHER, description="조직 타입 선택"),
+    roi_file: Optional[UploadFile] = File(
+        None,
+        description="ROI JSON 파일 (.json)",
+        openapi_extra={"accept": ".json"},
+    ),
     confidence_threshold: float = Form(0.01, description="전역 confidence 임계값"),
-    class_thresholds: Optional[str] = Form(None, description="클래스별 confidence 임계값 JSON"),
-    iou_threshold: float = Form(0.35, description="NMS IoU 임계값"),
+    iou_threshold: float = Form(0.3, description="NMS IoU 임계값"),
     auto_epithelial_classify: bool = Form(True, description="Epithelial 자동 재분류 여부"),
     include_segmentation: bool = Form(False, description="Segmentation 마스크 포함 여부"),
+    output_path: str = Form(
+        ...,
+        description="결과 JSON 저장 경로 (필수). 폴더 경로(예: C:\\results) 또는 파일 경로(예: C:\\results\\output.json). 폴더 지정 시 자동 파일명 생성",
+    ),
+    include_cells: bool = Form(False, description="API 응답에 cells 배열 포함 여부 (기본: summary만 반환, 파일에는 항상 전체 저장)"),
 ):
     # 입력 검증
-    tissue_type = _validate_tissue_type(tissue_type)
+    tissue_type = tissue_type.value
     confidence_threshold = _validate_threshold(confidence_threshold, "confidence_threshold")
     iou_threshold = _validate_threshold(iou_threshold, "iou_threshold")
-    roi_list = _parse_roi(roi)
-    ct = _parse_class_thresholds(class_thresholds)
+    roi_list = _parse_roi_file(roi_file)
 
     # 파일 저장
     slide_path = _save_upload_file(file)
@@ -263,7 +320,6 @@ async def analyze(
             tissue_type=tissue_type,
             roi_list=roi_list,
             confidence_threshold=confidence_threshold,
-            class_thresholds=ct,
             iou_threshold=iou_threshold,
             auto_epithelial_classify=auto_epithelial_classify,
             include_segmentation=include_segmentation,
@@ -293,6 +349,25 @@ async def analyze(
                 else None
             ),
         )
+        # 결과 JSON 저장 (파일에는 항상 전체 cells 포함)
+        try:
+            saved = _save_result_json(response, output_path.strip(), file_name)
+            response.saved_path = saved
+        except OSError as e:
+            raise HTTPException(
+                status_code=400,
+                detail=ErrorResponse(
+                    error=ErrorDetail(
+                        code="OUTPUT_PATH_ERROR",
+                        message=f"결과 저장 실패: {e}",
+                    )
+                ).model_dump(),
+            )
+
+        # API 응답에서 cells 제외 (파일 저장 후 제거)
+        if not include_cells:
+            response.cells = []
+
         _finish_analysis(file_name, tissue_type,
                          result["summary"]["total_cells"],
                          result["processing_time_sec"], success=True)

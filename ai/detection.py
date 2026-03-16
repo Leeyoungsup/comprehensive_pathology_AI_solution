@@ -1536,8 +1536,8 @@ class TiledDetectionOverlay:
         # 로컬 정규화 (뷰 내 상대 밀도)
         density_norm = (combined / max_val * 255).astype(np.uint8)
 
-        # 컬러맵 적용 (COLORMAP_HOT: 검정→빨강→노랑→흰색)
-        colored_bgr = cv2.applyColorMap(density_norm, cv2.COLORMAP_HOT)
+        # 컬러맵 적용 (COLORMAP_JET: 파랑→초록→노랑→빨강)
+        colored_bgr = cv2.applyColorMap(density_norm, cv2.COLORMAP_JET)
         colored_rgb = cv2.cvtColor(colored_bgr, cv2.COLOR_BGR2RGB)
 
         # 알파: 밀도에 비례 (배경은 투명)

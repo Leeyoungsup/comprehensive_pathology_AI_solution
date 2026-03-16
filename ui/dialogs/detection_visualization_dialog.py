@@ -379,7 +379,7 @@ class DetectionVisualizationDialog(QDialog):
                 if cls_id < len(self._resized_prob_map):
                     prob_resized = self._resized_prob_map[cls_id]
                     ax.imshow(prob_resized, aspect='auto', origin='upper',
-                              cmap='hot', alpha=0.75, zorder=1,
+                              cmap='jet', alpha=0.75, zorder=1,
                               vmin=0, vmax=1, interpolation='bilinear')
                     max_val = float(prob_resized.max())
                     mean_val = float(prob_resized[prob_resized > 0.05].mean()) if np.any(prob_resized > 0.05) else 0.0
@@ -440,7 +440,7 @@ class DetectionVisualizationDialog(QDialog):
                 if cls_id is None:
                     xs   = self._pa['all_x']
                     ys   = self._pa['all_y']
-                    cmap = 'hot'
+                    cmap = 'jet'
                 else:
                     xs = self._pa['xs_by_class'].get(cls_id, np.empty(0, dtype=np.float32))
                     ys = self._pa['ys_by_class'].get(cls_id, np.empty(0, dtype=np.float32))
@@ -814,7 +814,7 @@ class DetectionVisualizationDialog(QDialog):
             if cls_id < len(self._resized_prob_map):
                 prob_r = self._resized_prob_map[cls_id]
                 ax.imshow(prob_r, aspect='auto', origin='upper',
-                          cmap='hot', alpha=0.75, zorder=1, vmin=0, vmax=1)
+                          cmap='jet', alpha=0.75, zorder=1, vmin=0, vmax=1)
                 max_v = float(prob_r.max())
                 mean_v = float(prob_r[prob_r > 0.05].mean()) if np.any(prob_r > 0.05) else 0.0
                 ax.text(0.02, 0.03, f'max={max_v:.2f}  avg={mean_v:.2f}',

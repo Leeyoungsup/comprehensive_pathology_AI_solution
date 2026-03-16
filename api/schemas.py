@@ -142,6 +142,7 @@ class DetectionResponse(BaseModel):
     summary: DetectionSummary = Field(default_factory=DetectionSummary)
     cells: List[CellDetectionItem] = Field(default_factory=list)
     segmentation: Optional[SegmentationResult] = None
+    saved_path: Optional[str] = Field(None, description="결과 JSON 저장 경로 (output_path 지정 시)")
 
 
 

@@ -26,6 +26,11 @@ if _openslide_lib.exists():
     import os
     os.add_dll_directory(str(_openslide_lib))
     os.environ["PATH"] = str(_openslide_lib) + os.pathsep + os.environ.get("PATH", "")
+    # DLL이 bin/ 하위에 있는 경우
+    _openslide_bin = _openslide_lib / "bin"
+    if _openslide_bin.exists():
+        os.add_dll_directory(str(_openslide_bin))
+        os.environ["PATH"] = str(_openslide_bin) + os.pathsep + os.environ.get("PATH", "")
 
 from api.services.detection_api_service import get_detection_service
 from api.routers.detection import router as detection_router

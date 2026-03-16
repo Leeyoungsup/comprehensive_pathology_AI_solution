@@ -235,7 +235,7 @@ class DetectionAPIService:
         roi_list: Optional[List[dict]] = None,
         confidence_threshold: float = 0.01,
         class_thresholds: Optional[Dict[int, float]] = None,
-        iou_threshold: float = 0.35,
+        iou_threshold: float = 0.3,
         auto_epithelial_classify: bool = True,
         include_segmentation: bool = False,
         progress_callback: Optional[Callable[[int, str], None]] = None,
