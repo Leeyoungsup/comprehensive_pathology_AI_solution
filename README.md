@@ -126,7 +126,7 @@ Windows는 `libs/openslide_lib/`에 OpenSlide DLL이 포함되어 있어 별도 
 | Eosinophil | 보라 |
 | Connective tissue | 회색 |
 | Tumor Epithelial | 빨강 |
-| Benign Epithelial | 하늘 |
+| Benign Epithelial | 초록 |
 
 > 조직 타입이 Breast 또는 Stomach인 경우, 검출 완료 후 세그멘테이션 기반 Epithelial 재분류가 적용될 수 있습니다.
 

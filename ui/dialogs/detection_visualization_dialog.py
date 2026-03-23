@@ -46,7 +46,7 @@ CLASS_COLORS_HEX = {
     4: "#8A2BE2",
     5: "#808080",
     6: "#FF0000",
-    7: "#00BFFF",
+    7: "#00FF00",
 }
 
 BG      = 'white'

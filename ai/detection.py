@@ -53,7 +53,7 @@ CLASS_COLORS = {
     4: "#8A2BE2",  # Eosinophil - 청보라
     5: "#808080",  # Connective tissue - 회색
     6: "#FF0000",  # Tumor Epithelial - 빨간색
-    7: "#00BFFF",  # Benign Epithelial - 하늘색
+    7: "#00FF00",  # Benign Epithelial - 밝은 녹색
 }
 
 # RGB 색상 (마스크 생성용)
@@ -65,7 +65,7 @@ CLASS_COLORS_RGB = {
     4: (138, 43, 226),   # Eosinophil - 청보라
     5: (128, 128, 128),  # Connective tissue - 회색
     6: (255, 0, 0),      # Tumor Epithelial - 빨간색
-    7: (0, 191, 255),    # Benign Epithelial - 하늘색
+    7: (0, 255, 0),      # Benign Epithelial - 밝은 녹색
 }
 
 

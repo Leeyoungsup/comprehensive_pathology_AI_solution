@@ -32,7 +32,7 @@ WSI 업로드 → 세포 검출 (YOLOv11, 6 class)
 | 4 | Eosinophil | `#8A2BE2` | 기본 검출 |
 | 5 | Connective tissue | `#808080` | 기본 검출 |
 | 6 | Tumor Epithelial | `#FF0000` | Epithelial 재분류 결과 |
-| 7 | Benign Epithelial | `#00BFFF` | Epithelial 재분류 결과 |
+| 7 | Benign Epithelial | `#00FF00` | Epithelial 재분류 결과 |
 
 ### Segmentation 클래스 (4종, 재분류 시 내부 사용)
 
