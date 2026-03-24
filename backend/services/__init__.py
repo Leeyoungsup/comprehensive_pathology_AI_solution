@@ -1,6 +1,6 @@
 """
-서비스 레이어
-UI와 비즈니스 로직을 분리하는 서비스 클래스들
+Service layer
+Service classes that separate UI from business logic
 """
 
 from .detection_service import DetectionService

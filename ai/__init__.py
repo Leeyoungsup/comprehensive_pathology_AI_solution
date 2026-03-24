@@ -1,6 +1,6 @@
 """
-AI 모듈 초기화
-병리 이미지 분석을 위한 AI 기능 제공
+AI Module Initialization
+Provides AI functionality for pathology image analysis
 """
 
 from .segmentation import TissueSegmentation

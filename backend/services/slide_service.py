@@ -1,6 +1,6 @@
 """
-슬라이드 관리 서비스
-슬라이드 파일 열기, 정보 조회 등의 비즈니스 로직
+Slide management service
+Business logic for opening slide files, querying information, etc.
 """
 
 import openslide
@@ -9,36 +9,36 @@ from typing import Optional, Dict, Any, Tuple
 
 
 class SlideService:
-    """슬라이드 관리 관련 비즈니스 로직을 처리하는 서비스"""
-    
+    """Service handling slide management business logic"""
+
     @staticmethod
     def open_slide(file_path: str) -> Tuple[Optional[openslide.OpenSlide], str]:
         """
-        슬라이드 파일 열기
-        
+        Open slide file
+
         Args:
-            file_path: 슬라이드 파일 경로
-            
+            file_path: Slide file path
+
         Returns:
-            (슬라이드 객체 또는 None, 메시지)
+            (slide object or None, message)
         """
         try:
             slide = openslide.OpenSlide(file_path)
             file_name = Path(file_path).name
-            return slide, f"슬라이드 로드 완료: {file_name}"
+            return slide, f"Slide loaded successfully: {file_name}"
         except Exception as e:
-            return None, f"슬라이드 로드 실패: {str(e)}"
-    
+            return None, f"Failed to load slide: {str(e)}"
+
     @staticmethod
     def get_slide_info(slide: openslide.OpenSlide) -> Dict[str, Any]:
         """
-        슬라이드 정보 추출
-        
+        Extract slide information
+
         Args:
-            slide: OpenSlide 객체
-            
+            slide: OpenSlide object
+
         Returns:
-            슬라이드 정보 딕셔너리
+            Slide information dictionary
         """
         info = {
             'dimensions': slide.dimensions,
@@ -47,69 +47,69 @@ class SlideService:
             'level_downsamples': slide.level_downsamples,
             'properties': dict(slide.properties),
         }
-        
-        # MPP 정보 추출
+
+        # Extract MPP information
         mpp_x = slide.properties.get('openslide.mpp-x')
         mpp_y = slide.properties.get('openslide.mpp-y')
         if mpp_x and mpp_y:
             info['mpp'] = (float(mpp_x) + float(mpp_y)) / 2
-        
+
         return info
-    
+
     @staticmethod
     def validate_file_path(file_path: str) -> Tuple[bool, str]:
         """
-        파일 경로 유효성 검사
-        
+        Validate file path
+
         Args:
-            file_path: 검사할 파일 경로
-            
+            file_path: File path to validate
+
         Returns:
-            (유효 여부, 메시지)
+            (is_valid, message)
         """
         if not file_path:
-            return False, "파일 경로가 지정되지 않았습니다."
-        
+            return False, "No file path specified."
+
         path = Path(file_path)
-        
+
         if not path.exists():
-            return False, f"파일이 존재하지 않습니다: {file_path}"
-        
+            return False, f"File does not exist: {file_path}"
+
         if not path.is_file():
-            return False, f"디렉토리입니다: {file_path}"
-        
-        # 지원되는 확장자 체크
+            return False, f"Path is a directory: {file_path}"
+
+        # Check supported extensions
         supported_extensions = {'.svs', '.tif', '.tiff', '.ndpi', '.mrxs', '.vms', '.vmu', '.scn'}
         if path.suffix.lower() not in supported_extensions:
-            return False, f"지원되지 않는 파일 형식: {path.suffix}"
-        
-        return True, "유효한 파일 경로"
-    
+            return False, f"Unsupported file format: {path.suffix}"
+
+        return True, "Valid file path"
+
     @staticmethod
     def format_slide_info(info: Dict[str, Any]) -> str:
         """
-        슬라이드 정보를 사용자에게 표시할 문자열로 포맷
-        
+        Format slide information as a display string for the user
+
         Args:
-            info: 슬라이드 정보 딕셔너리
-            
+            info: Slide information dictionary
+
         Returns:
-            포맷된 정보 문자열
+            Formatted information string
         """
         width, height = info['dimensions']
         level_count = info['level_count']
-        
-        text = f"""슬라이드 정보
-        
-크기: {width:,} x {height:,} pixels
-레벨 수: {level_count}
+
+        text = f"""Slide Information
+
+Size: {width:,} x {height:,} pixels
+Levels: {level_count}
 """
-        
+
         if 'mpp' in info:
-            text += f"MPP: {info['mpp']:.4f} µm/pixel\n"
-        
-        text += "\n레벨별 정보:\n"
+            text += f"MPP: {info['mpp']:.4f} \u00b5m/pixel\n"
+
+        text += "\nPer-level Information:\n"
         for i, (dims, downsample) in enumerate(zip(info['level_dimensions'], info['level_downsamples'])):
             text += f"  Level {i}: {dims[0]:,} x {dims[1]:,} (downsample: {downsample:.2f}x)\n"
-        
+
         return text

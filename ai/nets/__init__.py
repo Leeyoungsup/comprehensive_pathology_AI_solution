@@ -1,6 +1,6 @@
 """
-Neural Network 모듈
-YOLO 기반 검출 네트워크
+Neural Network Module
+YOLO-based detection networks
 """
 
 from .nn import (
@@ -15,7 +15,7 @@ from .nn import (
 
 __all__ = [
     'yolo_v11_n',
-    'yolo_v11_t', 
+    'yolo_v11_t',
     'yolo_v11_s',
     'yolo_v11_m',
     'yolo_v11_l',

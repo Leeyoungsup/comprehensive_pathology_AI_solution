@@ -1,8 +1,8 @@
 """
 Epithelial Classification Service
 
-WSI segmentation과 cell detection을 조합하여
-Epithelial cell을 조직 영역별로 재분류하는 서비스
+Combines WSI segmentation and cell detection to
+reclassify epithelial cells by tissue region
 """
 
 
@@ -43,11 +43,11 @@ class EpithelialClassificationService:
         try:
             if classifier.load_segmentation_model(model_path):
                 self._model_loaded = True
-                return True, "Segmentation 모델 로드 완료"
+                return True, "Segmentation model loaded successfully"
             else:
-                return False, "Segmentation 모델 로드 실패"
+                return False, "Failed to load segmentation model"
         except Exception as e:
-            return False, f"Segmentation 모델 로드 실패: {str(e)}"
+            return False, f"Failed to load segmentation model: {str(e)}"
 
     def is_model_loaded(self):
         """Check if segmentation model is loaded"""
@@ -67,7 +67,7 @@ class EpithelialClassificationService:
         classifier = self._ensure_classifier()
 
         if not self.is_model_loaded():
-            raise RuntimeError("Segmentation 모델이 로드되지 않았습니다.")
+            raise RuntimeError("Segmentation model is not loaded.")
 
         classifier.run_classification(slide, detection_cells)
 

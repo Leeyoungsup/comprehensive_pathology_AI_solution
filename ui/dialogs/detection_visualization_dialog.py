@@ -1,6 +1,6 @@
 """
-AI 검출 결과 시각화 다이얼로그
-클래스 분포, Tumor 비율, 공간 히트맵, Confidence 분포를 탭으로 표시
+AI Detection Result Visualization Dialog
+Displays class distribution, tumor ratio, spatial heatmap, and confidence distribution in tabs
 """
 
 import numpy as np
@@ -14,7 +14,7 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.font_manager as fm
 
-# 한글 폰트 설정 (Windows: 맑은 고딕, fallback: 시스템 한글 폰트)
+# Font setup (Windows: Malgun Gothic, fallback: system font)
 def _setup_korean_font():
     korean_fonts = ['Malgun Gothic', 'NanumGothic', 'NanumBarunGothic', 'AppleGothic', 'UnDotum']
     available = {f.name for f in fm.fontManager.ttflist}
@@ -26,7 +26,7 @@ def _setup_korean_font():
 
 _setup_korean_font()
 
-# 클래스 정보 (detection.py와 동일)
+# Class info (same as detection.py)
 CLASS_NAMES = {
     0: "Neutrophil",
     1: "Epithelial",
@@ -59,46 +59,46 @@ A4_LANDSCAPE = (11.69, 8.27)  # inches
 
 
 class DetectionVisualizationDialog(QDialog):
-    """AI 검출 결과 시각화 다이얼로그"""
+    """AI detection result visualization dialog"""
 
     def __init__(self, cells, slide_dimensions=None, thumbnail=None, roi_bounds=None,
                  seg_prob_map=None, seg_class_names=None, roi_polygons=None,
                  slide_path=None, parent=None, plot_arrays=None):
         """
         Args:
-            cells: 검출 세포 리스트 [{'x', 'y', 'cls_id', 'confidence'}, ...]
-            slide_dimensions: (width, height) WSI 원본 크기
-            thumbnail: numpy RGB 배열 (슬라이드 썸네일, ROI인 경우 크롭됨)
-            roi_bounds: (x0, y0, x1, y1) ROI 영역 (없으면 전체 슬라이드)
-            seg_prob_map: numpy (num_classes, H, W) 클래스별 확률 맵 (None이면 세포 밀도 사용)
-            seg_class_names: 클래스 이름 리스트 ['Background','Stroma','Non_Tumor','Tumor']
-            slide_path: WSI 파일 경로 (PDF 기본 파일명에 사용)
-            parent: 부모 위젯
-            plot_arrays: DetectionWorker가 사전 계산한 numpy 배열 dict (없으면 cells에서 즉시 계산)
+            cells: Detected cell list [{'x', 'y', 'cls_id', 'confidence'}, ...]
+            slide_dimensions: (width, height) WSI original size
+            thumbnail: numpy RGB array (slide thumbnail, cropped if ROI)
+            roi_bounds: (x0, y0, x1, y1) ROI area (None for entire slide)
+            seg_prob_map: numpy (num_classes, H, W) class probability map (None uses cell density)
+            seg_class_names: Class name list ['Background','Stroma','Non_Tumor','Tumor']
+            slide_path: WSI file path (used for PDF default filename)
+            parent: Parent widget
+            plot_arrays: Pre-computed numpy array dict from DetectionWorker (computed from cells if None)
         """
         super().__init__(parent)
         self.cells = cells
         self.slide_dimensions = slide_dimensions
         self.thumbnail = thumbnail
         self.roi_bounds = roi_bounds
-        self.seg_prob_map = None  # 대형 배열은 인스턴스에 저장하지 않음; _resized_prob_map 사용
+        self.seg_prob_map = None  # Large arrays not stored in instance; use _resized_prob_map
         self._has_prob_map = seg_prob_map is not None
         self.seg_class_names = seg_class_names or ['Background', 'Stroma', 'Non_Tumor', 'Tumor']
         self.roi_polygons = roi_polygons or []
         self.slide_path = slide_path
-        self.setWindowTitle("AI 검출 결과 시각화")
+        self.setWindowTitle("AI Detection Result Visualization")
         self.setMinimumSize(950, 680)
         self.setWindowModality(Qt.NonModal)
         self.setStyleSheet("background-color: white; color: #222222;")
 
-        # plot 배열 초기화: 워커가 미리 계산했으면 그대로 사용, 없으면 여기서 계산
+        # Initialize plot arrays: use pre-computed from worker if available, otherwise compute here
         if plot_arrays is not None:
             self._pa = plot_arrays
         else:
             self._pa = self._compute_plot_arrays(cells)
 
-        # seg_prob_map을 썸네일 크기로 미리 리사이즈 후 원본 대형 배열은 해제
-        # (수백 MB 절약: 인스턴스에는 썸네일 크기 축소본만 보관)
+        # Pre-resize seg_prob_map to thumbnail size and release original large array
+        # (saves hundreds of MB: only thumbnail-sized reduced version is kept in instance)
         self._resized_prob_map = None
         if seg_prob_map is not None and self.thumbnail is not None:
             import cv2
@@ -107,7 +107,7 @@ class DetectionVisualizationDialog(QDialog):
                 cv2.resize(seg_prob_map[i], (tw, th), interpolation=cv2.INTER_LINEAR)
                 for i in range(seg_prob_map.shape[0])
             ]
-            # seg_prob_map은 로컬 파라미터로만 존재 → 이 블록 이후 참조 없으면 GC 해제
+            # seg_prob_map exists only as local parameter -> GC releases after this block
 
         self._init_ui()
 
@@ -125,15 +125,15 @@ class DetectionVisualizationDialog(QDialog):
         """)
         layout.addWidget(self.tab_widget)
 
-        self.tab_widget.addTab(self._create_class_distribution_tab(), "클래스 분포")
-        self.tab_widget.addTab(self._create_tumor_analysis_tab(), "Tumor 분석")
+        self.tab_widget.addTab(self._create_class_distribution_tab(), "Class Distribution")
+        self.tab_widget.addTab(self._create_tumor_analysis_tab(), "Tumor Analysis")
         if self._has_prob_map:
-            self.tab_widget.addTab(self._create_spatial_heatmap_tab(), "공간 히트맵")
-        self.tab_widget.addTab(self._create_confidence_tab(), "Confidence 분포")
+            self.tab_widget.addTab(self._create_spatial_heatmap_tab(), "Spatial Heatmap")
+        self.tab_widget.addTab(self._create_confidence_tab(), "Confidence Distribution")
 
         btn_layout = QHBoxLayout()
 
-        pdf_btn = QPushButton("PDF 내보내기")
+        pdf_btn = QPushButton("Export PDF")
         pdf_btn.setFixedHeight(32)
         pdf_btn.setStyleSheet(
             "background:#1a56a0; color:white; border:none; border-radius:4px;"
@@ -143,7 +143,7 @@ class DetectionVisualizationDialog(QDialog):
         btn_layout.addWidget(pdf_btn)
         btn_layout.addStretch()
 
-        close_btn = QPushButton("닫기")
+        close_btn = QPushButton("Close")
         close_btn.setFixedHeight(32)
         close_btn.setStyleSheet(
             "background:#e8e8e8; color:#222; border:1px solid #bbb; border-radius:4px;"
@@ -154,7 +154,7 @@ class DetectionVisualizationDialog(QDialog):
         layout.addLayout(btn_layout)
 
     def _compute_plot_arrays(self, cells):
-        """plot_arrays fallback: cells 리스트에서 직접 계산 (워커 결과 없을 때)"""
+        """plot_arrays fallback: compute directly from cells list (when no worker result)"""
         n = len(cells)
         if n == 0:
             empty = np.empty(0, dtype=np.float32)
@@ -177,7 +177,7 @@ class DetectionVisualizationDialog(QDialog):
                 'confs_by_class': confs_by_class, 'counts_by_id': counts_by_id}
 
     def _get_class_counts(self):
-        """클래스별 세포 수 반환 (pre-computed, O(1))"""
+        """Return cell count per class (pre-computed, O(1))"""
         counts = {cls_id: 0 for cls_id in CLASS_NAMES}
         for cls_id, cnt in self._pa['counts_by_id'].items():
             if cls_id in counts:
@@ -207,7 +207,7 @@ class DetectionVisualizationDialog(QDialog):
         if not active:
             ax = fig.add_subplot(111)
             ax.set_facecolor(PANEL)
-            ax.text(0.5, 0.5, '검출 데이터 없음', ha='center', va='center', color=TEXT, fontsize=14)
+            ax.text(0.5, 0.5, 'No detection data', ha='center', va='center', color=TEXT, fontsize=14)
             layout.addWidget(canvas)
             return widget
 
@@ -219,8 +219,8 @@ class DetectionVisualizationDialog(QDialog):
         ax1 = fig.add_subplot(1, 2, 1)
         self._styled_ax(ax1)
         bars = ax1.barh(names, values, color=colors, height=0.6, edgecolor='#cccccc', linewidth=0.5)
-        ax1.set_xlabel('세포 수', color=SUBTEXT, fontsize=9)
-        ax1.set_title('클래스별 세포 수', color=TEXT, fontsize=11, pad=8)
+        ax1.set_xlabel('Cell Count', color=SUBTEXT, fontsize=9)
+        ax1.set_title('Cell Count by Class', color=TEXT, fontsize=11, pad=8)
         ax1.spines['left'].set_visible(True)
         ax1.spines['bottom'].set_visible(True)
         for bar, val in zip(bars, values):
@@ -239,7 +239,7 @@ class DetectionVisualizationDialog(QDialog):
             t.set_color('#111')
             t.set_fontsize(8)
             t.set_fontweight('bold')
-        ax2.set_title(f'비율  (총 {len(self.cells):,}개)', color=TEXT, fontsize=11, pad=8)
+        ax2.set_title(f'Proportion  (Total {len(self.cells):,})', color=TEXT, fontsize=11, pad=8)
         ax2.legend(wedges, [f'{n}  ({v:,})' for n, v in zip(names, values)],
                    loc='lower center', bbox_to_anchor=(0.5, -0.22),
                    ncol=2, fontsize=8, labelcolor=TEXT,
@@ -269,7 +269,7 @@ class DetectionVisualizationDialog(QDialog):
         if total_epi > 0:
             pie_data = [tumor, benign]
             pie_colors = ['#E84040', '#2196F3']
-            pie_labels = [f'Tumor Epithelial\n({tumor:,}개)', f'Benign Epithelial\n({benign:,}개)']
+            pie_labels = [f'Tumor Epithelial\n({tumor:,})', f'Benign Epithelial\n({benign:,})']
             _, _, autotexts = ax1.pie(
                 pie_data, labels=pie_labels, colors=pie_colors,
                 autopct='%1.1f%%', startangle=90,
@@ -281,7 +281,7 @@ class DetectionVisualizationDialog(QDialog):
                 t.set_fontweight('bold')
                 t.set_color('white')
         else:
-            ax1.text(0.5, 0.5, 'Epithelial 세포 없음', ha='center', va='center',
+            ax1.text(0.5, 0.5, 'No Epithelial cells', ha='center', va='center',
                      color=SUBTEXT, fontsize=13, transform=ax1.transAxes)
         ax1.set_title('Tumor vs Benign Epithelial', color=TEXT, fontsize=11, pad=8)
 
@@ -298,21 +298,21 @@ class DetectionVisualizationDialog(QDialog):
         bar_color = '#E84040' if tumor_ratio >= 50 else '#FF8C00' if tumor_ratio >= 20 else '#FFB347'
         ax2.barh(0.5, tumor_ratio, height=0.25, color=bar_color, left=0)
 
-        ax2.text(50, 0.82, 'Tumor 비율', ha='center', color=SUBTEXT, fontsize=11)
+        ax2.text(50, 0.82, 'Tumor Ratio', ha='center', color=SUBTEXT, fontsize=11)
         ax2.text(50, 0.22, f'{tumor_ratio:.1f}%', ha='center', color=bar_color,
                  fontsize=28, fontweight='bold')
         ax2.set_xticks([0, 25, 50, 75, 100])
         ax2.set_xticklabels(['0%', '25%', '50%', '75%', '100%'], color=SUBTEXT)
         ax2.set_yticks([])
-        ax2.set_title(f'Tumor / (Tumor + Benign)  [{total_epi:,}개 기준]',
+        ax2.set_title(f'Tumor / (Tumor + Benign)  [{total_epi:,} total]',
                       color=TEXT, fontsize=10, pad=8)
 
         layout.addWidget(canvas)
 
         summary = QLabel(
-            f"  Tumor Epithelial: {tumor:,}개   |   "
-            f"Benign Epithelial: {benign:,}개   |   "
-            f"Tumor 비율: {tumor_ratio:.1f}%"
+            f"  Tumor Epithelial: {tumor:,}   |   "
+            f"Benign Epithelial: {benign:,}   |   "
+            f"Tumor Ratio: {tumor_ratio:.1f}%"
         )
         summary.setStyleSheet(
             f"color: {TEXT}; background: #f0f0f0; padding: 6px 10px;"
@@ -331,7 +331,7 @@ class DetectionVisualizationDialog(QDialog):
         outer_layout.setContentsMargins(4, 4, 4, 4)
 
         if not self.slide_dimensions:
-            label = QLabel('슬라이드 크기 정보 없음')
+            label = QLabel('No slide dimension info')
             label.setStyleSheet(f'color: {SUBTEXT}; font-size: 13px;')
             outer_layout.addWidget(label)
             return outer
@@ -342,14 +342,14 @@ class DetectionVisualizationDialog(QDialog):
         cols = 1
 
         if use_prob:
-            # 썸네일 크기
+            # Thumbnail size
             if self.thumbnail is not None:
                 th, tw = self.thumbnail.shape[:2]
             else:
                 tw = 300
                 th = int(300 * self.slide_dimensions[1] / self.slide_dimensions[0])
 
-            # Background(0) 제외한 클래스 목록
+            # Class list excluding Background(0)
             active_panels = [
                 (cls_id, cls_name)
                 for cls_id, cls_name in enumerate(self.seg_class_names)
@@ -390,9 +390,9 @@ class DetectionVisualizationDialog(QDialog):
                             bbox=dict(boxstyle='round,pad=0.3', facecolor='#333', alpha=0.65))
 
         else:
-            # Segmentation 없음 → 세포 밀도 히트맵 (Other 타입 또는 미실행)
+            # No segmentation -> cell density heatmap (Other type or not run)
             if not self.cells:
-                label = QLabel('세포 데이터 없음')
+                label = QLabel('No cell data')
                 label.setStyleSheet(f'color: {SUBTEXT}; font-size: 13px;')
                 outer_layout.addWidget(label)
                 return outer
@@ -413,7 +413,7 @@ class DetectionVisualizationDialog(QDialog):
 
             counts = self._get_class_counts()
             active_classes = [k for k, v in counts.items() if v > 0]
-            panels = [('전체 세포', None)] + [(CLASS_NAMES[k], k) for k in active_classes]
+            panels = [('All Cells', None)] + [(CLASS_NAMES[k], k) for k in active_classes]
             rows = len(panels)
 
             fig = Figure(figsize=(panel_w * cols, panel_h * rows), facecolor=BG)
@@ -449,7 +449,7 @@ class DetectionVisualizationDialog(QDialog):
                         f'cls_{cls_id}', [(0, 0, 0, 0), (*rgb, 1.0)])
 
                 if len(xs) == 0:
-                    ax.text(0.5, 0.5, '세포 없음', ha='center', va='center',
+                    ax.text(0.5, 0.5, 'No cells', ha='center', va='center',
                             color=SUBTEXT, fontsize=9, transform=ax.transAxes)
                     return
 
@@ -476,8 +476,8 @@ class DetectionVisualizationDialog(QDialog):
         outer_layout.addWidget(scroll)
 
         mode_label = QLabel(
-            "  모드: Segmentation 확률 히트맵" if use_prob else
-            "  모드: 세포 밀도 히트맵 (Segmentation 미실행)"
+            "  Mode: Segmentation probability heatmap" if use_prob else
+            "  Mode: Cell density heatmap (Segmentation not run)"
         )
         mode_label.setStyleSheet(f"color: {SUBTEXT}; font-size: 11px; padding: 4px;")
         outer_layout.addWidget(mode_label)
@@ -492,7 +492,7 @@ class DetectionVisualizationDialog(QDialog):
         active_classes = [k for k, v in counts.items() if v > 0]
 
         if not active_classes:
-            label = QLabel("데이터 없음")
+            label = QLabel("No data")
             label.setStyleSheet(f"color: {TEXT};")
             layout.addWidget(label)
             return widget
@@ -534,7 +534,7 @@ class DetectionVisualizationDialog(QDialog):
 
 
     # ──────────────────────────────────────────────
-    # PDF 내보내기
+    # PDF Export
     # ──────────────────────────────────────────────
 
     def _export_pdf(self):
@@ -550,13 +550,13 @@ class DetectionVisualizationDialog(QDialog):
             default_name = "ai_report.pdf"
 
         path, _ = QFileDialog.getSaveFileName(
-            self, "PDF 저장", default_name, "PDF Files (*.pdf)")
+            self, "Save PDF", default_name, "PDF Files (*.pdf)")
         if not path:
             return
         if not path.lower().endswith('.pdf'):
             path += '.pdf'
 
-        prog = QProgressDialog("PDF 생성 중...", None, 0, 0, self)
+        prog = QProgressDialog("Generating PDF...", None, 0, 0, self)
         prog.setWindowModality(QtCore_Qt.WindowModal)
         prog.setMinimumDuration(0)
         prog.show()
@@ -583,33 +583,33 @@ class DetectionVisualizationDialog(QDialog):
                 fig.clear(); del fig; gc.collect()
 
             prog.close()
-            QMessageBox.information(self, "완료", f"PDF 저장 완료\n{path}")
+            QMessageBox.information(self, "Complete", f"PDF saved successfully\n{path}")
         except Exception as e:
             prog.close()
             import traceback
-            QMessageBox.warning(self, "오류",
-                                f"PDF 생성 실패:\n{str(e)}\n\n{traceback.format_exc()[:600]}")
+            QMessageBox.warning(self, "Error",
+                                f"PDF generation failed:\n{str(e)}\n\n{traceback.format_exc()[:600]}")
 
-    # ── 커버 페이지 ──────────────────────────────
+    # -- Cover Page ──────────────────────────────
     def _make_pdf_cover(self):
         import datetime
         from matplotlib.figure import Figure as MplFig
 
         fig = MplFig(figsize=A4_LANDSCAPE, facecolor='white')
 
-        # 헤더 밴드
+        # Header band
         hax = fig.add_axes([0, 0.91, 1, 0.09])
         hax.set_facecolor('#1a56a0')
         hax.set_xticks([]); hax.set_yticks([])
         for sp in hax.spines.values(): sp.set_visible(False)
-        hax.text(0.02, 0.5, 'AI 검출 결과 보고서',
+        hax.text(0.02, 0.5, 'AI Detection Result Report',
                  transform=hax.transAxes, color='white',
                  fontsize=18, fontweight='bold', va='center')
         hax.text(0.98, 0.5, datetime.datetime.now().strftime('%Y-%m-%d'),
                  transform=hax.transAxes, color='white',
                  fontsize=10, va='center', ha='right')
 
-        # 썸네일 + 폴리곤 (좌 60%)
+        # Thumbnail + polygon (left 60%)
         img_ax = fig.add_axes([0.02, 0.10, 0.57, 0.78])
         img_ax.set_xticks([]); img_ax.set_yticks([])
         for sp in img_ax.spines.values(): sp.set_color(SPINE)
@@ -618,7 +618,7 @@ class DetectionVisualizationDialog(QDialog):
             th, tw = self.thumbnail.shape[:2]
             img_ax.imshow(self.thumbnail, origin='upper', aspect='equal')
 
-            # 폴리곤 오버레이
+            # Polygon overlay
             if self.roi_polygons and self.roi_bounds:
                 rx0, ry0, rx1, ry1 = self.roi_bounds
                 rw, rh = rx1 - rx0, ry1 - ry0
@@ -632,13 +632,13 @@ class DetectionVisualizationDialog(QDialog):
                         img_ax.fill(px, py, alpha=0.10, color='#2196F3', zorder=1)
         else:
             img_ax.set_facecolor('#f0f0f0')
-            img_ax.text(0.5, 0.5, '썸네일 없음', ha='center', va='center',
+            img_ax.text(0.5, 0.5, 'No thumbnail', ha='center', va='center',
                         color=SUBTEXT, fontsize=12, transform=img_ax.transAxes)
 
-        img_ax.set_title('조직 이미지' + (' (ROI)' if self.roi_bounds else ''),
+        img_ax.set_title('Tissue Image' + (' (ROI)' if self.roi_bounds else ''),
                          color=TEXT, fontsize=11, pad=6)
 
-        # 통계 패널 (우 38%)
+        # Statistics panel (right 38%)
         counts = self._get_class_counts()
         tumor = counts.get(6, 0)
         benign = counts.get(7, 0)
@@ -650,16 +650,16 @@ class DetectionVisualizationDialog(QDialog):
         stat_ax.set_facecolor('#f8f8f8')
         stat_ax.set_xticks([]); stat_ax.set_yticks([])
         for sp in stat_ax.spines.values(): sp.set_color(SPINE)
-        stat_ax.set_title('검출 요약', color=TEXT, fontsize=11, pad=8)
+        stat_ax.set_title('Detection Summary', color=TEXT, fontsize=11, pad=8)
 
-        rows = [('총 검출 세포', f'{n_total:,}개', TEXT)]
+        rows = [('Total Detected Cells', f'{n_total:,}', TEXT)]
         for cls_id, name in CLASS_NAMES.items():
             cnt = counts.get(cls_id, 0)
             if cnt > 0:
-                rows.append((f'  {name}', f'{cnt:,}개', CLASS_COLORS_HEX.get(cls_id, TEXT)))
+                rows.append((f'  {name}', f'{cnt:,}', CLASS_COLORS_HEX.get(cls_id, TEXT)))
         rows.append(None)  # divider
         tc = '#E84040' if tumor_ratio >= 50 else ('#FF8C00' if tumor_ratio >= 20 else TEXT)
-        rows.append(('Tumor 비율', f'{tumor_ratio:.1f}%', tc))
+        rows.append(('Tumor Ratio', f'{tumor_ratio:.1f}%', tc))
 
         y = 0.90; dy = min(0.09, 0.85 / max(len(rows), 1))
         for row in rows:
@@ -674,25 +674,25 @@ class DetectionVisualizationDialog(QDialog):
                          fontsize=10, color=color, va='top', ha='right', fontweight='bold')
             y -= dy
 
-        # 푸터
+        # Footer
         fig.text(0.5, 0.01,
-                 f'생성: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M")}  |  '
+                 f'Generated: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M")}  |  '
                  'Comprehensive Pathology AI Solution',
                  ha='center', va='bottom', fontsize=8, color=SUBTEXT)
         return fig
 
-    # ── 클래스 분포 ──────────────────────────────
+    # -- Class Distribution ──────────────────────────────
     def _make_pdf_class_distribution(self):
         from matplotlib.figure import Figure as MplFig
 
         counts = self._get_class_counts()
         active = {k: v for k, v in counts.items() if v > 0}
         fig = MplFig(figsize=A4_LANDSCAPE, facecolor='white')
-        fig.suptitle('클래스별 세포 분포', fontsize=16, fontweight='bold', color=TEXT, y=0.97)
+        fig.suptitle('Cell Distribution by Class', fontsize=16, fontweight='bold', color=TEXT, y=0.97)
 
         if not active:
             ax = fig.add_subplot(111)
-            ax.text(0.5, 0.5, '검출 데이터 없음', ha='center', va='center',
+            ax.text(0.5, 0.5, 'No detection data', ha='center', va='center',
                     color=TEXT, fontsize=14)
             return fig
 
@@ -710,8 +710,8 @@ class DetectionVisualizationDialog(QDialog):
         ax1.spines['top'].set_visible(False); ax1.spines['right'].set_visible(False)
         bars = ax1.barh(names, values, color=colors, height=0.6,
                         edgecolor='white', linewidth=0.5)
-        ax1.set_xlabel('세포 수', color=SUBTEXT, fontsize=10)
-        ax1.set_title('클래스별 세포 수', color=TEXT, fontsize=13, pad=8)
+        ax1.set_xlabel('Cell Count', color=SUBTEXT, fontsize=10)
+        ax1.set_title('Cell Count by Class', color=TEXT, fontsize=13, pad=8)
         for bar, val in zip(bars, values):
             ax1.text(val + max_v * 0.01, bar.get_y() + bar.get_height() / 2,
                      f'{val:,}', va='center', color=TEXT, fontsize=9)
@@ -726,14 +726,14 @@ class DetectionVisualizationDialog(QDialog):
         )
         for t in autotexts:
             t.set_color('#111'); t.set_fontsize(9); t.set_fontweight('bold')
-        ax2.set_title(f'비율  (총 {len(self.cells):,}개)', color=TEXT, fontsize=13, pad=8)
+        ax2.set_title(f'Proportion  (Total {len(self.cells):,})', color=TEXT, fontsize=13, pad=8)
         ax2.legend(wedges, [f'{n}  ({v:,})' for n, v in zip(names, values)],
                    loc='lower center', bbox_to_anchor=(0.5, -0.16),
                    ncol=2, fontsize=9, labelcolor=TEXT,
                    facecolor='white', edgecolor=SPINE)
         return fig
 
-    # ── Tumor 분석 ───────────────────────────────
+    # -- Tumor Analysis ───────────────────────────────
     def _make_pdf_tumor_analysis(self):
         from matplotlib.figure import Figure as MplFig
 
@@ -743,7 +743,7 @@ class DetectionVisualizationDialog(QDialog):
         tumor_ratio = (tumor / total_epi * 100) if total_epi > 0 else 0
 
         fig = MplFig(figsize=A4_LANDSCAPE, facecolor='white')
-        fig.suptitle('Tumor 분석', fontsize=16, fontweight='bold', color=TEXT, y=0.97)
+        fig.suptitle('Tumor Analysis', fontsize=16, fontweight='bold', color=TEXT, y=0.97)
         fig.subplots_adjust(left=0.08, right=0.95, top=0.88, bottom=0.10, wspace=0.35)
 
         ax1 = fig.add_subplot(1, 2, 1)
@@ -751,7 +751,7 @@ class DetectionVisualizationDialog(QDialog):
         if total_epi > 0:
             _, _, autotexts = ax1.pie(
                 [tumor, benign],
-                labels=[f'Tumor Epithelial\n({tumor:,}개)', f'Benign Epithelial\n({benign:,}개)'],
+                labels=[f'Tumor Epithelial\n({tumor:,})', f'Benign Epithelial\n({benign:,})'],
                 colors=['#E84040', '#2196F3'],
                 autopct='%1.1f%%', startangle=90,
                 textprops={'color': TEXT, 'fontsize': 11},
@@ -760,7 +760,7 @@ class DetectionVisualizationDialog(QDialog):
             for t in autotexts:
                 t.set_fontsize(13); t.set_fontweight('bold'); t.set_color('white')
         else:
-            ax1.text(0.5, 0.5, 'Epithelial 세포 없음', ha='center', va='center',
+            ax1.text(0.5, 0.5, 'No Epithelial cells', ha='center', va='center',
                      color=SUBTEXT, fontsize=13, transform=ax1.transAxes)
         ax1.set_title('Tumor vs Benign Epithelial', color=TEXT, fontsize=13, pad=8)
 
@@ -774,25 +774,25 @@ class DetectionVisualizationDialog(QDialog):
         ax2.barh(0.5, 100, height=0.25, color='#e0e0e0', left=0)
         bar_color = '#E84040' if tumor_ratio >= 50 else ('#FF8C00' if tumor_ratio >= 20 else '#FFB347')
         ax2.barh(0.5, tumor_ratio, height=0.25, color=bar_color, left=0)
-        ax2.text(50, 0.82, 'Tumor 비율', ha='center', color=SUBTEXT, fontsize=12)
+        ax2.text(50, 0.82, 'Tumor Ratio', ha='center', color=SUBTEXT, fontsize=12)
         ax2.text(50, 0.22, f'{tumor_ratio:.1f}%', ha='center', color=bar_color,
                  fontsize=34, fontweight='bold')
         ax2.set_xticks([0, 25, 50, 75, 100])
         ax2.set_xticklabels(['0%', '25%', '50%', '75%', '100%'], color=SUBTEXT, fontsize=9)
         ax2.set_yticks([])
-        ax2.set_title(f'Tumor / (Tumor + Benign)  [{total_epi:,}개 기준]',
+        ax2.set_title(f'Tumor / (Tumor + Benign)  [{total_epi:,} total]',
                       color=TEXT, fontsize=11, pad=8)
         return fig
 
-    # ── 공간 히트맵 ───────────────────────────────
+    # -- Spatial Heatmap ───────────────────────────────
     def _make_pdf_spatial_heatmap(self):
-        """히트맵 클래스당 하나씩 Figure 리스트를 반환."""
+        """Return a list of Figures, one per heatmap class."""
         import cv2
         from matplotlib.figure import Figure as MplFig
 
         if self._resized_prob_map is None or self.thumbnail is None:
             fig = MplFig(figsize=A4_LANDSCAPE, facecolor='white')
-            fig.text(0.5, 0.5, '공간 히트맵 데이터 없음', ha='center', va='center',
+            fig.text(0.5, 0.5, 'No spatial heatmap data', ha='center', va='center',
                      color=SUBTEXT, fontsize=14)
             return [fig]
 
@@ -801,7 +801,7 @@ class DetectionVisualizationDialog(QDialog):
         total = len(active_panels)
         for i, (cls_id, cls_name) in enumerate(active_panels):
             fig = MplFig(figsize=A4_LANDSCAPE, facecolor='white')
-            fig.suptitle(f'공간 확률 히트맵 (Segmentation)  –  {cls_name}  [{i+1}/{total}]',
+            fig.suptitle(f'Spatial Probability Heatmap (Segmentation)  -  {cls_name}  [{i+1}/{total}]',
                          fontsize=14, fontweight='bold', color=TEXT, y=0.97)
             fig.subplots_adjust(left=0.04, right=0.96, top=0.91, bottom=0.04)
 
@@ -824,17 +824,17 @@ class DetectionVisualizationDialog(QDialog):
             figs.append(fig)
         return figs
 
-    # ── Confidence 분포 ───────────────────────────
+    # -- Confidence Distribution ───────────────────────────
     def _make_pdf_confidence(self):
         from matplotlib.figure import Figure as MplFig
 
         counts = self._get_class_counts()
         active_classes = [k for k, v in counts.items() if v > 0]
         fig = MplFig(figsize=A4_LANDSCAPE, facecolor='white')
-        fig.suptitle('Confidence 분포', fontsize=16, fontweight='bold', color=TEXT, y=0.97)
+        fig.suptitle('Confidence Distribution', fontsize=16, fontweight='bold', color=TEXT, y=0.97)
 
         if not active_classes:
-            fig.text(0.5, 0.5, '데이터 없음', ha='center', va='center',
+            fig.text(0.5, 0.5, 'No data', ha='center', va='center',
                      color=TEXT, fontsize=14)
             return fig
 
@@ -870,7 +870,7 @@ def show_detection_visualization(cells, slide_dimensions=None, thumbnail=None,
                                   roi_bounds=None, seg_prob_map=None, seg_class_names=None,
                                   roi_polygons=None, slide_path=None, parent=None,
                                   plot_arrays=None):
-    """시각화 다이얼로그 표시 헬퍼 함수"""
+    """Helper function to display visualization dialog"""
     dialog = DetectionVisualizationDialog(
         cells, slide_dimensions, thumbnail, roi_bounds,
         seg_prob_map, seg_class_names, roi_polygons, slide_path, parent,

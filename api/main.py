@@ -1,8 +1,8 @@
 """
-FastAPI 메인 앱
+FastAPI main app
 
-HnE Cell Detection REST API 서버
-실행: uvicorn api.main:app --host 0.0.0.0 --port 8000
+HnE Cell Detection REST API server
+Run: uvicorn api.main:app --host 0.0.0.0 --port 8000
 """
 
 from __future__ import annotations
@@ -15,18 +15,18 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-# 프로젝트 루트를 sys.path에 추가 (ai 모듈 등 import 경로 보장)
+# Add project root to sys.path (ensure import paths for ai modules, etc.)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-# OpenSlide DLL 경로 (Windows)
+# OpenSlide DLL path (Windows)
 _openslide_lib = PROJECT_ROOT / "libs" / "openslide_lib"
 if _openslide_lib.exists():
     import os
     os.add_dll_directory(str(_openslide_lib))
     os.environ["PATH"] = str(_openslide_lib) + os.pathsep + os.environ.get("PATH", "")
-    # DLL이 bin/ 하위에 있는 경우
+    # If DLLs are in a bin/ subdirectory
     _openslide_bin = _openslide_lib / "bin"
     if _openslide_bin.exists():
         os.add_dll_directory(str(_openslide_bin))
@@ -36,7 +36,7 @@ from api.services.detection_api_service import get_detection_service
 from api.routers.detection import router as detection_router
 
 # ============================================================================
-# 서버 시작 시간 (uptime 계산용)
+# Server start time (for uptime calculation)
 # ============================================================================
 _start_time: float = 0.0
 
@@ -51,7 +51,7 @@ def get_start_time() -> float:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """앱 시작/종료 시 리소스 관리"""
+    """Manage resources on app startup/shutdown"""
     global _start_time
     _start_time = time.time()
 
@@ -59,7 +59,7 @@ async def lifespan(app: FastAPI):
     print("  HnE Cell Detection API Server Starting...")
     print("=" * 60)
 
-    # Detection 모델 사전 로드
+    # Pre-load detection model
     service = get_detection_service()
     print(f"Device: {service.get_device_str()}")
 
@@ -67,14 +67,14 @@ async def lifespan(app: FastAPI):
     if model_path.exists():
         success = service.load_detection_model(str(model_path))
         if success:
-            print(f"Detection 모델 로드 완료: {model_path.name}")
+            print(f"Detection model loaded: {model_path.name}")
         else:
-            print(f"Detection 모델 로드 실패: {model_path}")
+            print(f"Failed to load detection model: {model_path}")
     else:
-        print(f"Detection 모델 파일 없음: {model_path}")
-        print("  → /detection/analyze 호출 시 자동 로드 시도")
+        print(f"Detection model file not found: {model_path}")
+        print("  -> Will attempt auto-load on /detection/analyze call")
 
-    # Segmentation 모델 파일 존재 확인
+    # Check segmentation model file existence
     for name in ["HnE_BR_segmentation.pt", "HnE_ST_segmentation.pt"]:
         seg_path = PROJECT_ROOT / "model" / name
         status = "✓" if seg_path.exists() else "✗"
@@ -85,12 +85,12 @@ async def lifespan(app: FastAPI):
     print("  Docs: http://localhost:8000/docs")
     print("=" * 60)
 
-    yield  # 앱 실행
+    yield  # App running
 
     # Shutdown
-    print("서버 종료 중...")
+    print("Server shutting down...")
     service.unload_detection_model()
-    print("모델 언로드 완료")
+    print("Models unloaded")
 
 
 # ============================================================================
@@ -100,9 +100,9 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="HnE Cell Detection API",
     description=(
-        "H&E 염색 병리 이미지(WSI)에서 세포를 검출하고, "
-        "Breast/Stomach 조직인 경우 Epithelial 세포를 Tumor/Benign으로 "
-        "자동 재분류하는 REST API"
+        "REST API for detecting cells in H&E-stained pathology images (WSI) "
+        "and automatically reclassifying Epithelial cells as Tumor/Benign "
+        "for Breast/Stomach tissue"
     ),
     version="1.0.0",
     lifespan=lifespan,
@@ -110,7 +110,7 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-# CORS 설정
+# CORS configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -119,7 +119,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 라우터 등록 (prefix: /api/v1)
+# Register router (prefix: /api/v1)
 app.include_router(detection_router, prefix="/api/v1")
 
 
@@ -138,7 +138,7 @@ async def root():
 
 
 # ============================================================================
-# CLI 실행
+# CLI execution
 # ============================================================================
 
 if __name__ == "__main__":

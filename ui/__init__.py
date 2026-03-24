@@ -1,6 +1,6 @@
 """
-UI 모듈
-뷰어 및 UI 컴포넌트
+UI Module
+Viewer and UI components
 """
 
 from .viewer import PathologyViewer

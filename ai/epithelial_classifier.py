@@ -562,8 +562,21 @@ class EpithelialClassificationWorker(QThread):
                 mask_x = int(cell['x'] * scale_factor)
                 mask_y = int(cell['y'] * scale_factor)
 
+                # 단일 픽셀 대신 주변 3×3 영역의 다수결로 seg_class 판정
+                # output_mpp=4.0에서 경계 부근 오분류 완화
+                NEIGHBORHOOD = 1  # 3×3 (중심 ± 1)
                 if 0 <= mask_x < mask_w and 0 <= mask_y < mask_h:
-                    seg_class = int(prediction_mask[mask_y, mask_x])
+                    y1 = max(0, mask_y - NEIGHBORHOOD)
+                    y2 = min(mask_h, mask_y + NEIGHBORHOOD + 1)
+                    x1 = max(0, mask_x - NEIGHBORHOOD)
+                    x2 = min(mask_w, mask_x + NEIGHBORHOOD + 1)
+                    patch = prediction_mask[y1:y2, x1:x2].flatten()
+                    # 다수결 (Background=0 제외, 유효 클래스만 투표)
+                    non_bg = patch[patch > 0]
+                    if len(non_bg) > 0:
+                        seg_class = int(np.bincount(non_bg).argmax())
+                    else:
+                        seg_class = int(patch[len(patch) // 2])  # 전부 Background면 중심값
                 else:
                     seg_class = 0  # Out of bounds → Background
 

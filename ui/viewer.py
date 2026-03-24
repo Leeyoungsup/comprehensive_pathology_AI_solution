@@ -1,6 +1,6 @@
 """
-병리 이미지 뷰어 메인 윈도우
-리팩토링된 간소화 버전 - UI 구성 및 이벤트 처리만 담당
+Pathology Image Viewer Main Window
+Refactored simplified version - handles UI composition and event processing only
 """
 
 from PyQt5 import uic
@@ -11,7 +11,7 @@ from pathlib import Path
 import os
 import sys
 
-# 프로젝트 루트 추가
+# Add project root
 project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
@@ -20,7 +20,7 @@ from ui.wsi_view_widget import WSIViewWidget, AnnotationMode
 from ui.annotation_panel import AnnotationPanel
 from ui.dialogs import show_slide_info_dialog
 
-# 서비스 레이어 import
+# Service layer import
 from backend.services import (
     DetectionService,
     SlideService,
@@ -30,65 +30,65 @@ from backend.services import (
 
 
 class PathologyViewer(QMainWindow):
-    """병리 이미지 뷰어 메인 윈도우"""
+    """Pathology Image Viewer Main Window"""
     
     def __init__(self):
         super().__init__()
         self.current_image_path = None
         
-        # UI 파일 로드
+        # Load UI file
         ui_path = os.path.join(os.path.dirname(__file__), 'viewer.ui')
         uic.loadUi(ui_path, self)
         
-        # WSI 뷰어 위젯 설정
+        # Set up WSI viewer widget
         self.setup_wsi_viewer()
-        
-        # 서비스 레이어 초기화
+
+        # Initialize service layer
         self.detection_service = DetectionService()
         self.slide_service = SlideService()
         self.annotation_service = AnnotationService()
         self.epithelial_classification_service = EpithelialClassificationService()
         
-        # AI 모듈 변수 초기화 (레거시, 필요시 삭제 가능)
+        # Initialize AI module variables (legacy, can be removed if needed)
         self.tissue_segmentation = None
         self.tissue_classification = None
-        self.is_detection_running = False  # 검출 진행 상태
+        self.is_detection_running = False  # Detection running state
 
-        # PD-L1 검출 모듈
+        # PD-L1 detection module
         self.pdl1_detection = None
         self.is_pdl1_running = False
         self.current_pdl1_result = None
 
-        # 클래스별 검출 결과 캐시
+        # Per-class detection result cache
         self.current_detection_result = None
         
-        # Segmentation 결과 캐시
+        # Segmentation result cache
         self.current_segmentation_result = None
         self.is_segmentation_running = False
         self.tumor_seg_worker = None  # TumorSegmentationWorker 인스턴스
 
-        # 조직 타입 (기본값: Stomach)
+        # Tissue type (default: Stomach)
         self.current_tissue_type = "Stomach"
         
-        # 시그널 연결
+        # Connect signals
         self.connect_signals()
 
-        # 추가 UI 요소 설정 (프로그래밍 방식)
+        # Additional UI element setup (programmatic)
         self.setup_ui_additions()
 
-        # 초기 상태 설정
+        # Initial state setup
         self.progressBar.setValue(0)
         self.progressLabel.setText("AI Progress")
-        self.statusbar.showMessage("준비됨")
-    
+        self.statusbar.showMessage("Ready")
+
     def setup_wsi_viewer(self):
-        """WSI 뷰어 위젯 설정"""
-        # 기존 QLabel을 커스텀 WSIViewWidget으로 교체
+        """Set up WSI viewer widget"""
+        # Replace existing QLabel with custom WSIViewWidget
         old_viewer = self.imageViewer
         parent = old_viewer.parent()
         layout = old_viewer.parent().layout()
         
-        # 기존 위젯 제거
+        # Remove existing widget
         layout.removeWidget(old_viewer)
         old_viewer.deleteLater()
         

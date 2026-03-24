@@ -1,11 +1,11 @@
 """
-Detection 라우터
+Detection Router
 
-HnE Cell Detection API의 엔드포인트를 정의합니다.
-  - POST /analyze  : 세포 검출
-  - GET  /status   : 현재 상태 확인
-  - GET  /models   : 모델 목록
-  - GET  /health   : 서비스 헬스 체크
+Defines endpoints for the HnE Cell Detection API.
+  - POST /analyze  : Cell detection
+  - GET  /status   : Current status check
+  - GET  /models   : Model list
+  - GET  /health   : Service health check
 """
 
 from __future__ import annotations
@@ -40,25 +40,25 @@ from api.services.detection_api_service import get_detection_service
 
 router = APIRouter(prefix="/detection", tags=["detection"])
 
-# 업로드 파일 임시 디렉토리
+# Temporary directory for uploaded files
 UPLOAD_DIR = Path(tempfile.gettempdir()) / "pathology_api_uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-# OpenSlide 지원 파일 확장자
+# OpenSlide supported file extensions
 ALLOWED_EXTENSIONS = {
     ".svs", ".ndpi", ".vms", ".vmu", ".scn", ".mrxs",
     ".tiff", ".tif", ".svslide", ".bif",
     ".png", ".jpg", ".jpeg",
 }
-# Swagger UI 파일 선택 필터용
+# Swagger UI file selection filter
 _ACCEPT_WSI = ",".join(sorted(ALLOWED_EXTENSIONS))
 
-# 최대 업로드 크기 (10 GB)
+# Maximum upload size (10 GB)
 MAX_FILE_SIZE = 10 * 1024 * 1024 * 1024
 
 
 # ============================================================================
-# 분석 상태 추적기
+# Analysis status tracker
 # ============================================================================
 
 import threading
@@ -67,15 +67,15 @@ from datetime import datetime
 _analysis_lock = threading.Lock()
 _analysis_state: Dict = {
     "is_running": False,
-    "current": None,      # 현재 진행 중인 분석 정보
-    "last_completed": None,  # 마지막 완료된 분석 정보
+    "current": None,      # Currently running analysis info
+    "last_completed": None,  # Last completed analysis info
     "total_analyses": 0,
     "total_cells_detected": 0,
 }
 
 
 def _start_analysis(file_name: str, tissue_type: str):
-    """분석 시작 시 호출"""
+    """Called when analysis starts"""
     with _analysis_lock:
         _analysis_state["is_running"] = True
         _analysis_state["current"] = {
@@ -87,7 +87,7 @@ def _start_analysis(file_name: str, tissue_type: str):
 
 def _finish_analysis(file_name: str, tissue_type: str, total_cells: int,
                      processing_time: float, success: bool, error: Optional[str] = None):
-    """분석 완료 시 호출"""
+    """Called when analysis completes"""
     with _analysis_lock:
         _analysis_state["is_running"] = False
         _analysis_state["current"] = None
@@ -112,7 +112,7 @@ def _finish_analysis(file_name: str, tissue_type: str, total_cells: int,
 
 
 def _get_analysis_tracker() -> Dict:
-    """현재 분석 상태 반환"""
+    """Return current analysis status"""
     with _analysis_lock:
         result = {
             "is_running": _analysis_state["is_running"],
@@ -141,7 +141,7 @@ def _validate_threshold(value: float, name: str) -> float:
             detail=ErrorResponse(
                 error=ErrorDetail(
                     code="INVALID_THRESHOLD",
-                    message=f"{name} 값은 0.0~1.0 사이여야 합니다: {value}",
+                    message=f"{name} must be between 0.0 and 1.0: {value}",
                 )
             ).model_dump(),
         )
@@ -149,7 +149,7 @@ def _validate_threshold(value: float, name: str) -> float:
 
 
 def _save_upload_file(file: UploadFile) -> Path:
-    """업로드 파일을 임시 디렉토리에 저장"""
+    """Save uploaded file to temporary directory"""
     ext = Path(file.filename or "uploaded").suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(
@@ -157,7 +157,7 @@ def _save_upload_file(file: UploadFile) -> Path:
             detail=ErrorResponse(
                 error=ErrorDetail(
                     code="INVALID_FILE_FORMAT",
-                    message=f"지원하지 않는 파일 형식: {ext}. 지원: {ALLOWED_EXTENSIONS}",
+                    message=f"Unsupported file format: {ext}. Supported: {ALLOWED_EXTENSIONS}",
                 )
             ).model_dump(),
         )
@@ -173,7 +173,7 @@ def _save_upload_file(file: UploadFile) -> Path:
 
 
 def _parse_roi_file(roi_file: Optional[UploadFile]) -> Optional[List[dict]]:
-    """ROI JSON 파일 파싱"""
+    """Parse ROI JSON file"""
     if roi_file is None or roi_file.filename is None or roi_file.filename == "":
         return None
     try:
@@ -181,11 +181,11 @@ def _parse_roi_file(roi_file: Optional[UploadFile]) -> Optional[List[dict]]:
         if not content.strip():
             return None
         roi = json.loads(content)
-        # JSON 최상위가 dict이고 annotations 키가 있으면 추출
+        # If top-level JSON is dict with annotations key, extract it
         if isinstance(roi, dict) and "annotations" in roi:
             roi = roi["annotations"]
         if not isinstance(roi, list):
-            raise ValueError("ROI는 JSON 배열이어야 합니다.")
+            raise ValueError("ROI must be a JSON array.")
         return roi
     except (json.JSONDecodeError, ValueError, UnicodeDecodeError) as e:
         raise HTTPException(
@@ -193,31 +193,31 @@ def _parse_roi_file(roi_file: Optional[UploadFile]) -> Optional[List[dict]]:
             detail=ErrorResponse(
                 error=ErrorDetail(
                     code="INVALID_ROI",
-                    message=f"ROI 파일 파싱 오류: {str(e)}",
+                    message=f"ROI file parsing error: {str(e)}",
                 )
             ).model_dump(),
         )
 
 
 def _save_result_json(response, output_path: str, file_name: str) -> str:
-    """검출 결과를 데스크톱 앱 호환 JSON 포맷으로 저장
+    """Save detection results in desktop app compatible JSON format
 
-    데스크톱 앱의 load_detection_results()가 읽을 수 있는
-    {"metadata": {...}, "result": {...}} 형식으로 저장합니다.
+    Saves in {"metadata": {...}, "result": {...}} format that can be
+    read by the desktop app's load_detection_results().
 
     Args:
-        response: DetectionResponse 객체
-        output_path: 폴더 경로 또는 .json 파일 경로
-        file_name: 원본 슬라이드 파일명 (자동 파일명 생성용)
+        response: DetectionResponse object
+        output_path: Folder path or .json file path
+        file_name: Original slide file name (for auto filename generation)
 
     Returns:
-        실제 저장된 파일 경로 문자열
+        Actual saved file path string
     """
     from datetime import datetime
 
     out = Path(output_path)
 
-    # 폴더 지정인 경우 자동 파일명 생성
+    # Auto-generate filename if folder is specified
     if out.suffix.lower() != ".json":
         out.mkdir(parents=True, exist_ok=True)
         stem = Path(file_name).stem if file_name else "result"
@@ -228,8 +228,8 @@ def _save_result_json(response, output_path: str, file_name: str) -> str:
 
     resp_data = response.model_dump()
 
-    # 데스크톱 앱 호환 포맷으로 변환
-    # cells: cls_name 제거 (데스크톱 앱은 cls_id만 사용)
+    # Convert to desktop app compatible format
+    # cells: remove cls_name (desktop app uses cls_id only)
     cells = [
         {"x": c["x"], "y": c["y"], "cls_id": c["cls_id"], "confidence": c["confidence"]}
         for c in resp_data.get("cells", [])
@@ -248,7 +248,7 @@ def _save_result_json(response, output_path: str, file_name: str) -> str:
             "num_cells": resp_data.get("summary", {}).get("total_cells", 0),
             "class_counts": resp_data.get("summary", {}).get("class_counts", {}),
             "cells": cells,
-            "message": f"총 {resp_data.get('summary', {}).get('total_cells', 0)}개 세포 검출 완료",
+            "message": f"Detection complete: {resp_data.get('summary', {}).get('total_cells', 0)} cells detected",
         },
     }
 
@@ -259,7 +259,7 @@ def _save_result_json(response, output_path: str, file_name: str) -> str:
 
 
 def _cleanup_upload(slide_path: Path):
-    """업로드 임시 파일 정리"""
+    """Clean up temporary uploaded files"""
     try:
         parent = slide_path.parent
         if parent.exists() and str(UPLOAD_DIR) in str(parent):
@@ -269,45 +269,45 @@ def _cleanup_upload(slide_path: Path):
 
 
 # ============================================================================
-# 1. 세포 검출
+# 1. Cell detection
 # ============================================================================
 
 @router.post(
     "/analyze",
     response_model=DetectionResponse,
-    summary="WSI 세포 검출",
-    description="업로드된 WSI/이미지에서 세포를 검출하고, Breast/Stomach 조직은 Epithelial 재분류를 수행합니다.",
+    summary="WSI cell detection",
+    description="Detects cells from uploaded WSI/images and performs Epithelial reclassification for Breast/Stomach tissue.",
 )
 async def analyze(
     file: UploadFile = File(
         ...,
-        description=f"WSI 파일 (지원 형식: {', '.join(sorted(ALLOWED_EXTENSIONS))})",
+        description=f"WSI file (supported formats: {', '.join(sorted(ALLOWED_EXTENSIONS))})",
         media_type="application/octet-stream",
         openapi_extra={"accept": _ACCEPT_WSI},
     ),
-    tissue_type: TissueType = Form(TissueType.OTHER, description="조직 타입 선택"),
+    tissue_type: TissueType = Form(TissueType.OTHER, description="Tissue type selection"),
     roi_file: Optional[UploadFile] = File(
         None,
-        description="ROI JSON 파일 (.json)",
+        description="ROI JSON file (.json)",
         openapi_extra={"accept": ".json"},
     ),
-    confidence_threshold: float = Form(0.01, description="전역 confidence 임계값"),
-    iou_threshold: float = Form(0.3, description="NMS IoU 임계값"),
-    auto_epithelial_classify: bool = Form(True, description="Epithelial 자동 재분류 여부"),
-    include_segmentation: bool = Form(False, description="Segmentation 마스크 포함 여부"),
+    confidence_threshold: float = Form(0.01, description="Global confidence threshold"),
+    iou_threshold: float = Form(0.3, description="NMS IoU threshold"),
+    auto_epithelial_classify: bool = Form(True, description="Whether to auto-reclassify Epithelial cells"),
+    include_segmentation: bool = Form(False, description="Whether to include segmentation mask"),
     output_path: str = Form(
         ...,
-        description="결과 JSON 저장 경로 (필수). 폴더 경로(예: C:\\results) 또는 파일 경로(예: C:\\results\\output.json). 폴더 지정 시 자동 파일명 생성",
+        description="Result JSON save path (required). Folder path (e.g., C:\\results) or file path (e.g., C:\\results\\output.json). Auto filename generated for folder paths",
     ),
-    include_cells: bool = Form(False, description="API 응답에 cells 배열 포함 여부 (기본: summary만 반환, 파일에는 항상 전체 저장)"),
+    include_cells: bool = Form(False, description="Whether to include cells array in API response (default: summary only, full data always saved to file)"),
 ):
-    # 입력 검증
+    # Input validation
     tissue_type = tissue_type.value
     confidence_threshold = _validate_threshold(confidence_threshold, "confidence_threshold")
     iou_threshold = _validate_threshold(iou_threshold, "iou_threshold")
     roi_list = _parse_roi_file(roi_file)
 
-    # 파일 저장
+    # Save file
     slide_path = _save_upload_file(file)
     file_name = file.filename or "unknown"
     _start_analysis(file_name, tissue_type)
@@ -325,7 +325,7 @@ async def analyze(
             include_segmentation=include_segmentation,
         )
 
-        # 응답 구성
+        # Build response
         task_id = uuid.uuid4().hex[:12]
 
         response = DetectionResponse(
@@ -349,7 +349,7 @@ async def analyze(
                 else None
             ),
         )
-        # 결과 JSON 저장 (파일에는 항상 전체 cells 포함)
+        # Save result JSON (file always includes full cells)
         try:
             saved = _save_result_json(response, output_path.strip(), file_name)
             response.saved_path = saved
@@ -359,12 +359,12 @@ async def analyze(
                 detail=ErrorResponse(
                     error=ErrorDetail(
                         code="OUTPUT_PATH_ERROR",
-                        message=f"결과 저장 실패: {e}",
+                        message=f"Failed to save results: {e}",
                     )
                 ).model_dump(),
             )
 
-        # API 응답에서 cells 제외 (파일 저장 후 제거)
+        # Exclude cells from API response (remove after file save)
         if not include_cells:
             response.cells = []
 
@@ -413,13 +413,13 @@ async def analyze(
 
 
 # ============================================================================
-# 2. 현재 상태 확인
+# 2. Current status check
 # ============================================================================
 
 @router.get(
     "/status",
-    summary="현재 서비스 상태 확인",
-    description="현재 분석 진행 상태, 마지막 분석 결과, GPU 사용량 등 실시간 정보를 반환합니다.",
+    summary="Check current service status",
+    description="Returns real-time information including current analysis progress, last analysis results, GPU usage, etc.",
 )
 async def get_status():
     import torch
@@ -427,7 +427,7 @@ async def get_status():
 
     service = get_detection_service()
 
-    # GPU 실시간 메모리
+    # Real-time GPU memory
     gpu = {}
     if torch.cuda.is_available():
         gpu["device"] = torch.cuda.get_device_name(0)
@@ -442,7 +442,7 @@ async def get_status():
     else:
         gpu["device"] = "CPU only"
 
-    # 모델 로드 상태
+    # Model load status
     models = {
         "detection": {
             "loaded": service.is_detection_model_loaded,
@@ -456,7 +456,7 @@ async def get_status():
             "file": name,
         }
 
-    # 분석 이력
+    # Analysis history
     analysis_info = _get_analysis_tracker()
 
     return {
@@ -472,13 +472,13 @@ async def get_status():
 
 
 # ============================================================================
-# 3. 모델 목록
+# 3. Model list
 # ============================================================================
 
 @router.get(
     "/models",
     response_model=ModelsResponse,
-    summary="사용 가능한 모델 목록",
+    summary="Available model list",
 )
 async def list_models():
     service = get_detection_service()
@@ -487,20 +487,20 @@ async def list_models():
 
 
 # ============================================================================
-# 4. 헬스 체크
+# 4. Health check
 # ============================================================================
 
 @router.get(
     "/health",
     response_model=HealthResponse,
-    summary="서비스 상태 확인",
+    summary="Service health check",
 )
 async def health_check():
     import torch
 
     service = get_detection_service()
 
-    # GPU 정보
+    # GPU information
     gpu_info = GPUInfo(available=torch.cuda.is_available())
     if torch.cuda.is_available():
         gpu_info.device = torch.cuda.get_device_name(0)
@@ -510,7 +510,7 @@ async def health_check():
         gpu_info.memory_used_gb = round(torch.cuda.memory_allocated(0) / (1024**3), 1)
         gpu_info.cuda_version = torch.version.cuda
 
-    # 모델 상태
+    # Model status
     from pathlib import Path
     project_root = Path(__file__).resolve().parent.parent.parent
     models_status = {

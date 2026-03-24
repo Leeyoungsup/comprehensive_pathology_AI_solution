@@ -1,7 +1,7 @@
 """
-빌드 후 의존성 복사 스크립트
-site-packages 전체 + stdlib 전체를 main.dist에 복사
-(기존 파일은 건드리지 않아 Nuitka 컴파일 버전 보호)
+Post-build dependency copy script
+Copies entire site-packages + stdlib into main.dist
+(Existing files are not touched, preserving Nuitka-compiled versions)
 """
 import shutil
 import os
@@ -14,12 +14,12 @@ if len(sys.argv) < 2:
 dst = sys.argv[1]
 stdlib = os.path.dirname(os.__file__)
 
-# site-packages 경로: 'site-packages'가 포함된 경로를 선택
+# site-packages path: select path containing 'site-packages'
 import site as _site
 site_pkgs = _site.getsitepackages()
 site_pkg = next((p for p in site_pkgs if p.endswith('site-packages')), None)
 if site_pkg is None:
-    # fallback: stdlib 옆의 site-packages
+    # fallback: site-packages next to stdlib
     site_pkg = os.path.join(stdlib, 'site-packages')
 print(f"  site-packages: {site_pkg}")
 print(f"  stdlib: {stdlib}")
@@ -30,7 +30,7 @@ skip_names = {'__pycache__', 'test', 'tests', 'idle', 'tkinter', 'turtle',
 
 def copy_tree_if_new(src_root, dst_root, label):
     if not os.path.isdir(src_root):
-        print(f"  경고: {src_root} 없음, 건너뜀")
+        print(f"  Warning: {src_root} not found, skipping")
         return
     copied = 0
     errors = 0
@@ -42,7 +42,7 @@ def copy_tree_if_new(src_root, dst_root, label):
         src = os.path.join(src_root, name)
         dst_path = os.path.join(dst_root, name)
         if os.path.exists(dst_path):
-            continue  # 이미 있으면 건드리지 않음
+            continue  # Skip if already exists
         try:
             if os.path.isdir(src):
                 shutil.copytree(src, dst_path,
@@ -52,12 +52,12 @@ def copy_tree_if_new(src_root, dst_root, label):
             copied += 1
         except Exception as e:
             errors += 1
-    print(f"  {label}: {copied}개 항목 복사 완료 (오류: {errors}개)")
+    print(f"  {label}: {copied} items copied (errors: {errors})")
 
-print("site-packages 복사 중...")
+print("Copying site-packages...")
 copy_tree_if_new(site_pkg, dst, 'site-packages')
 
-print("stdlib 복사 중...")
+print("Copying stdlib...")
 copy_tree_if_new(stdlib, dst, 'stdlib')
 
-print("완료!")
+print("Done!")

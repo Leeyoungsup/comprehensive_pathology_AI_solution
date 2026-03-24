@@ -4,7 +4,7 @@ import torch
 
 
 def make_anchors(x, strides, offset=0.5):
-    """앵커 생성 함수"""
+    """Anchor generation function"""
     assert x is not None
     anchor_tensor, stride_tensor = [], []
     dtype, device = x[0].dtype, x[0].device

@@ -1,6 +1,6 @@
 """
-세포 검출 서비스
-검출 관련 비즈니스 로직을 담당하는 서비스 레이어
+Cell detection service
+Service layer handling detection-related business logic
 """
 
 import openslide
@@ -9,168 +9,168 @@ from typing import Optional, List, Dict, Any
 
 
 class DetectionService:
-    """세포 검출 관련 비즈니스 로직을 처리하는 서비스"""
-    
+    """Service handling cell detection business logic"""
+
     def __init__(self):
         self.detection_module = None
         self._model_loaded = False
-        
+
     def _ensure_detection_module(self):
-        """검출 모듈 lazy initialization"""
+        """Detection module lazy initialization"""
         if self.detection_module is None:
             from ai.detection import CellDetection
             self.detection_module = CellDetection()
         return self.detection_module
-    
+
     def load_model(self, model_path: Optional[str] = None) -> tuple[bool, str]:
         """
-        AI 모델 로드
-        
+        Load AI model
+
         Args:
-            model_path: 모델 파일 경로 (None이면 기본 경로)
-            
+            model_path: Model file path (uses default path if None)
+
         Returns:
-            (성공 여부, 메시지)
+            (success, message)
         """
         try:
             detection = self._ensure_detection_module()
-            
+
             if detection.load_model(model_path):
                 self._model_loaded = True
-                return True, "모델 로드 완료"
+                return True, "Model loaded successfully"
             else:
-                return False, f"모델 로드 실패: {detection.default_model_path}"
-                
+                return False, f"Failed to load model: {detection.default_model_path}"
+
         except Exception as e:
-            return False, f"모델 로드 중 오류: {str(e)}"
-    
+            return False, f"Error loading model: {str(e)}"
+
     def is_model_loaded(self) -> bool:
-        """모델 로드 상태 확인"""
+        """Check model load status"""
         if self.detection_module is None:
             return False
         return self.detection_module.is_model_loaded()
-    
+
     def open_slide(self, slide_path: str) -> tuple[Optional[openslide.OpenSlide], str]:
         """
-        WSI 슬라이드 열기
-        
+        Open WSI slide
+
         Args:
-            slide_path: 슬라이드 파일 경로
-            
+            slide_path: Slide file path
+
         Returns:
-            (슬라이드 객체, 메시지)
+            (slide object, message)
         """
         try:
             slide = openslide.OpenSlide(slide_path)
-            return slide, "슬라이드 열기 완료"
+            return slide, "Slide opened successfully"
         except Exception as e:
-            return None, f"슬라이드 열기 실패: {str(e)}"
-    
+            return None, f"Failed to open slide: {str(e)}"
+
     def start_detection(self, slide: openslide.OpenSlide, roi_polygons: Optional[List] = None,
                         auto_classify_epithelial: bool = True, tissue_type: str = "Stomach",
                         image_path: Optional[str] = None):
         """
-        검출 시작
+        Start detection
 
         Args:
-            slide: OpenSlide 객체
-            roi_polygons: ROI 폴리곤 리스트 (없으면 전체 영역)
-            auto_classify_epithelial: Epithelial 자동 재분류 여부 (기본값: True)
-            tissue_type: 조직 타입 (Breast, Stomach, Other)
-            image_path: WSI 파일 경로 (병렬 I/O 활성화)
+            slide: OpenSlide object
+            roi_polygons: ROI polygon list (entire area if None)
+            auto_classify_epithelial: Whether to auto-reclassify epithelial cells (default: True)
+            tissue_type: Tissue type (Breast, Stomach, Other)
+            image_path: WSI file path (enables parallel I/O)
         """
         detection = self._ensure_detection_module()
 
         if not self.is_model_loaded():
-            raise RuntimeError("모델이 로드되지 않았습니다.")
+            raise RuntimeError("Model is not loaded.")
 
         detection.run_detection(slide, roi_polygons,
                                 auto_classify_epithelial=auto_classify_epithelial,
                                 tissue_type=tissue_type,
                                 image_path=image_path)
-    
+
     def cancel_detection(self):
-        """진행 중인 검출 취소"""
+        """Cancel ongoing detection"""
         if self.detection_module is not None:
             self.detection_module.cancel()
-    
+
     def unload_model(self):
-        """모델 언로드 및 GPU 리소스 해제"""
+        """Unload model and release GPU resources"""
         if self.detection_module is not None:
             self.detection_module.unload_model()
             self._model_loaded = False
-    
+
     def get_detection_module(self):
-        """검출 모듈 반환 (시그널 연결용)"""
+        """Return detection module (for signal connections)"""
         return self._ensure_detection_module()
-    
+
     def format_detection_result(self, result: Dict[str, Any]) -> str:
         """
-        검출 결과를 사용자에게 표시할 문자열로 포맷
-        
+        Format detection result as a display string for the user
+
         Args:
-            result: 검출 결과 딕셔너리
-            
+            result: Detection result dictionary
+
         Returns:
-            포맷된 결과 문자열
+            Formatted result string
         """
         num_cells = result.get('num_cells', 0)
-        message = f"세포 검출 완료\n{result.get('message', '')}"
-        
-        # 클래스별 카운트 표시
+        message = f"Cell detection complete\n{result.get('message', '')}"
+
+        # Display per-class counts
         class_counts = result.get('class_counts', {})
         total_from_classes = 0
-        
+
         if class_counts:
-            message += "\n\n클래스별 검출 수:"
+            message += "\n\nDetection count by class:"
             for cls_name, count in class_counts.items():
                 if count > 0:
                     message += f"\n  {cls_name}: {count:,}"
                     total_from_classes += count
-            
-            # 합계 표시
-            message += f"\n\n클래스별 합계: {total_from_classes:,}"
-            message += f"\n전체 세포 수: {num_cells:,}"
-            
+
+            # Display totals
+            message += f"\n\nClass subtotal: {total_from_classes:,}"
+            message += f"\nTotal cells: {num_cells:,}"
+
             if total_from_classes != num_cells:
-                message += f"\n⚠️ 카운트 불일치 감지!"
-        
+                message += f"\nCount mismatch detected!"
+
         return message
-    
+
     def format_detection_progress(self, status: str) -> str:
         """
-        검출 진행 상태를 사용자에게 표시할 문자열로 포맷 (진행바 포함)
-        
+        Format detection progress as a display string for the user (with progress bar)
+
         Args:
-            status: 상태 메시지
-            
+            status: Status message
+
         Returns:
-            포맷된 진행 상태 문자열
+            Formatted progress string
         """
-        if "패치" in status and "/" in status:
+        if "patch" in status.lower() and "/" in status:
             try:
                 parts = status.split("|")
                 patch_info = parts[0].strip()
-                
-                # 진행률 추출
+
+                # Extract progress
                 nums = patch_info.split()[1].split("/")
                 current = int(nums[0])
                 total = int(nums[1])
                 percent = (current / total) * 100
-                
-                # 텍스트 기반 진행바
+
+                # Text-based progress bar
                 bar_length = 30
                 filled = int(bar_length * current / total)
-                bar = "█" * filled + "░" * (bar_length - filled)
-                
-                return f"""세포 검출 진행 중...
+                bar = "\u2588" * filled + "\u2591" * (bar_length - filled)
 
-[패치 처리]
+                return f"""Cell detection in progress...
+
+[Patch Processing]
 {bar} {percent:.1f}%
 
 {status}
 """
             except:
                 pass
-        
-        return f"세포 검출 진행 중...\n\n{status}"
+
+        return f"Cell detection in progress...\n\n{status}"

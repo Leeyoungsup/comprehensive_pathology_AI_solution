@@ -1,6 +1,6 @@
 """
-유틸리티 모듈
-좌표 변환 및 기타 헬퍼 함수 제공
+Utilities module
+Provides coordinate conversion and other helper functions
 """
 
 from .coordinate_utils import (

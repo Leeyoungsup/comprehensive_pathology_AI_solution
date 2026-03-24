@@ -1,5 +1,5 @@
 """
-UI 다이얼로그 모듈
+UI Dialog Module
 """
 
 from .slide_info_dialog import SlideInfoDialog, show_slide_info_dialog

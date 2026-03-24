@@ -1,6 +1,6 @@
 """
-Pydantic 스키마 정의
-HnE Cell Detection API의 요청/응답 모델
+Pydantic schema definitions
+Request/response models for the HnE Cell Detection API
 """
 
 from __future__ import annotations
@@ -22,17 +22,17 @@ class TissueType(str, Enum):
 
 
 # ============================================================================
-# ROI 관련
+# ROI related
 # ============================================================================
 
 class PolygonROI(BaseModel):
-    """폴리곤 형태의 ROI"""
+    """Polygon-shaped ROI"""
     type: str = "Polygon"
-    coordinates: List[List[float]] = Field(..., description="[[x1,y1],[x2,y2],...] 형태의 좌표 배열")
+    coordinates: List[List[float]] = Field(..., description="Coordinate array in [[x1,y1],[x2,y2],...] format")
 
 
 class RectangleROI(BaseModel):
-    """사각형 형태의 ROI"""
+    """Rectangle-shaped ROI"""
     type: str = "Rectangle"
     x: float
     y: float
@@ -44,16 +44,16 @@ ROIItem = Union[PolygonROI, RectangleROI]
 
 
 # ============================================================================
-# Cell 결과
+# Cell results
 # ============================================================================
 
 class CellDetectionItem(BaseModel):
-    """개별 검출 세포"""
-    x: float = Field(..., description="WSI level-0 X 좌표")
-    y: float = Field(..., description="WSI level-0 Y 좌표")
-    cls_id: int = Field(..., ge=0, le=7, description="클래스 ID (0-7)")
-    cls_name: str = Field(..., description="클래스명")
-    confidence: float = Field(..., ge=0.0, le=1.0, description="검출 confidence")
+    """Individual detected cell"""
+    x: float = Field(..., description="WSI level-0 X coordinate")
+    y: float = Field(..., description="WSI level-0 Y coordinate")
+    cls_id: int = Field(..., ge=0, le=7, description="Class ID (0-7)")
+    cls_name: str = Field(..., description="Class name")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="Detection confidence")
 
 
 # ============================================================================
@@ -84,7 +84,7 @@ CLASS_COLORS = {
 
 
 class EpithelialBreakdown(BaseModel):
-    """Epithelial 재분류 상세"""
+    """Epithelial reclassification details"""
     total_original_epithelial: int = 0
     reclassified_to_tumor: int = 0
     reclassified_to_benign: int = 0
@@ -92,7 +92,7 @@ class EpithelialBreakdown(BaseModel):
 
 
 class DetectionSummary(BaseModel):
-    """검출 결과 요약"""
+    """Detection result summary"""
     total_cells: int = 0
     class_counts: Dict[str, int] = Field(
         default_factory=lambda: {name: 0 for name in CLASS_NAMES.values()}
@@ -101,7 +101,7 @@ class DetectionSummary(BaseModel):
 
 
 class ImageMetadata(BaseModel):
-    """이미지 메타데이터"""
+    """Image metadata"""
     image_name: str = ""
     image_dimensions: List[int] = Field(default_factory=lambda: [0, 0])
     mpp: float = 0.25
@@ -117,7 +117,7 @@ class ImageMetadata(BaseModel):
 # ============================================================================
 
 class SegmentationResult(BaseModel):
-    """Segmentation 마스크 결과"""
+    """Segmentation mask result"""
     mask_shape: List[int] = Field(default_factory=list)
     output_mpp: float = 4.0
     wsi_mpp: float = 0.25
@@ -134,7 +134,7 @@ class SegmentationResult(BaseModel):
 # ============================================================================
 
 class DetectionResponse(BaseModel):
-    """검출 성공 응답"""
+    """Detection success response"""
     status: str = "success"
     task_id: str = ""
     processing_time_sec: float = 0.0
@@ -142,7 +142,7 @@ class DetectionResponse(BaseModel):
     summary: DetectionSummary = Field(default_factory=DetectionSummary)
     cells: List[CellDetectionItem] = Field(default_factory=list)
     segmentation: Optional[SegmentationResult] = None
-    saved_path: Optional[str] = Field(None, description="결과 JSON 저장 경로 (output_path 지정 시)")
+    saved_path: Optional[str] = Field(None, description="Result JSON save path (when output_path is specified)")
 
 
 
@@ -151,7 +151,7 @@ class DetectionResponse(BaseModel):
 # ============================================================================
 
 class ModelInfo(BaseModel):
-    """모델 정보"""
+    """Model information"""
     id: str
     name: str
     version: str
@@ -166,7 +166,7 @@ class ModelInfo(BaseModel):
 
 
 class ModelsResponse(BaseModel):
-    """모델 목록 응답"""
+    """Model list response"""
     models: List[ModelInfo] = Field(default_factory=list)
 
 
@@ -175,7 +175,7 @@ class ModelsResponse(BaseModel):
 # ============================================================================
 
 class GPUInfo(BaseModel):
-    """GPU 정보"""
+    """GPU information"""
     available: bool = False
     device: Optional[str] = None
     memory_total_gb: Optional[float] = None
@@ -184,7 +184,7 @@ class GPUInfo(BaseModel):
 
 
 class HealthResponse(BaseModel):
-    """서비스 상태 응답"""
+    """Service status response"""
     status: str = "healthy"
     version: str = "1.0.0"
     gpu: GPUInfo = Field(default_factory=GPUInfo)
@@ -197,13 +197,13 @@ class HealthResponse(BaseModel):
 # ============================================================================
 
 class ErrorDetail(BaseModel):
-    """에러 상세"""
+    """Error details"""
     code: str
     message: str
     detail: Optional[str] = None
 
 
 class ErrorResponse(BaseModel):
-    """에러 응답"""
+    """Error response"""
     status: str = "error"
     error: ErrorDetail
