@@ -313,9 +313,9 @@ class WSISegmentationModel:
             valid_patch_coords = patch_coords
 
         n_valid = len(valid_patch_coords)
-        print(f"유효 패치: {n_valid} / {total_patches} (배경 {total_patches - n_valid}개 사전 스킵)")
+        print(f"Valid patches: {n_valid} / {total_patches} (Background skipped: {total_patches - n_valid})")
         if status_callback:
-            status_callback(f"유효 패치 {n_valid}개 확인 완료, 추론 시작...")
+            status_callback(f"Valid patches {n_valid} confirmed, starting inference...")
 
         # level-0 좌표 → output 해상도 변환 비율 (루프 밖에서 1회 계산)
         combined_scale = read_scale * output_scale
@@ -415,10 +415,10 @@ class WSISegmentationModel:
                 elapsed = time.time() - start_time
                 if pct > 0.01 and elapsed > 1.0:
                     remaining = int(elapsed / pct * (1.0 - pct))
-                    eta_str = f"{remaining // 60}분 {remaining % 60}초" if remaining >= 60 else f"{remaining}초"
-                    msg = f"Segmentation {processed_valid}/{n_valid} 패치 처리 중 (~{eta_str} 남음)"
+                    eta_str = f"{remaining // 60} min {remaining % 60} sec" if remaining >= 60 else f"{remaining} sec"
+                    msg = f"Segmentation {processed_valid}/{n_valid} patches processed (~{eta_str} remaining)"
                 else:
-                    msg = f"Segmentation {processed_valid}/{n_valid} 패치 처리 중..."
+                    msg = f"Segmentation {processed_valid}/{n_valid} patches processing..."
                 if status_callback:
                     status_callback(msg)
                 if progress_callback:
@@ -478,7 +478,7 @@ class EpithelialClassificationWorker(QThread):
         """Execute the reclassification pipeline"""
         try:
             # Step 1: Run segmentation (0-50%)
-            self.status.emit("WSI segmentation 실행 중...")
+            self.status.emit("WSI segmentation running...")
 
             def seg_progress_callback(p):
                 if not self.is_cancelled:
@@ -492,7 +492,7 @@ class EpithelialClassificationWorker(QThread):
             if self.is_cancelled:
                 return
 
-            self.status.emit("Epithelial cell 재분류 중...")
+            self.status.emit("Reclassifying epithelial cells...")
             self.progress.emit(60)
 
             # Step 2: Get WSI MPP
@@ -525,14 +525,14 @@ class EpithelialClassificationWorker(QThread):
                 'class_counts': stats['class_counts'],
                 'epithelial_breakdown': stats['epithelial_breakdown'],
                 'segmentation_metadata': seg_metadata,
-                'message': f'총 {len(reclassified_cells):,}개 세포 검출 및 재분류 완료'
+                'message': f'Detection and reclassification complete: {len(reclassified_cells):,} cells'
             }
 
             self.finished.emit(result)
 
         except Exception as e:
             import traceback
-            self.error.emit(f"재분류 중 오류: {str(e)}\n{traceback.format_exc()}")
+            self.error.emit(f"Reclassification error: {str(e)}\n{traceback.format_exc()}")
 
     def _reclassify_epithelial_cells(self, cells, prediction_mask, wsi_mpp, output_mpp):
         """
@@ -698,7 +698,7 @@ class EpithelialClassifier(QObject):
             )
             return True
         except Exception as e:
-            self.classificationError.emit(f"Segmentation 모델 로드 실패: {str(e)}")
+            self.classificationError.emit(f"Segmentation model load failed: {str(e)}")
             return False
 
     def run_classification(self, slide, detection_cells):
@@ -710,11 +710,11 @@ class EpithelialClassifier(QObject):
             detection_cells: List of detected cells from YOLOv11
         """
         if self.segmentation_model is None:
-            self.classificationError.emit("Segmentation 모델이 로드되지 않았습니다.")
+            self.classificationError.emit("Segmentation model not loaded.")
             return
 
         if self.worker and self.worker.isRunning():
-            self.classificationError.emit("이미 재분류 작업이 실행 중입니다.")
+            self.classificationError.emit("Reclassification is already running.")
             return
 
         self.worker = EpithelialClassificationWorker(
@@ -805,7 +805,7 @@ class TumorSegmentationWorker(QThread):
             else:
                 model_path = project_root / "model" / "HnE_ST_segmentation.pt"
 
-            self.status.emit("Segmentation 모델 로딩 중...")
+            self.status.emit("Loading segmentation model...")
             self.progress.emit(1)
 
             seg_model = WSISegmentationModel(
@@ -818,7 +818,7 @@ class TumorSegmentationWorker(QThread):
             if self.is_cancelled:
                 return
 
-            self.status.emit("슬라이드 로딩 중...")
+            self.status.emit("Loading slide...")
             slide = openslide.OpenSlide(self.image_path)
 
             def progress_callback(pct):
@@ -829,7 +829,7 @@ class TumorSegmentationWorker(QThread):
                 if not self.is_cancelled:
                     self.status.emit(msg)
 
-            self.status.emit("Tumor Segmentation 실행 중...")
+            self.status.emit("Running Tumor Segmentation...")
             prediction_mask, metadata = seg_model.predict_wsi(
                 slide,
                 patch_size=512,
@@ -854,7 +854,7 @@ class TumorSegmentationWorker(QThread):
 
         except Exception as e:
             import traceback
-            self.error.emit(f"Segmentation 실패: {str(e)}\n{traceback.format_exc()}")
+            self.error.emit(f"Segmentation failed: {str(e)}\n{traceback.format_exc()}")
 
         finally:
             # GPU 메모리 및 슬라이드 정리

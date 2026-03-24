@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Read(//c/Users/liive/OneDrive/Desktop/project/**)",
-      "Bash(grep -r -n ^[^:]*[uAC00-uD7AF] --include=*.py .)"
+      "Bash(grep -r -n ^[^:]*[uAC00-uD7AF] --include=*.py .)",
+      "Bash(/tmp/korean_text_analysis.txt:*)",
+      "Read(//tmp/**)"
     ]
   }
 }

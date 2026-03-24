@@ -66,7 +66,7 @@ Best mAP@0.5:0.95: {max(val_maps):.4f} (Epoch {val_maps.index(max(val_maps))+1})
     # 저장
     save_path = os.path.join(save_dir, f'training_progress_epoch_{epoch}.png')
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
-    print(f"📈 학습 진행 그래프 저장: {save_path}")
+    print(f"📈 Training progress graph saved: {save_path}")
     
     plt.show()
     plt.close()
@@ -75,7 +75,7 @@ Best mAP@0.5:0.95: {max(val_maps):.4f} (Epoch {val_maps.index(max(val_maps))+1})
 def visualize_ground_truth_and_prediction_separately(model, dataset, idx=0, conf_threshold=0.1, iou_threshold=0.3, epoch=None, save_dir=None):
     """실제 라벨과 예측 라벨을 subplot으로 좌우에 표시하는 함수"""
     if len(dataset) <= idx:
-        print(f"경고: 데이터셋이 비어 있거나 idx {idx}가 데이터셋 크기({len(dataset)})보다 큽니다.")
+        print(f"Warning: Dataset is empty or idx {idx} exceeds dataset size ({len(dataset)}).")
         return
     
     model.eval()
@@ -200,7 +200,7 @@ def visualize_ground_truth_and_prediction_separately(model, dataset, idx=0, conf
     if save_dir and epoch:
         save_path = os.path.join(save_dir, f'validation_comparison_epoch_{epoch}.png')
         plt.savefig(save_path, dpi=150, bbox_inches='tight')
-        print(f"✅ 비교 이미지 저장: {save_path}")
+        print(f"✅ Comparison image saved: {save_path}")
     
     # plt.show()
     plt.clf()
@@ -274,7 +274,7 @@ def compute_validation_metrics(model, val_loader, device, params):
                     target = torch.cat(tensors=(cls_reshaped, box_xyxy), dim=1)
                     metric = util.compute_metric(output[:, :6], target, iou_v)
                 except Exception as e:
-                    print(f"메트릭 계산 중 오류 (건너뛰기): {e}")
+                    print(f"Metric calculation error (skipping): {e}")
                     continue
                 
                 # Append
@@ -309,7 +309,7 @@ def compute_validation_metrics(model, val_loader, device, params):
                             concatenated = np.concatenate(elements, axis=0)
                             stats.append(concatenated)
                         except ValueError as ve:
-                            print(f"Concatenation 오류 (인덱스 {i}): {ve}")
+                            print(f"Concatenation error (index {i}): {ve}")
                             stats.append(np.array([]))
                     else:
                         stats.append(np.array([]))
@@ -320,15 +320,15 @@ def compute_validation_metrics(model, val_loader, device, params):
             if len(stats) == 4 and all(isinstance(s, np.ndarray) for s in stats):
                 tp, fp, m_pre, m_rec, map50, mean_ap = util.compute_ap(*stats, plot=False, names=params["names"])
             else:
-                print("메트릭 통계 생성 실패")
+                print("Metric statistics generation failed")
                 m_pre, m_rec, map50, mean_ap = 0, 0, 0, 0
                 
         except Exception as e:
-            print(f"mAP 계산 중 오류: {e}")
-            print(f"메트릭 개수: {len(metrics)}")
+            print(f"mAP calculation error: {e}")
+            print(f"Metric count: {len(metrics)}")
             if len(metrics) > 0:
-                print(f"첫 번째 메트릭 구조: {[type(x) for x in metrics[0]]}")
-                print(f"첫 번째 메트릭 크기: {[x.shape if hasattr(x, 'shape') else len(x) if hasattr(x, '__len__') else 'scalar' for x in metrics[0]]}")
+                print(f"First metric structure: {[type(x) for x in metrics[0]]}")
+                print(f"First metric size: {[x.shape if hasattr(x, 'shape') else len(x) if hasattr(x, '__len__') else 'scalar' for x in metrics[0]]}")
             m_pre, m_rec, map50, mean_ap = 0, 0, 0, 0
     
     return m_pre, m_rec, map50, mean_ap
@@ -339,7 +339,7 @@ def compute_validation_metrics_with_kappa(model, val_loader, device, params):
     try:
         from sklearn.metrics import cohen_kappa_score
     except ImportError:
-        print("경고: scikit-learn이 설치되지 않아 Cohen's Kappa를 계산할 수 없습니다.")
+        print("Warning: scikit-learn is not installed, cannot calculate Cohen's Kappa.")
         precision, recall, map50, mean_ap = compute_validation_metrics(model, val_loader, device, params)
         return precision, recall, map50, mean_ap, 0.0
     
@@ -406,7 +406,7 @@ def compute_validation_metrics_with_kappa(model, val_loader, device, params):
         else:
             kappa = 0.0
     except Exception as e:
-        print(f"Cohen's Kappa 계산 오류: {e}")
+        print(f"Cohen's Kappa calculation error: {e}")
         kappa = 0.0
     
     return precision, recall, map50, mean_ap, kappa
@@ -433,7 +433,7 @@ def quick_kappa_test(model, val_loader, device):
     try:
         from sklearn.metrics import cohen_kappa_score
     except ImportError:
-        print("경고: scikit-learn이 설치되지 않아 Cohen's Kappa를 계산할 수 없습니다.")
+        print("Warning: scikit-learn is not installed, cannot calculate Cohen's Kappa.")
         return 0.0
         
     model.eval()
@@ -468,8 +468,8 @@ def quick_kappa_test(model, val_loader, device):
         else:
             quick_kappa = 0.0
     except Exception as e:
-        print(f"빠른 Kappa 계산 오류: {e}")
+        print(f"Quick Kappa calculation error: {e}")
         quick_kappa = 0.0
     
-    print(f"📊 빠른 Cohen's Kappa 측정: {quick_kappa:.4f} ({get_kappa_interpretation(quick_kappa)})")
+    print(f"📊 Quick Cohen's Kappa: {quick_kappa:.4f} ({get_kappa_interpretation(quick_kappa)})")
     return quick_kappa

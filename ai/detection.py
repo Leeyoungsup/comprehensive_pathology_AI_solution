@@ -200,7 +200,7 @@ class DetectionWorker(QThread):
             import time
             start_total = time.time()
             
-            self.status.emit("검출 시작...")
+            self.status.emit("Starting detection...")
             self.progress.emit(1)
 
             # numpy 청크 누적 (list-of-dicts 대신 사용 → Python GC 압력 제거)
@@ -210,22 +210,22 @@ class DetectionWorker(QThread):
             _chunks_conf: list[np.ndarray] = []
             
             # 슬라이드 크기 가져오기 (openslide)
-            self.status.emit("슬라이드 정보 확인 중...")
+            self.status.emit("Checking slide info...")
             width, height = self.slide.dimensions
             
-            self.status.emit(f"슬라이드 크기: {width}x{height}")
+            self.status.emit(f"Slide size: {width}x{height}")
             self.progress.emit(3)
             
             # 마스크 생성 (조직 영역만 처리)
-            self.status.emit("조직 영역 감지 중... (썸네일 생성)")
+            self.status.emit("Detecting tissue regions... (generating thumbnail)")
             start_mask = time.time()
             thumb_mask = self._create_tissue_mask()
             mask_time = time.time() - start_mask
-            self.status.emit(f"조직 마스크 생성 완료 ({mask_time:.2f}s)")
+            self.status.emit(f"Tissue mask created ({mask_time:.2f}s)")
             self.progress.emit(5)
             
             # ── Pre-scan: 조직+ROI 통과 패치 사전 집계 ──
-            self.status.emit("유효 패치 수 계산 중...")
+            self.status.emit("Counting valid patches...")
             valid_patch_list = []
             for pr in range(width // self.image_size - 1):
                 for pc in range(height // self.image_size - 1):
@@ -241,7 +241,7 @@ class DetectionWorker(QThread):
 
             n_valid = len(valid_patch_list)
             total_grid = (width // self.image_size) * (height // self.image_size)
-            self.status.emit(f"유효 패치 {n_valid}개 확인 완료 (전체 {total_grid}개 중)")
+            self.status.emit(f"Found {n_valid} valid patches (out of {total_grid} total)")
 
             detected_cells_count = 0
             processed_valid = 0
@@ -314,7 +314,7 @@ class DetectionWorker(QThread):
                                         if self.is_cancelled:
                                             return
                 except Exception as e:
-                    print(f"I/O 프로듀서 오류: {e}")
+                    print(f"I/O producer error: {e}")
                 finally:
                     producer_done.set()
                     prefetch_queue.put(None)  # sentinel
@@ -364,22 +364,22 @@ class DetectionWorker(QThread):
                     remaining = n_valid - processed_valid
                     eta = remaining / patches_per_sec if patches_per_sec > 0 else 0
                     if eta >= 60:
-                        eta_str = f"{int(eta) // 60}분 {int(eta) % 60}초"
+                        eta_str = f"{int(eta) // 60}m {int(eta) % 60}s"
                     else:
-                        eta_str = f"{int(eta)}초"
+                        eta_str = f"{int(eta)}s"
                     self.status.emit(
-                        f"패치 {processed_valid}/{n_valid} | 세포:{detected_cells_count}개 "
-                        f"| {patches_per_sec:.1f}it/s | ~{eta_str} 남음"
+                        f"Patch {processed_valid}/{n_valid} | Cells: {detected_cells_count} "
+                        f"| {patches_per_sec:.1f}it/s | ~{eta_str} remaining"
                     )
                     last_update_time = current_time
 
             producer_thread.join(timeout=10)
 
             if self.is_cancelled:
-                self.error.emit("검출이 취소되었습니다.")
+                self.error.emit("Detection cancelled.")
                 return
 
-            self.status.emit(f"결과 정리 중... ({detected_cells_count}개 검출)")
+            self.status.emit(f"Finalizing results... ({detected_cells_count} detected)")
             self.progress.emit(50)
 
             # 청크 병합 → 연속 numpy 배열
@@ -400,10 +400,10 @@ class DetectionWorker(QThread):
             if self.auto_classify_epithelial:
                 epithelial_count = int(np.sum(all_cls == 1))
                 if epithelial_count > 0:
-                    self.status.emit(f"Epithelial 세포 재분류 시작... ({epithelial_count}개)")
+                    self.status.emit(f"Starting Epithelial cell reclassification... ({epithelial_count} cells)")
                     self._run_epithelial_classification(all_x, all_y, all_cls)
                 else:
-                    self.status.emit("Epithelial 세포가 없어 재분류를 건너뜁니다.")
+                    self.status.emit("No Epithelial cells found, skipping reclassification.")
 
             # 결과 정리 (numpy 배열 기반)
             class_counts = self._count_by_class(all_cls)
@@ -424,7 +424,7 @@ class DetectionWorker(QThread):
                 'cells': all_cells,
                 'num_cells': n_cells,
                 'class_counts': class_counts,
-                'message': f'총 {n_cells}개 세포 검출 완료 (재분류 포함)',
+                'message': f'Detection complete: {n_cells} cells detected (including reclassification)',
                 'seg_mask': getattr(self, 'last_prediction_mask', None),
                 'seg_metadata': getattr(self, 'last_seg_metadata', None),
                 'seg_class_names': getattr(self, 'last_seg_class_names', None),
@@ -436,7 +436,7 @@ class DetectionWorker(QThread):
             
         except Exception as e:
             import traceback
-            self.error.emit(f"병변 검출 중 오류 발생: {str(e)}\n{traceback.format_exc()}")
+            self.error.emit(f"Error during lesion detection: {str(e)}\n{traceback.format_exc()}")
     
     def _create_tissue_mask(self):
         """조직 영역 마스크 생성 (고속 최적화)"""
@@ -468,7 +468,7 @@ class DetectionWorker(QThread):
             return mask
             
         except Exception as e:
-            print(f"마스크 생성 실패: {e}")
+            print(f"Mask creation failed: {e}")
             # 실패 시 전체 영역 처리
             width, height = self.slide.dimensions
             return np.ones((height // 64, width // 64), dtype=np.uint8) * 255
@@ -531,7 +531,7 @@ class DetectionWorker(QThread):
             # .copy()로 numpy 배열 해제 후에도 텐서가 유효하도록 보장
             return torch.from_numpy(patch.copy()).permute(2, 0, 1).float() / 255.
         except Exception as e:
-            print(f"패치 읽기 오류 ({patch_x}, {patch_y}): {e}")
+            print(f"Patch read error ({patch_x}, {patch_y}): {e}")
             return None
 
     def _infer_batch(self, batch_coords, batch_tensors):
@@ -605,7 +605,7 @@ class DetectionWorker(QThread):
 
         except Exception as e:
             import traceback
-            print(f"배치 추론 오류: {e}\n{traceback.format_exc()}")
+            print(f"Batch inference error: {e}\n{traceback.format_exc()}")
 
         if not batch_xs:
             return _ef, _ef.copy(), _ei, _ef.copy()
@@ -681,7 +681,7 @@ class DetectionWorker(QThread):
                         cells.append(cell_data)
         
         except Exception as e:
-            print(f"패치 처리 오류 ({start_x}, {start_y}): {e}")
+            print(f"Patch processing error ({start_x}, {start_y}): {e}")
         
         return cells
     
@@ -790,7 +790,7 @@ class DetectionWorker(QThread):
                 thumb = self.slide.get_thumbnail((target_size, target_size))
                 return np.array(thumb.convert('RGB')), None
         except Exception as e:
-            print(f"썸네일 생성 실패: {e}")
+            print(f"Thumbnail generation failed: {e}")
             return None, None
 
     def _run_epithelial_classification(self, x, y, cls_arr):
@@ -806,10 +806,10 @@ class DetectionWorker(QThread):
         try:
             from ai.epithelial_classifier import WSISegmentationModel
             if self.tissue_type == "Other":
-                self.status.emit("조직 타입이 'Other'로 설정되어 있어 재분류를 건너뜁니다.")
+                self.status.emit("Tissue type is set to 'Other', skipping reclassification.")
                 return
 
-            self.status.emit("Segmentation 모델 로딩 중...")
+            self.status.emit("Loading segmentation model...")
             self.progress.emit(52)
 
             from pathlib import Path
@@ -829,7 +829,7 @@ class DetectionWorker(QThread):
                     device=self.device
                 )
             except (FileNotFoundError, ImportError) as e:
-                self.status.emit(f"Segmentation 모델 로드 실패, 재분류 건너뜀: {str(e)}")
+                self.status.emit(f"Segmentation model load failed, skipping reclassification: {str(e)}")
                 return
 
             # ROI bounds 계산 (ROI가 있으면)
@@ -845,7 +845,7 @@ class DetectionWorker(QThread):
                     max_x = max(max_x, max(xs_)); max_y = max(max_y, max(ys_))
                 roi_bounds = (int(min_x), int(min_y), int(max_x), int(max_y))
 
-            self.status.emit("WSI Segmentation 실행 중...")
+            self.status.emit("Running WSI Segmentation...")
 
             def progress_callback(progress_pct):
                 self.progress.emit(55 + int(progress_pct * 0.35))
@@ -867,7 +867,7 @@ class DetectionWorker(QThread):
             self.last_seg_metadata = metadata
             self.last_seg_class_names = seg_model.class_names
 
-            self.status.emit("Epithelial 세포 재분류 중...")
+            self.status.emit("Reclassifying Epithelial cells...")
             self.progress.emit(92)
 
             wsi_mpp = self.origin_mpp
@@ -918,7 +918,7 @@ class DetectionWorker(QThread):
             # 4단계: cls_arr in-place 업데이트 (2=Benign→7, else Tumor→6)
             cls_arr[epi_indices] = np.where(seg_vals == 2, 7, 6).astype(np.int32)
 
-            self.status.emit(f"Epithelial 재분류 완료 ({len(epi_indices)}개)")
+            self.status.emit(f"Epithelial reclassification complete ({len(epi_indices)} cells)")
             self.progress.emit(98)
 
             del seg_model
@@ -927,8 +927,8 @@ class DetectionWorker(QThread):
 
         except Exception as e:
             import traceback
-            print(f"Epithelial 재분류 실패: {e}\n{traceback.format_exc()}")
-            self.status.emit(f"재분류 실패, 원본 결과 사용: {str(e)}")
+            print(f"Epithelial reclassification failed: {e}\n{traceback.format_exc()}")
+            self.status.emit(f"Reclassification failed, using original results: {str(e)}")
 
     def cancel(self):
         """작업 취소"""
@@ -979,7 +979,7 @@ class CellDetection(QObject):
             
             if model_path:
                 if not os.path.exists(model_path):
-                    error_msg = f"모델 파일을 찾을 수 없습니다: {model_path}"
+                    error_msg = f"Model file not found: {model_path}"
                     self.detectionError.emit(error_msg)
                     return False
 
@@ -990,7 +990,7 @@ class CellDetection(QObject):
             return True
             
         except Exception as e:
-            self.detectionError.emit(f"모델 로드 실패: {str(e)}")
+            self.detectionError.emit(f"Model load failed: {str(e)}")
             return False
     
     def run_detection(self, slide, roi_polygons=None, auto_classify_epithelial=True, tissue_type="Stomach", image_path=None):
@@ -1005,7 +1005,7 @@ class CellDetection(QObject):
             image_path: WSI 파일 경로 (병렬 I/O 활성화, None이면 단일 슬라이드 사용)
         """
         if self.model is None:
-            self.detectionError.emit("모델이 로드되지 않았습니다.")
+            self.detectionError.emit("Model is not loaded.")
             return
 
         if self.worker and self.worker.isRunning():
@@ -1109,7 +1109,7 @@ def save_results_to_xml(cells, output_path):
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(pretty_xml)
     
-    print(f"XML 저장 완료: {output_path}")
+    print(f"XML saved: {output_path}")
 
 
 class DetectionOverlay:

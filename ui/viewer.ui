@@ -11,7 +11,7 @@
    </rect>
   </property>
   <property name="windowTitle">
-   <string>병리 이미지 분석 시스템</string>
+   <string>Pathology Image Analysis System</string>
   </property>
   <widget class="QWidget" name="centralwidget">
    <layout class="QVBoxLayout" name="verticalLayout">
@@ -31,7 +31,7 @@
            </size>
           </property>
           <property name="text">
-           <string>이미지 뷰어 영역</string>
+           <string>Image Viewer Area</string>
           </property>
           <property name="alignment">
            <set>Qt::AlignCenter</set>
@@ -67,7 +67,7 @@
         <item>
          <widget class="QGroupBox" name="groupBox">
           <property name="title">
-           <string>AI 분석</string>
+           <string>AI Analysis</string>
           </property>
           <layout class="QVBoxLayout" name="verticalLayout_4">
            <item>
@@ -83,7 +83,7 @@
                <item>
                 <widget class="QGroupBox" name="tissueTypeGroup">
                  <property name="title">
-                  <string>조직 타입</string>
+                  <string>Tissue Type</string>
                  </property>
                  <layout class="QVBoxLayout" name="verticalLayout_9">
                   <item>
@@ -136,7 +136,7 @@
                   <bool>false</bool>
                  </property>
                  <property name="text">
-                  <string>조직 분할</string>
+                  <string>Tissue Segmentation</string>
                  </property>
                  <property name="visible">
                   <bool>false</bool>
@@ -149,7 +149,7 @@
                   <bool>false</bool>
                  </property>
                  <property name="text">
-                  <string>암 분류</string>
+                  <string>Cancer Classification</string>
                  </property>
                  <property name="visible">
                   <bool>false</bool>
@@ -166,7 +166,7 @@
                <item>
                 <widget class="QGroupBox" name="pdl1TissueTypeGroup">
                  <property name="title">
-                  <string>조직 타입</string>
+                  <string>Tissue Type</string>
                  </property>
                  <layout class="QVBoxLayout" name="verticalLayout_pdl1_tissue">
                   <item>
@@ -314,13 +314,13 @@
         <item>
          <widget class="QGroupBox" name="groupBox_2">
           <property name="title">
-           <string>검출 결과</string>
+           <string>Detection Results</string>
           </property>
           <layout class="QVBoxLayout" name="verticalLayout_5">
            <item>
             <widget class="QListWidget" name="resultList">
              <property name="toolTip">
-              <string>클릭하여 클래스 표시/숨김 토글</string>
+              <string>Click to toggle class visibility</string>
              </property>
             </widget>
            </item>
@@ -330,7 +330,7 @@
               <bool>false</bool>
              </property>
              <property name="text">
-              <string>결과 시각화</string>
+              <string>Visualize Results</string>
              </property>
             </widget>
            </item>
@@ -339,7 +339,7 @@
              <item>
               <widget class="QPushButton" name="btnClearResults">
                <property name="toolTip">
-                <string>검출 결과 지우기</string>
+                <string>Clear detection results</string>
                </property>
                <property name="text">
                 <string>Clear</string>
@@ -349,7 +349,7 @@
              <item>
               <widget class="QPushButton" name="btnSaveResults">
                <property name="toolTip">
-                <string>검출 결과 저장</string>
+                <string>Save detection results</string>
                </property>
                <property name="text">
                 <string>Save</string>
@@ -359,7 +359,7 @@
              <item>
               <widget class="QPushButton" name="btnLoadResults">
                <property name="toolTip">
-                <string>검출 결과 불러오기</string>
+                <string>Load detection results</string>
                </property>
                <property name="text">
                 <string>Load</string>
@@ -388,14 +388,14 @@
    </property>
    <widget class="QMenu" name="menuFile">
     <property name="title">
-     <string>파일</string>
+     <string>File</string>
     </property>
     <addaction name="actionOpenImage"/>
     <addaction name="actionSaveResults"/>
    </widget>
    <widget class="QMenu" name="menuView">
     <property name="title">
-     <string>보기</string>
+     <string>View</string>
     </property>
     <addaction name="actionZoomIn"/>
     <addaction name="actionZoomOut"/>
@@ -451,7 +451,7 @@
      <normaloff>../icon/Open.png</normaloff>../icon/Open.png</iconset>
    </property>
    <property name="text">
-    <string>이미지 열기</string>
+    <string>Open Image</string>
    </property>
   </action>
   <action name="actionSaveResults">
@@ -463,16 +463,16 @@
      <normaloff>../icon/save.png</normaloff>../icon/save.png</iconset>
    </property>
    <property name="text">
-    <string>결과 저장</string>
+    <string>Save Results</string>
    </property>
   </action>
   <action name="actionZoomIn">
    <property name="icon">
-    <iconset theme="열기">
+    <iconset theme="open">
      <normaloff>.</normaloff>.</iconset>
    </property>
    <property name="text">
-    <string>확대</string>
+    <string>Zoom In</string>
    </property>
    <property name="autoRepeat">
     <bool>false</bool>
@@ -489,7 +489,7 @@
   </action>
   <action name="actionZoomOut">
    <property name="text">
-    <string>축소</string>
+    <string>Zoom Out</string>
    </property>
    <property name="autoRepeat">
     <bool>false</bool>
@@ -504,7 +504,7 @@
      <normaloff>../icon/ScreenFill.png</normaloff>../icon/ScreenFill.png</iconset>
    </property>
    <property name="text">
-    <string>화면 맞춤</string>
+    <string>Fit to Window</string>
    </property>
   </action>
   <action name="actionSlideInfo">
@@ -513,10 +513,10 @@
      <normaloff>../icon/Info.png</normaloff>../icon/Info.png</iconset>
    </property>
    <property name="text">
-    <string>슬라이드 정보</string>
+    <string>Slide Info</string>
    </property>
    <property name="toolTip">
-    <string>슬라이드 정보 보기 (MPP, 배율, 크기 등)</string>
+    <string>View slide info (MPP, magnification, size, etc.)</string>
    </property>
   </action>
   <action name="actionSlideInfo_2">
@@ -536,7 +536,7 @@
     <string>🖊️ Polygon</string>
    </property>
    <property name="toolTip">
-    <string>Polygon 그리기 (클릭: 점 추가, 우클릭: 완성, ESC: 취소)</string>
+    <string>Draw Polygon (Click: add point, Right-click: complete, ESC: cancel)</string>
    </property>
   </action>
   <action name="actionDrawRectangle">
@@ -551,7 +551,7 @@
     <string>▭ Rectangle</string>
    </property>
    <property name="toolTip">
-    <string>사각형 그리기 (드래그로 생성, ESC: 취소)</string>
+    <string>Draw Rectangle (Drag to create, ESC: cancel)</string>
    </property>
   </action>
   <action name="actionDrawPoint">
@@ -566,7 +566,7 @@
     <string>● Point</string>
    </property>
    <property name="toolTip">
-    <string>포인트 그리기 (클릭: 점 추가, 우클릭: 종료, ESC: 취소)</string>
+    <string>Draw Point (Click: add point, Right-click: finish, ESC: cancel)</string>
    </property>
   </action>
   <action name="actionClearROI">
@@ -574,7 +574,7 @@
     <string>🗑️ Clear ROI</string>
    </property>
    <property name="toolTip">
-    <string>모든 ROI 삭제</string>
+    <string>Clear all ROIs</string>
    </property>
    <property name="autoRepeat">
     <bool>false</bool>
@@ -588,7 +588,7 @@
     <string>💾 Save ROI</string>
    </property>
    <property name="toolTip">
-    <string>ROI 저장</string>
+    <string>Save ROI</string>
    </property>
    <property name="autoRepeat">
     <bool>false</bool>
@@ -605,7 +605,7 @@
     <string>📁 Load ROI</string>
    </property>
    <property name="toolTip">
-    <string>ROI 불러오기</string>
+    <string>Load ROI</string>
    </property>
    <property name="autoRepeat">
     <bool>false</bool>
@@ -623,7 +623,7 @@
      <normaloff>../icon/cursor.png</normaloff>../icon/cursor.png</iconset>
    </property>
    <property name="toolTip">
-    <string>현재 그리기 도구 종료</string>
+    <string>Stop current drawing tool</string>
    </property>
   </action>
  </widget>

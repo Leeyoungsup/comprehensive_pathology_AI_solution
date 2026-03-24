@@ -163,7 +163,7 @@ class WSIViewWidget(QGraphicsView):
             return True
             
         except Exception as e:
-            print(f"WSI 로드 실패: {e}")
+            print(f"WSI load failed: {e}")
             import traceback
             traceback.print_exc()
             return False
@@ -186,14 +186,14 @@ class WSIViewWidget(QGraphicsView):
         # 최상위 레벨 크기 가져오기
         level = 0
         width, height = self.tile_manager.get_level_dimensions(level)
-        print(f"Fit to window: 이미지 크기 = {width}x{height}")
+        print(f"Fit to window: image size = {width}x{height}")
         
         # 화면에 맞추기
         self.fitInView(0, 0, width, height, Qt.KeepAspectRatio)
         
         # 현재 줌 레벨 계산
         self.zoom_level = self.transform().m11()
-        print(f"초기 줌 레벨: {self.zoom_level}")
+        print(f"Initial zoom level: {self.zoom_level}")
         self.update_field_of_view()
     
     def get_effective_mpp(self):

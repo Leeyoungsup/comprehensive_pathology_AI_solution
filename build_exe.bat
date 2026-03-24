@@ -1,20 +1,20 @@
 @echo off
 chcp 65001 >nul
 echo ========================================
-echo PathologyAIViewer.exe 생성
+echo Creating PathologyAIViewer.exe
 echo ========================================
 echo.
 
-echo [1/2] PyInstaller 확인...
+echo [1/2] Checking PyInstaller...
 call pip show pyinstaller >nul 2>&1
 if %errorlevel% neq 0 (
-    echo   PyInstaller 설치 중...
+    echo   Installing PyInstaller...
     call pip install pyinstaller
 )
-echo   완료
+echo   Done
 echo.
 
-echo [2/2] EXE 파일 빌드 중...
+echo [2/2] Building EXE...
 
 :: 기존 빌드 정리
 if exist build rd /s /q build
@@ -24,38 +24,38 @@ if exist PathologyAIViewer.spec del PathologyAIViewer.spec
 :: 아이콘 파일 확인
 set ICON_OPTION=
 if exist icon\app_icon.ico (
-    echo   아이콘: icon\app_icon.ico
+    echo   Icon: icon\app_icon.ico
     set ICON_OPTION=--icon=icon\app_icon.ico
 ) else (
-    echo   아이콘 없음 (기본 아이콘 사용)
+    echo   No icon (using default)
 )
 
-echo   빌드 시작...
+echo   Starting build...
 :: PyInstaller 실행
 call pyinstaller --onedir --noconsole --name=PathologyAIViewer %ICON_OPTION% --clean run_app.py
 
 if %errorlevel% neq 0 (
     echo.
-    echo   오류: 빌드 실패
+    echo   Error: build failed
     pause
     exit /b 1
 )
 
 echo.
 echo ========================================
-echo 빌드 완료!
+echo Build complete!
 echo ========================================
 echo.
-echo 생성된 파일: dist\PathologyAIViewer.exe
+echo Generated file: dist\PathologyAIViewer.exe
 echo.
-echo 다음 단계:
-echo 1. dist\PathologyAIViewer.exe를 PathologyAIViewer_Portable\ 폴더로 복사
-echo 2. PathologyAIViewer.exe 더블클릭으로 실행 (콘솔 없음)
+echo Next steps:
+echo 1. Copy dist\PathologyAIViewer.exe to PathologyAIViewer_Portable\ folder
+echo 2. Run PathologyAIViewer.exe by double clicking (no console)
 echo.
 
 :: 자동으로 복사
 if exist PathologyAIViewer_Portable (
-    echo 자동으로 Portable 폴더에 복사 중...
+    echo Copying to Portable folder automatically...
     
     :: 기존 파일/폴더 삭제
     if exist PathologyAIViewer_Portable\PathologyAIViewer.exe (
@@ -70,8 +70,8 @@ if exist PathologyAIViewer_Portable (
     if exist dist\PathologyAIViewer\_internal (
         xcopy dist\PathologyAIViewer\_internal PathologyAIViewer_Portable\_internal\ /E /I /Y /Q >nul
     )
-    echo   복사 완료: PathologyAIViewer_Portable\PathologyAIViewer.exe
-    echo   아이콘이 적용되었습니다!
+    echo   Copy complete: PathologyAIViewer_Portable\PathologyAIViewer.exe
+    echo   Icon applied!
     echo.
 )
 

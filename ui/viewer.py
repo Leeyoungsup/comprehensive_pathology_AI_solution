@@ -123,13 +123,13 @@ class PathologyViewer(QMainWindow):
         from PyQt5.QtWidgets import QCheckBox, QHBoxLayout, QWidget
 
         # 자동저장 + 자동시각화 체크박스를 나란히 배치
-        self.chkAutoSave = QCheckBox("자동저장")
+        self.chkAutoSave = QCheckBox("Auto Save")
         self.chkAutoSave.setChecked(False)
-        self.chkAutoSave.setToolTip("체크 시 AI 분석 결과를 WSI 파일 위치에 자동 저장합니다")
+        self.chkAutoSave.setToolTip("If checked, AI analysis results will be saved automatically to the WSI file location")
 
-        self.chkAutoVisualize = QCheckBox("자동 시각화")
+        self.chkAutoVisualize = QCheckBox("Auto Visualize")
         self.chkAutoVisualize.setChecked(False)
-        self.chkAutoVisualize.setToolTip("체크 시 검출 완료 후 결과 시각화 창을 자동으로 엽니다")
+        self.chkAutoVisualize.setToolTip("If checked, the result visualization window will open automatically after detection completes")
 
         chk_row = QWidget()
         chk_layout = QHBoxLayout(chk_row)
@@ -230,25 +230,25 @@ class PathologyViewer(QMainWindow):
         self.btnLoadResults.clicked.connect(self.load_detection_results)
 
     def on_tissue_type_changed(self):
-        """조직 타입 Radio button 변경 시 호출"""
+        """Called when tissue type radio button changes"""
         if self.radioBreast.isChecked():
             self.current_tissue_type = "Breast"
-            self.statusbar.showMessage("조직 타입: Breast (Epithelial 재분류 활성화)")
+            self.statusbar.showMessage("Tissue type: Breast (Epithelial reclassification enabled)")
             self.btnTumorSegmentation.setEnabled(True)
         elif self.radioStomach.isChecked():
             self.current_tissue_type = "Stomach"
-            self.statusbar.showMessage("조직 타입: Stomach (Epithelial 재분류 활성화)")
+            self.statusbar.showMessage("Tissue type: Stomach (Epithelial reclassification enabled)")
             self.btnTumorSegmentation.setEnabled(True)
         elif self.radioOther.isChecked():
             self.current_tissue_type = "Other"
-            self.statusbar.showMessage("조직 타입: Other (Epithelial 재분류 비활성화)")
+            self.statusbar.showMessage("Tissue type: Other (Epithelial reclassification disabled)")
             self.btnTumorSegmentation.setEnabled(False)
 
     def open_image(self):
         """이미지 파일 열기"""
         file_path, _ = QFileDialog.getOpenFileName(
             self,
-            "병리 이미지 선택",
+            "Select Pathology Image",
             "",
             "Image Files (*.png *.jpg *.jpeg *.tif *.tiff *.svs *.ndpi);;All Files (*)"
         )
@@ -275,15 +275,15 @@ class PathologyViewer(QMainWindow):
             self.resultList.clear()                    # 결과 리스트 초기화
             self.btnVisualization.setEnabled(False)    # 시각화 버튼 비활성화
 
-            # Progress 초기화
+            # Initialize progress
             self.progressBar.setValue(0)
             self.progressLabel.setText("AI Progress")
 
-            self.setWindowTitle(f"병리 이미지 분석 시스템 - [{file_name}]")
-            self.statusbar.showMessage(f"이미지 로드 완료: {file_name}")
+            self.setWindowTitle(f"Pathology Image Analysis System - [{file_name}]")
+            self.statusbar.showMessage(f"Image loaded: {file_name}")
         else:
-            self.statusbar.showMessage("이미지 로드 실패")
-            QMessageBox.critical(self, "오류", "이미지를 로드할 수 없습니다.")
+            self.statusbar.showMessage("Image load failed")
+            QMessageBox.critical(self, "Error", "Unable to load image.")
     
     def on_field_of_view_changed(self, fov_rect, level):
         """보이는 영역 변경 시 호출"""
@@ -301,7 +301,7 @@ class PathologyViewer(QMainWindow):
         """HnE 검출 결과 시각화 창 표시 (싱글턴 - 기존 창 닫고 열기)"""
         if not self.all_raw_cells:
             from PyQt5.QtWidgets import QMessageBox
-            QMessageBox.information(self, "알림", "표시할 검출 결과가 없습니다.")
+            QMessageBox.information(self, "Notice", "No detection results to display.")
             return
 
         if hasattr(self, '_visualization_dialog') and self._visualization_dialog and self._visualization_dialog.isVisible():
@@ -396,17 +396,17 @@ class PathologyViewer(QMainWindow):
     def run_segmentation(self):
         """조직 분할 실행"""
         if not self.current_image_path:
-            self.statusbar.showMessage("먼저 이미지를 로드해주세요.")
+            self.statusbar.showMessage("Please load an image first.")
             return
         
-        # AI 모듈 초기화 (처음 사용 시)
+        # Initialize AI module (first use)
         if self.tissue_segmentation is None:
-            self.statusbar.showMessage("조직 분할 모듈 초기화 중...")
+            self.statusbar.showMessage("Initializing tissue segmentation module...")
             from PyQt5.QtWidgets import QApplication
             QApplication.processEvents()
             self.setup_ai_modules()
         
-        self.statusbar.showMessage("조직 분할 분석 실행 중...")
+        self.statusbar.showMessage("Running tissue segmentation analysis...")
         
         tile_manager = self.wsi_viewer.get_tile_manager()
         self.tissue_segmentation.run_segmentation(self.current_image_path, tile_manager)
@@ -414,34 +414,34 @@ class PathologyViewer(QMainWindow):
     def run_classification(self):
         """암 분류 실행"""
         if not self.current_image_path:
-            self.statusbar.showMessage("먼저 이미지를 로드해주세요.")
+            self.statusbar.showMessage("Please load an image first.")
             return
         
-        # AI 모듈 초기화 (처음 사용 시)
+        # Initialize AI module (first use)
         if self.tissue_classification is None:
-            self.statusbar.showMessage("암 분류 모듈 초기화 중...")
+            self.statusbar.showMessage("Initializing cancer classification module...")
             from PyQt5.QtWidgets import QApplication
             QApplication.processEvents()
             self.setup_ai_modules()
         
-        self.statusbar.showMessage("암 분류 분석 실행 중...")
+        self.statusbar.showMessage("Running cancer classification analysis...")
         
         tile_manager = self.wsi_viewer.get_tile_manager()
         self.tissue_classification.run_classification(self.current_image_path, tile_manager)
     
     def run_detection(self):
         """병변 검출 실행 또는 중단"""
-        # 진행 중이면 중단
+        # If running, stop
         if self.is_detection_running:
-            self.btnHneCellDetection.setText("(통합)Cell Detection")
+            self.btnHneCellDetection.setText("(Integrated) Cell Detection")
             self.is_detection_running = False
             
             self.detection_service.cancel_detection()
-            self.statusbar.showMessage("검출이 중단되었습니다.")
+            self.statusbar.showMessage("Detection stopped.")
             return
-        
+
         if not self.current_image_path:
-            self.statusbar.showMessage("먼저 이미지를 로드해주세요.")
+            self.statusbar.showMessage("Please load an image first.")
             return
         
         # 기존 Segmentation 결과 제거
@@ -450,40 +450,39 @@ class PathologyViewer(QMainWindow):
         # ResultList 완전 초기화
         self.resultList.clear()
         
-        # 버튼 상태 변경
-        self.btnHneCellDetection.setText("⏸ 중단")
+        # Update button state
+        self.btnHneCellDetection.setText("⏸ Stop")
         self.is_detection_running = True
         
-        # Progress 초기화
+        # Initialize progress
         self.progressBar.setValue(0)
-        self.progressLabel.setText("초기화 중...")
+        self.progressLabel.setText("Initializing...")
         
-        # AI 모듈 초기화
-        self.statusbar.showMessage("검출 모듈 초기화 중...")
+        # Initialize AI module
+        self.statusbar.showMessage("Initializing detection module...")
         from PyQt5.QtWidgets import QApplication
         QApplication.processEvents()
         self.setup_ai_modules()
         
-        # 모델 로드
+        # Load model
         if not self.detection_service.is_model_loaded():
-            self.statusbar.showMessage("모델 로딩 중...")
+            self.statusbar.showMessage("Loading model...")
             QApplication.processEvents()
             
             success, message = self.detection_service.load_model()
             if not success:
-                self.statusbar.showMessage("모델 로드 실패")
-                QMessageBox.critical(self, "모델 로드 오류", message)
-                self.btnHneCellDetection.setText("(통합)Cell Detection")
+                self.statusbar.showMessage("Model load failed")
+                QMessageBox.critical(self, "Model Load Error", message)
+                self.btnHneCellDetection.setText("(Integrated) Cell Detection")
                 self.is_detection_running = False
                 return
             
-            self.statusbar.showMessage("모델 로드 완료")
+            self.statusbar.showMessage("Model loaded")
         
-        self.statusbar.showMessage("세포 검출 분석 실행 중...")
-        
+        self.statusbar.showMessage("Running cell detection analysis...")        
         # ROI 영역 가져오기
         roi_polygons = None
-        roi_info = "전체 슬라이드"
+        roi_info = "Entire slide"
         if self.wsi_viewer.annotation_list.annotations:
             roi_polygons = self.wsi_viewer.annotation_list.annotations
             roi_count = len(roi_polygons)
@@ -495,16 +494,16 @@ class PathologyViewer(QMainWindow):
                 type_name = ann.type.value
                 type_counts[type_name] = type_counts.get(type_name, 0) + 1
             
-            # ROI 정보 문자열 생성
-            type_strs = [f"{count}개 {type_name}" for type_name, count in type_counts.items()]
-            roi_info = f"ROI {roi_count}개 ({', '.join(type_strs)})"
+            # Build ROI info string
+            type_strs = [f"{count} {type_name}" for type_name, count in type_counts.items()]
+            roi_info = f"ROI {roi_count} ({', '.join(type_strs)})"
             
-            self.statusbar.showMessage(f"세포 검출 분석 실행 중... [{roi_info}]")
-            self.progressLabel.setText(f"검출 대상: {roi_info}")
+            self.statusbar.showMessage(f"Running cell detection analysis... [{roi_info}]")
+            self.progressLabel.setText(f"Detection target: {roi_info}")
         else:
-            self.progressLabel.setText("검출 대상: 전체 슬라이드")
+            self.progressLabel.setText("Detection target: Entire slide")
         
-        # 슬라이드 열기 (서비스 이용)
+        # Open slide (via service)
         try:
             QApplication.processEvents()
             
@@ -513,28 +512,28 @@ class PathologyViewer(QMainWindow):
             slide, message = self.detection_service.open_slide(self.current_image_path)
             
             if slide is None:
-                self.statusbar.showMessage("슬라이드 열기 실패")
-                self.btnHneCellDetection.setText("(통합)Cell Detection")
+                self.statusbar.showMessage("Failed to open slide")
+                self.btnHneCellDetection.setText("(Integrated) Cell Detection")
                 self.is_detection_running = False
                 return
             
             load_time = time.time() - start_time
-            self.statusbar.showMessage(f"WSI 로드 완료 ({load_time:.2f}s)")
+            self.statusbar.showMessage(f"WSI loaded in {load_time:.2f}s")
             QApplication.processEvents()
 
-            # 조직 타입에 따라 Epithelial 재분류 여부 결정
-            # Breast, Stomach: 재분류 활성화 / Other: 재분류 비활성화
+            # Determine epithelial reclassification based on tissue type
+            # Breast, Stomach: reclassification enabled / Other: reclassification disabled
             auto_classify = (self.current_tissue_type in ["Breast", "Stomach"])
 
-            # 검출 시작 (서비스 이용)
+            # Start detection (via service)
             self.detection_service.start_detection(slide, roi_polygons,
                                                     auto_classify_epithelial=auto_classify,
                                                     tissue_type=self.current_tissue_type,
                                                     image_path=self.current_image_path)
             
         except Exception as e:
-            self.statusbar.showMessage("검출 실행 실패")
-            self.btnHneCellDetection.setText("(통합)Cell Detection")
+            self.statusbar.showMessage("Detection execution failed")
+            self.btnHneCellDetection.setText("(Integrated) Cell Detection")
             self.is_detection_running = False
     
     def run_tumor_segmentation(self):
@@ -545,15 +544,15 @@ class PathologyViewer(QMainWindow):
             self.is_segmentation_running = False
             if self.tumor_seg_worker and self.tumor_seg_worker.isRunning():
                 self.tumor_seg_worker.cancel()
-            self.statusbar.showMessage("Segmentation이 중단되었습니다.")
+            self.statusbar.showMessage("Segmentation stopped.")
             return
 
         if not self.current_image_path:
-            self.statusbar.showMessage("먼저 이미지를 로드해주세요.")
+            self.statusbar.showMessage("Please load an image first.")
             return
 
         if self.current_tissue_type == "Other":
-            QMessageBox.warning(self, "경고", "Other 타입에서는 Tumor Segmentation을 실행할 수 없습니다.\nBreast 또는 Stomach을 선택해주세요.")
+            QMessageBox.warning(self, "Warning", "Tumor segmentation cannot be performed in Other type.\nPlease select Breast or Stomach.")
             return
 
         # 기존 Detection 결과 제거
@@ -562,12 +561,12 @@ class PathologyViewer(QMainWindow):
         self.resultList.clear()
 
         # 버튼 상태 변경
-        self.btnTumorSegmentation.setText("⏸ 중단")
+        self.btnTumorSegmentation.setText("⏸ Stop")
         self.is_segmentation_running = True
 
         # Progress 초기화
         self.progressBar.setValue(0)
-        self.progressLabel.setText("Tumor Segmentation 초기화 중...")
+        self.progressLabel.setText("Initializing Tumor Segmentation...")
 
         # ROI polygon 좌표 수집
         roi_polygons = []
@@ -604,7 +603,7 @@ class PathologyViewer(QMainWindow):
         self.tumor_seg_worker.error.connect(self.on_tumor_segmentation_error)
         self.tumor_seg_worker.start()
 
-        self.statusbar.showMessage("Tumor Segmentation 실행 중...")
+        self.statusbar.showMessage("Running Tumor Segmentation...")
 
     def on_tumor_segmentation_complete(self, result):
         """Tumor Segmentation 완료 (백그라운드 스레드에서 시그널로 수신)"""
@@ -624,8 +623,8 @@ class PathologyViewer(QMainWindow):
         self.update_segmentation_result_list()
 
         self.progressBar.setValue(100)
-        self.progressLabel.setText("Segmentation 완료")
-        self.statusbar.showMessage("Tumor Segmentation 완료")
+        self.progressLabel.setText("Segmentation complete")
+        self.statusbar.showMessage("Tumor Segmentation complete")
 
         # 자동저장
         if self.chkAutoSave.isChecked():
@@ -635,10 +634,10 @@ class PathologyViewer(QMainWindow):
         """Tumor Segmentation 에러"""
         self.is_segmentation_running = False
         self.btnTumorSegmentation.setText("Tumor Segmentation")
-        self.progressLabel.setText("Segmentation 실패")
-        self.statusbar.showMessage("Segmentation 실행 실패")
+        self.progressLabel.setText("Segmentation failed")
+        self.statusbar.showMessage("Segmentation failed")
         print(error_msg)
-        QMessageBox.critical(self, "오류", f"Segmentation 실행 실패:\n{error_msg.split(chr(10))[0]}")
+        QMessageBox.critical(self, "Error", f"Segmentation failed:\n{error_msg.split(chr(10))[0]}")
 
     def run_pdl1_detection(self):
         """PD-L1 Detection 실행 또는 중단"""
@@ -647,11 +646,11 @@ class PathologyViewer(QMainWindow):
             self.is_pdl1_running = False
             if self.pdl1_detection:
                 self.pdl1_detection.cancel()
-            self.statusbar.showMessage("PD-L1 검출이 중단되었습니다.")
+            self.statusbar.showMessage("PD-L1 detection stopped.")
             return
 
         if not self.current_image_path:
-            self.statusbar.showMessage("먼저 이미지를 로드해주세요.")
+            self.statusbar.showMessage("Please load an image first.")
             return
 
         # 기존 결과 제거
@@ -662,16 +661,16 @@ class PathologyViewer(QMainWindow):
         self.resultList.clear()
 
         # 버튼 상태 변경
-        self.btnPDL1Detection.setText("⏸ 중단")
+        self.btnPDL1Detection.setText("⏸ Stop")
         self.is_pdl1_running = True
 
         self.progressBar.setValue(0)
-        self.progressLabel.setText("PD-L1 초기화 중...")
+        self.progressLabel.setText("Initializing PD-L1...")
 
         from PyQt5.QtWidgets import QApplication
         QApplication.processEvents()
 
-        # PD-L1 모듈 초기화
+        # Initialize PD-L1 module
         if self.pdl1_detection is None:
             from ai.pdl1_detection import PDL1Detection
             self.pdl1_detection = PDL1Detection()
@@ -682,16 +681,16 @@ class PathologyViewer(QMainWindow):
 
         # 모델 로드
         if not self.pdl1_detection.is_model_loaded():
-            self.statusbar.showMessage("PD-L1 모델 로딩 중...")
+            self.statusbar.showMessage("Loading PD-L1 model...")
             QApplication.processEvents()
             if not self.pdl1_detection.load_model():
-                self.statusbar.showMessage("PD-L1 모델 로드 실패")
-                QMessageBox.critical(self, "오류", "PD-L1 모델 로드 실패")
+                self.statusbar.showMessage("PD-L1 model load failed")
+                QMessageBox.critical(self, "Error", "PD-L1 model load failed")
                 self.btnPDL1Detection.setText("PD-L1 Detection")
                 self.is_pdl1_running = False
                 return
 
-        self.statusbar.showMessage("PD-L1 검출 실행 중...")
+        self.statusbar.showMessage("Running PD-L1 detection...")
 
         # ROI 가져오기
         roi_polygons = None
@@ -703,7 +702,7 @@ class PathologyViewer(QMainWindow):
             slide = openslide.OpenSlide(self.current_image_path)
             self.pdl1_detection.run_detection(slide, roi_polygons)
         except Exception as e:
-            QMessageBox.critical(self, "오류", f"PD-L1 검출 실패:\n{str(e)}")
+            QMessageBox.critical(self, "Error", f"PD-L1 detection failed:\n{str(e)}")
             self.btnPDL1Detection.setText("PD-L1 Detection")
             self.is_pdl1_running = False
 
@@ -729,9 +728,9 @@ class PathologyViewer(QMainWindow):
         self.is_pdl1_mode = True
 
         self.progressBar.setValue(100)
-        self.progressLabel.setText("PD-L1 검출 완료")
+        self.progressLabel.setText("PD-L1 detection complete")
 
-        # 오버레이 표시
+        # Overlay display
         if cells:
             self.wsi_viewer.set_detection_results(cells, color_map=PDL1_CLASS_COLORS_RGB)
 
@@ -750,7 +749,7 @@ class PathologyViewer(QMainWindow):
             self._auto_save_pdl1_result()
 
         tps_category = self._get_tps_category(tps)
-        self.statusbar.showMessage(f"PD-L1 검출 완료 - TPS: {tps:.1f}% ({tps_category})")
+        self.statusbar.showMessage(f"PD-L1 detection complete - TPS: {tps:.1f}% ({tps_category})")
 
     def _get_tps_category(self, tps):
         """TPS 값에 따른 판정 카테고리"""
@@ -788,10 +787,10 @@ class PathologyViewer(QMainWindow):
             with open(str(save_path), 'w', encoding='utf-8') as f:
                 json.dump(result_with_meta, f, indent=2, ensure_ascii=False)
 
-            self.statusbar.showMessage(f"자동저장 완료: {save_path.name}")
-            print(f"PD-L1 자동저장 완료: {save_path}")
+            self.statusbar.showMessage(f"Auto-saved: {save_path.name}")
+            print(f"PD-L1 auto-save complete: {save_path}")
         except Exception as e:
-            print(f"PD-L1 자동저장 실패: {e}")
+            print(f"PD-L1 auto-save failed: {e}")
 
     def update_segmentation_result_list(self):
         """Segmentation 결과를 리스트에 표시"""
@@ -912,19 +911,19 @@ class PathologyViewer(QMainWindow):
                 item.setData(Qt.UserRole, ('segmentation', cls_id))
                 item.setFlags(item.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
                 item.setCheckState(Qt.Checked)
-                item.setToolTip(f"{cls_name} 영역 표시/숨김")
+                item.setToolTip(f"Show/hide {cls_name} region")
                 self.resultList.addItem(item)
         
         self.resultList.blockSignals(False)
     
     def on_segmentation_complete(self, result):
         """조직 분할 완료"""
-        self.statusbar.showMessage(f"조직 분할 완료 - {result.get('message', '')}")
+        self.statusbar.showMessage(f"Tissue segmentation complete - {result.get('message', '')}")
     
     def on_classification_complete(self, result):
         """암 분류 완료"""
         classification = result.get('classification', '')
-        self.statusbar.showMessage(f"암 분류 완료 - {classification}")
+        self.statusbar.showMessage(f"Cancer classification complete - {classification}")
     
     def on_detection_complete(self, result):
         """병변 검출 완료"""
@@ -952,12 +951,12 @@ class PathologyViewer(QMainWindow):
         # 시각화 다이얼로그용 사전 계산 배열 저장
         self._plot_arrays = result.get('plot_arrays', None)
 
-        # Progress 초기화
+        # Initialize progress
         self.progressBar.setValue(100)
-        self.progressLabel.setText("검출 완료")
+        self.progressLabel.setText("Detection complete")
 
-        # 상태바 업데이트
-        self.statusbar.showMessage(f"세포 검출 완료 - {num_cells:,}개 검출 (GPU 해제됨)")
+        # Update status bar
+        self.statusbar.showMessage(f"Cell detection complete - {num_cells:,} cells detected (GPU released)")
 
         # 결과 리스트 업데이트 (슬라이더 포함)
         self.update_result_list(class_counts, num_cells)
@@ -974,7 +973,7 @@ class PathologyViewer(QMainWindow):
             self._auto_save_detection_result()
 
         # 버튼 상태 복원
-        self.btnHneCellDetection.setText("(통합)Cell Detection")
+        self.btnHneCellDetection.setText("(Integrated) Cell Detection")
         self.btnVisualization.setEnabled(True)
         self.is_detection_running = False
 
@@ -1025,14 +1024,14 @@ class PathologyViewer(QMainWindow):
             self.resultList.addItem(tps_item)
 
         # 전체 행
-        total_item = QListWidgetItem(f"전체: {total_filtered:,}개")
+        total_item = QListWidgetItem(f"Total: {total_filtered:,}")
         total_item.setData(Qt.UserRole, None)
         total_item.setFlags(total_item.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
         total_item.setCheckState(Qt.Checked)
         font = total_item.font()
         font.setBold(True)
         total_item.setFont(font)
-        total_item.setToolTip("전체 클래스 표시/숨김")
+        total_item.setToolTip("Show/hide all classes")
         self.resultList.addItem(total_item)
 
         # 클래스별 행 + 미니 슬라이더
@@ -1152,8 +1151,8 @@ class PathologyViewer(QMainWindow):
         self.resultList.blockSignals(True)
         for i in range(self.resultList.count()):
             item = self.resultList.item(i)
-            if item.data(Qt.UserRole) is None and "전체:" in item.text():
-                item.setText(f"전체: {len(filtered_cells):,}개")
+            if item.data(Qt.UserRole) is None and "Total:" in item.text():
+                item.setText(f"Total: {len(filtered_cells):,}")
                 break
 
         if self.is_pdl1_mode:
@@ -1166,7 +1165,7 @@ class PathologyViewer(QMainWindow):
                 if item.data(Qt.UserRole) is None and "TPS:" in item.text():
                     item.setText(f"TPS: {tps:.1f}% ({self._get_tps_category(tps)})")
                     break
-            self.statusbar.showMessage(f"TPS: {tps:.1f}% ({self._get_tps_category(tps)}) | {len(filtered_cells)}개")
+            self.statusbar.showMessage(f"TPS: {tps:.1f}% ({self._get_tps_category(tps)}) | {len(filtered_cells)} cells")
         self.resultList.blockSignals(False)
 
         # 오버레이 갱신 (set_cells 내부에서 visibility 보존됨)
@@ -1202,7 +1201,7 @@ class PathologyViewer(QMainWindow):
             else:
                 cls_name = class_names_raw.get(cls_id, "Unknown")
             
-            self.statusbar.showMessage(f"Segmentation {cls_name}: {'표시' if visible else '숨김'}")
+            self.statusbar.showMessage(f"Segmentation {cls_name}: {'Visible' if visible else 'Hidden'}")
             return
         
         # Detection 결과
@@ -1228,7 +1227,7 @@ class PathologyViewer(QMainWindow):
                 self.wsi_viewer.detection_overlay.set_class_visibility(class_id, visible)
             self.resultList.blockSignals(False)
             self.wsi_viewer.schedule_overlay_update()
-            self.statusbar.showMessage("전체 표시" if visible else "전체 숨김")
+            self.statusbar.showMessage("All classes visible" if visible else "All classes hidden")
             return
 
         # 개별 클래스
@@ -1236,7 +1235,7 @@ class PathologyViewer(QMainWindow):
         self.wsi_viewer.schedule_overlay_update()
         from ai.detection import CLASS_NAMES
         cls_name = CLASS_NAMES.get(cls_id, "Unknown")
-        self.statusbar.showMessage(f"{cls_name}: {'표시' if visible else '숨김'}")
+        self.statusbar.showMessage(f"{cls_name}: {'Visible' if visible else 'Hidden'}")
     
     def on_ai_progress(self, progress):
         """AI 작업 진행률 업데이트"""
@@ -1249,14 +1248,14 @@ class PathologyViewer(QMainWindow):
     
     def on_ai_error(self, error_msg):
         """AI 작업 에러 처리"""
-        self.statusbar.showMessage("분석 중 오류 발생")
+        self.statusbar.showMessage("Error during analysis")
         
         # 검출 버튼 상태 복원
         if hasattr(self, 'is_detection_running') and self.is_detection_running:
-            self.btnHneCellDetection.setText("(통합)Cell Detection")
+            self.btnHneCellDetection.setText("(Integrated) Cell Detection")
             self.is_detection_running = False
-        
-        QMessageBox.critical(self, "오류", error_msg)
+
+        QMessageBox.critical(self, "Error", error_msg)
     
     def save_results(self):
         """분석 결과 저장 (레거시 메뉴 액션용)"""
@@ -1265,13 +1264,13 @@ class PathologyViewer(QMainWindow):
     def clear_results(self):
         """검출/세그멘테이션 결과 지우기"""
         if not self.current_detection_result and not self.current_segmentation_result:
-            self.statusbar.showMessage("지울 결과가 없습니다")
+            self.statusbar.showMessage("No results to clear")
             return
 
         reply = QMessageBox.question(
             self,
-            "결과 지우기",
-            "AI 분석 결과를 지우시겠습니까?",
+            "Clear Results",
+            "Do you want to clear the AI analysis results?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No
         )
@@ -1298,7 +1297,7 @@ class PathologyViewer(QMainWindow):
             self.progressBar.setValue(0)
             self.progressLabel.setText("AI Progress")
 
-            self.statusbar.showMessage("분석 결과가 지워졌습니다")
+            self.statusbar.showMessage("Analysis results cleared")
     
     def _auto_save_detection_result(self):
         """Detection 결과를 WSI 파일 위치에 자동 저장"""
@@ -1330,11 +1329,11 @@ class PathologyViewer(QMainWindow):
             with open(str(save_path), 'w', encoding='utf-8') as f:
                 json.dump(result_with_meta, f, indent=2, ensure_ascii=False)
 
-            self.statusbar.showMessage(f"자동저장 완료: {save_path.name}")
-            print(f"자동저장 완료: {save_path}")
+            self.statusbar.showMessage(f"Auto-saved: {save_path.name}")
+            print(f"Auto-save complete: {save_path}")
         except Exception as e:
-            print(f"자동저장 실패: {e}")
-            self.statusbar.showMessage(f"자동저장 실패: {e}")
+            print(f"Auto-save failed: {e}")
+            self.statusbar.showMessage(f"Auto-save failed: {e}")
 
     def _auto_save_segmentation_result(self):
         """Segmentation 결과를 WSI 파일 위치에 자동 저장"""
@@ -1395,11 +1394,11 @@ class PathologyViewer(QMainWindow):
             with open(str(save_path), 'w', encoding='utf-8') as f:
                 json.dump(result_with_meta, f, indent=2, ensure_ascii=False)
 
-            self.statusbar.showMessage(f"자동저장 완료: {save_path.name}")
-            print(f"자동저장 완료: {save_path}")
+            self.statusbar.showMessage(f"Auto-saved: {save_path.name}")
+            print(f"Auto-save complete: {save_path}")
         except Exception as e:
-            print(f"Segmentation 자동저장 실패: {e}")
-            self.statusbar.showMessage(f"자동저장 실패: {e}")
+            print(f"Segmentation auto-save failed: {e}")
+            self.statusbar.showMessage(f"Auto-save failed: {e}")
 
     def save_detection_results(self):
         """AI 결과를 JSON 파일로 저장 (Detection 또는 Segmentation)"""
@@ -1410,9 +1409,9 @@ class PathologyViewer(QMainWindow):
             return
 
         if not self.current_detection_result:
-            QMessageBox.information(self, "알림", "저장할 결과가 없습니다.")
+            QMessageBox.information(self, "Notice", "No results to save.")
             return
-        
+
         # 기본 파일명 생성 (WSI 파일명에서 확장자 제거)
         default_filename = ""
         if self.current_image_path:
@@ -1421,7 +1420,7 @@ class PathologyViewer(QMainWindow):
         
         file_path, _ = QFileDialog.getSaveFileName(
             self,
-            "검출 결과 저장",
+            "Save Detection Results",
             default_filename,
             "JSON Files (*.json);;Text Files (*.txt);;All Files (*)"
         )
@@ -1459,14 +1458,14 @@ class PathologyViewer(QMainWindow):
                     with open(file_path, 'w', encoding='utf-8') as f:
                         f.write(result_text)
                 
-                self.statusbar.showMessage(f"결과 저장 완료: {Path(file_path).name}")
+                self.statusbar.showMessage(f"Results saved: {Path(file_path).name}")
             except Exception as e:
-                QMessageBox.critical(self, "오류", f"결과 저장 실패:\n{str(e)}")
+                QMessageBox.critical(self, "Error", f"Failed to save results:\n{str(e)}")
 
     def save_segmentation_results(self):
         """Segmentation 결과를 Polygon JSON으로 저장"""
         if not self.current_segmentation_result:
-            QMessageBox.information(self, "알림", "저장할 Segmentation 결과가 없습니다.")
+            QMessageBox.information(self, "Notice", "No segmentation results to save.")
             return
 
         default_filename = ""
@@ -1476,7 +1475,7 @@ class PathologyViewer(QMainWindow):
 
         file_path, _ = QFileDialog.getSaveFileName(
             self,
-            "Segmentation 결과 저장",
+            "Save Segmentation Results",
             default_filename,
             "JSON Files (*.json);;All Files (*)"
         )
@@ -1489,7 +1488,7 @@ class PathologyViewer(QMainWindow):
             from datetime import datetime
             from utils.coordinate_utils import mask_to_polygons
 
-            self.statusbar.showMessage("Segmentation 결과 변환 중...")
+            self.statusbar.showMessage("Converting segmentation results...")
             from PyQt5.QtWidgets import QApplication
             QApplication.processEvents()
 
@@ -1542,18 +1541,18 @@ class PathologyViewer(QMainWindow):
             with open(file_path, 'w', encoding='utf-8') as f:
                 json.dump(result_with_meta, f, indent=2, ensure_ascii=False)
 
-            self.statusbar.showMessage(f"Segmentation 결과 저장 완료: {Path(file_path).name}")
+            self.statusbar.showMessage(f"Segmentation results saved: {Path(file_path).name}")
 
         except Exception as e:
             import traceback
             traceback.print_exc()
-            QMessageBox.critical(self, "오류", f"Segmentation 결과 저장 실패:\n{str(e)}")
+            QMessageBox.critical(self, "Error", f"Failed to save segmentation results:\n{str(e)}")
 
     def load_detection_results(self):
         """저장된 AI 결과 불러오기 (모델 타입별 처리)"""
         file_path, _ = QFileDialog.getOpenFileName(
             self,
-            "AI 결과 불러오기",
+            "Load AI Results",
             "",
             "JSON Files (*.json);;All Files (*)"
         )
@@ -1576,29 +1575,29 @@ class PathologyViewer(QMainWindow):
                     # 모델 타입별 처리
                     if model_type == "detection":
                         self._load_detection_result(result, metadata)
-                        self.statusbar.showMessage(f"불러오기 완료: {model_name} - {result.get('num_cells', 0):,}개 세포")
+                        self.statusbar.showMessage(f"Loaded: {model_name} - {result.get('num_cells', 0):,} cells")
                     elif model_type == "segmentation":
                         self._load_segmentation_result(result, metadata)
-                        self.statusbar.showMessage(f"불러오기 완료: {model_name} - Segmentation")
+                        self.statusbar.showMessage(f"Loaded: {model_name} - Segmentation")
                     elif model_type == "classification":
                         # 향후 구현
-                        QMessageBox.information(self, "알림", f"{model_name} 결과는 아직 지원되지 않습니다.")
+                        QMessageBox.information(self, "Notice", f"{model_name} results are not yet supported.")
                     else:
-                        raise ValueError(f"알 수 없는 모델 타입: {model_type}")
+                        raise ValueError(f"Unknown model type: {model_type}")
                 else:
                     # 레거시 형식 (메타데이터 없음)
                     required_keys = ['num_cells', 'class_counts', 'cells']
                     if all(key in loaded_data for key in required_keys):
                         # Detection 결과로 처리
                         self._load_detection_result(loaded_data, None)
-                        self.statusbar.showMessage(f"결과 불러오기 완료: {loaded_data.get('num_cells', 0):,}개 세포")
+                        self.statusbar.showMessage(f"Results loaded: {loaded_data.get('num_cells', 0):,} cells")
                     else:
-                        raise ValueError("올바른 AI 결과 파일이 아닙니다.")
+                        raise ValueError("Not a valid AI result file.")
                 
             except json.JSONDecodeError:
-                QMessageBox.critical(self, "오류", "JSON 파일 형식이 올바르지 않습니다.")
+                QMessageBox.critical(self, "Error", "Invalid JSON file format.")
             except Exception as e:
-                QMessageBox.critical(self, "오류", f"결과 불러오기 실패:\n{str(e)}")
+                QMessageBox.critical(self, "Error", f"Failed to load results:\n{str(e)}")
     
     def _load_detection_result(self, result, metadata=None):
         """Detection 결과 로드 처리"""
@@ -1630,15 +1629,15 @@ class PathologyViewer(QMainWindow):
         # 메타데이터가 있으면 표시
         if metadata:
             model_info = f"{metadata.get('model_name', 'Unknown')} v{metadata.get('version', '?')}"
-            self.progressLabel.setText(f"로드 완료: {model_info}")
+            self.progressLabel.setText(f"Loaded: {model_info}")
         else:
-            self.progressLabel.setText("결과 로드 완료")
+            self.progressLabel.setText("Results loaded")
 
     def _load_segmentation_result(self, result, metadata=None):
         """Segmentation 결과 로드 처리 (polygon JSON → mask 복원 → overlay 표시)"""
         from utils.coordinate_utils import polygons_to_mask
 
-        self.statusbar.showMessage("Segmentation 결과 복원 중...")
+        self.statusbar.showMessage("Restoring segmentation results...")
         from PyQt5.QtWidgets import QApplication
         QApplication.processEvents()
 
@@ -1680,9 +1679,9 @@ class PathologyViewer(QMainWindow):
         self.progressBar.setValue(100)
         if metadata:
             model_info = f"{metadata.get('model_name', 'Unknown')} v{metadata.get('version', '?')}"
-            self.progressLabel.setText(f"로드 완료: {model_info}")
+            self.progressLabel.setText(f"Loaded: {model_info}")
         else:
-            self.progressLabel.setText("Segmentation 결과 로드 완료")
+            self.progressLabel.setText("Segmentation results loaded")
 
     # === Annotation 기능 ===
     
@@ -1698,11 +1697,11 @@ class PathologyViewer(QMainWindow):
             # Polygon 그리기 모드 활성화 (지속 그리기)
             self.wsi_viewer.keep_drawing = True
             self.wsi_viewer.start_drawing_polygon()
-            self.statusbar.showMessage("ROI 그리기 모드(지속): 클릭으로 점 추가, 우클릭으로 완성, ESC로 취소")
+            self.statusbar.showMessage("ROI drawing mode (persistent): Click to add points, right-click to complete, ESC to cancel")
         else:
             # 일반 모드로 복귀
             self.wsi_viewer.exit_drawing_mode()
-            self.statusbar.showMessage("준비됨")
+            self.statusbar.showMessage("Ready")
     
     def toggle_draw_rectangle(self, checked):
         """Rectangle 그리기 토글"""
@@ -1716,11 +1715,11 @@ class PathologyViewer(QMainWindow):
             # Rectangle 그리기 모드 활성화 (지속 그리기)
             self.wsi_viewer.keep_drawing = True
             self.wsi_viewer.start_drawing_rectangle()
-            self.statusbar.showMessage("사각형 그리기 모드(지속): 드래그로 사각형 생성, ESC로 취소")
+            self.statusbar.showMessage("Rectangle drawing mode (persistent): Drag to create rectangle, ESC to cancel")
         else:
             # 일반 모드로 복귀
             self.wsi_viewer.exit_drawing_mode()
-            self.statusbar.showMessage("준비됨")
+            self.statusbar.showMessage("Ready")
     
     def toggle_draw_point(self, checked):
         """Point 그리기 토글"""
@@ -1734,11 +1733,11 @@ class PathologyViewer(QMainWindow):
             # Point 그리기 모드 활성화 (지속 그리기)
             self.wsi_viewer.keep_drawing = True
             self.wsi_viewer.start_drawing_point()
-            self.statusbar.showMessage("포인트 그리기 모드(지속): 클릭으로 점 추가, 우클릭으로 종료, ESC로 취소")
+            self.statusbar.showMessage("Point drawing mode (persistent): Click to add points, right-click to finish, ESC to cancel")
         else:
             # 일반 모드로 복귀
             self.wsi_viewer.exit_drawing_mode()
-            self.statusbar.showMessage("준비됨")
+            self.statusbar.showMessage("Ready")
     
     def start_draw_roi(self):
         """ROI 그리기 시작 (레거시 지원)"""
@@ -1748,8 +1747,8 @@ class PathologyViewer(QMainWindow):
         """모든 ROI 삭제"""
         reply = QMessageBox.question(
             self, 
-            "확인", 
-            "모든 ROI를 삭제하시겠습니까?",
+            "Confirm",
+            "Delete all ROIs?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No
         )
@@ -1757,18 +1756,18 @@ class PathologyViewer(QMainWindow):
         if reply == QMessageBox.Yes:
             self.wsi_viewer.clear_annotations()
             self.annotation_panel.clear_annotations()
-            self.statusbar.showMessage("모든 ROI 삭제됨")
+            self.statusbar.showMessage("All ROIs deleted")
     
     def save_annotations(self):
         """Annotation 저장"""
         annotations = self.wsi_viewer.get_annotations()
         if len(annotations) == 0:
-            QMessageBox.information(self, "알림", "저장할 ROI가 없습니다.")
+            QMessageBox.information(self, "Notice", "No ROIs to save.")
             return
 
         file_path, _ = QFileDialog.getSaveFileName(
             self,
-            "ROI 저장",
+            "Save ROI",
             "",
             "JSON Files (*.json);;All Files (*)"
         )
@@ -1778,15 +1777,15 @@ class PathologyViewer(QMainWindow):
 
         try:
             self.wsi_viewer.save_annotations(file_path)
-            self.statusbar.showMessage(f"ROI 저장 완료: {Path(file_path).name} ({len(annotations)}개)")
+            self.statusbar.showMessage(f"ROI saved: {Path(file_path).name} ({len(annotations)} items)")
         except Exception as e:
-            QMessageBox.critical(self, "오류", f"ROI 저장 실패:\n{str(e)}")
+            QMessageBox.critical(self, "Error", f"Failed to save ROI:\n{str(e)}")
     
     def load_annotations(self):
         """Annotation 로드"""
         file_path, _ = QFileDialog.getOpenFileName(
             self,
-            "ROI 불러오기",
+            "Load ROI",
             "",
             "JSON Files (*.json);;All Files (*)"
         )
@@ -1798,14 +1797,14 @@ class PathologyViewer(QMainWindow):
             self.wsi_viewer.load_annotations(file_path)
             num_annotations = len(self.wsi_viewer.get_annotations())
             self.annotation_panel.refresh_table()
-            self.statusbar.showMessage(f"ROI 로드 완료: {Path(file_path).name} ({num_annotations}개)")
+            self.statusbar.showMessage(f"ROI loaded: {Path(file_path).name} ({num_annotations} items)")
         except Exception as e:
-            QMessageBox.critical(self, "오류", f"ROI 로드 실패:\n{str(e)}")
+            QMessageBox.critical(self, "Error", f"Failed to load ROI:\n{str(e)}")
     
     def on_annotation_added(self, annotation):
         """Annotation 추가 시 호출"""
         num_annotations = len(self.wsi_viewer.get_annotations())
-        self.statusbar.showMessage(f"ROI 추가됨: {annotation.name} (총 {num_annotations}개)")
+        self.statusbar.showMessage(f"ROI added: {annotation.name} (total {num_annotations})")
         
         # Annotation 패널 업데이트
         self.annotation_panel.add_annotation(annotation)
@@ -1814,7 +1813,7 @@ class PathologyViewer(QMainWindow):
     
     def on_annotation_selected(self, annotation):
         """Annotation 선택 시 호출 (뷰어에서)"""
-        self.statusbar.showMessage(f"ROI 선택됨: {annotation.name}")
+        self.statusbar.showMessage(f"ROI selected: {annotation.name}")
         # 패널의 선택 동기화
         self.annotation_panel.select_annotation(annotation)
     
@@ -1828,12 +1827,12 @@ class PathologyViewer(QMainWindow):
         self.wsi_viewer.remove_annotation(annotation)
         # 패널에서 삭제
         self.annotation_panel.remove_annotation(annotation)
-        self.statusbar.showMessage(f"ROI 삭제됨: {annotation.name}")
+        self.statusbar.showMessage(f"ROI deleted: {annotation.name}")
     
     def on_drawing_cancelled(self):
         """그리기 취소 시 호출"""
         # 현재 그리기 중인 아이템이 취소된 상태 알림만 표시 (툴은 유지)
-        self.statusbar.showMessage("현재 그리기 중인 항목이 취소되었습니다. 계속하려면 동일 도구를 사용하거나 'Stop Drawing'을 눌러 종료하세요.")
+        self.statusbar.showMessage("Current drawing cancelled. Continue with the same tool or press 'Stop Drawing' to exit.")
 
     def stop_drawing(self):
         """사용자가 명시적으로 그리기 모드를 종료할 때 호출"""
@@ -1847,7 +1846,7 @@ class PathologyViewer(QMainWindow):
         
         # 뷰어의 그리기 모드 완전 종료
         self.wsi_viewer.exit_drawing_mode()
-        self.statusbar.showMessage("그리기 모드가 종료되었습니다.")
+        self.statusbar.showMessage("Drawing mode ended.")
     
     # ============================================================================
     # Epithelial 재분류 (WSI Segmentation + Cell Detection)
@@ -1856,22 +1855,22 @@ class PathologyViewer(QMainWindow):
     def run_epithelial_classification(self):
         """Epithelial cell 재분류 실행 (Segmentation 기반)"""
         if not self.current_image_path:
-            QMessageBox.warning(self, "경고", "먼저 이미지를 로드하세요.")
+            QMessageBox.warning(self, "Warning", "Please load an image first.")
             return
 
         if self.current_detection_result is None:
-            QMessageBox.warning(self, "경고", "먼저 Cell Detection을 실행하세요.")
+            QMessageBox.warning(self, "Warning", "Please run Cell Detection first.")
             return
 
         # Load segmentation model if not loaded
         if not self.epithelial_classification_service.is_model_loaded():
-            self.statusbar.showMessage("Segmentation 모델 로드 중...")
+            self.statusbar.showMessage("Loading segmentation model...")
             from PyQt5.QtWidgets import QApplication
             QApplication.processEvents()
 
             success, msg = self.epithelial_classification_service.load_model()
             if not success:
-                QMessageBox.critical(self, "오류", msg)
+                QMessageBox.critical(self, "Error", msg)
                 return
             self.statusbar.showMessage(msg)
             QApplication.processEvents()
@@ -1879,7 +1878,7 @@ class PathologyViewer(QMainWindow):
         # Get OpenSlide object from tile manager
         tile_manager = self.wsi_viewer.get_tile_manager()
         if tile_manager is None or tile_manager.slide is None:
-            QMessageBox.critical(self, "오류", "슬라이드를 로드할 수 없습니다.")
+            QMessageBox.critical(self, "Error", "Unable to load slide.")
             return
 
         slide = tile_manager.slide
@@ -1891,8 +1890,8 @@ class PathologyViewer(QMainWindow):
         epithelial_count = sum(1 for cell in detection_cells if cell['cls_id'] == 1)
         if epithelial_count == 0:
             QMessageBox.information(
-                self, "알림",
-                "Epithelial cell이 검출되지 않았습니다.\n재분류할 세포가 없습니다."
+                self, "Notice",
+                "No Epithelial cells detected.\nNo cells to reclassify."
             )
             return
 
@@ -1901,9 +1900,9 @@ class PathologyViewer(QMainWindow):
 
         # Run classification
         self.epithelial_classification_service.run_classification(slide, detection_cells)
-        self.statusbar.showMessage(f"Epithelial 재분류 시작... ({epithelial_count}개 세포)")
+        self.statusbar.showMessage(f"Starting Epithelial reclassification... ({epithelial_count} cells)")
         self.progressBar.setValue(0)
-        self.progressLabel.setText("Epithelial 재분류 중...")
+        self.progressLabel.setText("Epithelial reclassification in progress...")
 
     def setup_classification_signals(self):
         """Setup signals for epithelial classification"""
@@ -1928,7 +1927,7 @@ class PathologyViewer(QMainWindow):
         """Handle epithelial classification completion"""
         self.is_detection_running = False
         self.progressBar.setValue(100)
-        self.progressLabel.setText("재분류 완료")
+        self.progressLabel.setText("Reclassification complete")
 
         # Cache results (replace old detection results)
         self.current_detection_result = result
@@ -1943,29 +1942,29 @@ class PathologyViewer(QMainWindow):
 
         # Show detailed message
         msg = self.format_epithelial_classification_result(result)
-        QMessageBox.information(self, "재분류 완료", msg)
-        self.statusbar.showMessage("Epithelial 재분류 완료")
+        QMessageBox.information(self, "Reclassification Complete", msg)
+        self.statusbar.showMessage("Epithelial reclassification complete")
 
     def format_epithelial_classification_result(self, result):
         """Format epithelial classification result message"""
         epi_breakdown = result.get('epithelial_breakdown', {})
         class_counts = result.get('class_counts', {})
 
-        msg = f"세포 검출 및 재분류 완료\n\n"
-        msg += f"총 세포 수: {result['num_cells']:,}개\n\n"
-        msg += "=== Epithelial 세포 분포 ===\n"
-        msg += f"Tumor 영역: {epi_breakdown.get('tumor_epithelial', 0):,}개\n"
-        msg += f"Non-Tumor 영역: {epi_breakdown.get('nt_epithelial', 0):,}개\n"
-        msg += f"Stroma/Background: {epi_breakdown.get('stroma_epithelial', 0):,}개\n"
-        msg += f"재분류 전: {epi_breakdown.get('total_epithelial', 0):,}개\n\n"
+        msg = f"Cell detection and reclassification completed\n\n"
+        msg += f"Total cells: {result['num_cells']:,}\n\n"
+        msg += "=== Epithelial Cell Distribution ===\n"
+        msg += f"Tumor region: {epi_breakdown.get('tumor_epithelial', 0):,}\n"
+        msg += f"Non-Tumor region: {epi_breakdown.get('nt_epithelial', 0):,}\n"
+        msg += f"Stroma/Background: {epi_breakdown.get('stroma_epithelial', 0):,}\n"
+        msg += f"Before reclassification: {epi_breakdown.get('total_epithelial', 0):,}\n\n"
 
         # Add non-epithelial counts
-        msg += "=== 기타 세포 ===\n"
+        msg += "=== Other Cells ===\n"
         other_classes = ['Neutrophil', 'Lymphocyte', 'Plasma', 'Eosinophil', 'Connective tissue']
         for cls_name in other_classes:
             count = class_counts.get(cls_name, 0)
             if count > 0:
-                msg += f"{cls_name}: {count:,}개\n"
+                msg += f"{cls_name}: {count:,}\n"
 
         return msg
 

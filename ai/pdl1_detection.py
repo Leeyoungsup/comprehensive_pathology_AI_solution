@@ -1,7 +1,7 @@
 """
-PD-L1 Detection 모듈
-병리 이미지에서 PD-L1 양성/음성 종양 세포를 검출하는 AI 기능
-YOLOv11m 기반, TPS(Tumor Proportion Score) 계산
+PD-L1 Detection Module
+AI module for detecting PD-L1 positive/negative tumor cells in pathology images
+Based on YOLOv11m, calculates TPS (Tumor Proportion Score)
 """
 
 import os
@@ -127,13 +127,13 @@ class PDL1DetectionWorker(QThread):
             mpp_y = slide.properties.get('openslide.mpp-y')
             if mpp_x and mpp_y:
                 self.origin_mpp = (float(mpp_x) + float(mpp_y)) / 2
-                print(f"슬라이드 MPP: {self.origin_mpp:.4f} (x={mpp_x}, y={mpp_y})")
+                print(f"Slide MPP: {self.origin_mpp:.4f} (x={mpp_x}, y={mpp_y})")
             else:
                 self.origin_mpp = 0.25
-                print(f"MPP 정보 없음, 기본값 사용: {self.origin_mpp}")
+                print(f"MPP info not found, using default: {self.origin_mpp}")
         except:
             self.origin_mpp = 0.25
-            print(f"MPP 읽기 실패, 기본값 사용: {self.origin_mpp}")
+            print(f"MPP read failed, using default: {self.origin_mpp}")
 
         self.output_mpp = 0.5
         self.original_size = int(self.image_size * self.output_mpp / self.origin_mpp)
@@ -152,21 +152,21 @@ class PDL1DetectionWorker(QThread):
             import time
             start_total = time.time()
 
-            self.status.emit("PD-L1 검출 시작...")
+            self.status.emit("Starting PD-L1 detection...")
             self.progress.emit(1)
 
             all_cells = []
             width, height = self.slide.dimensions
 
-            self.status.emit(f"슬라이드 크기: {width}x{height}")
+            self.status.emit(f"Slide size: {width}x{height}")
             self.progress.emit(3)
 
             # 조직 마스크 생성
-            self.status.emit("조직 영역 감지 중... (썸네일 생성)")
+            self.status.emit("Detecting tissue regions... (generating thumbnail)")
             start_mask = time.time()
             thumb_mask = self._create_tissue_mask()
             mask_time = time.time() - start_mask
-            self.status.emit(f"조직 마스크 생성 완료 ({mask_time:.2f}s)")
+            self.status.emit(f"Tissue mask created ({mask_time:.2f}s)")
             self.progress.emit(5)
 
             total_patches = (width // self.original_size) * (height // self.original_size)
@@ -178,7 +178,7 @@ class PDL1DetectionWorker(QThread):
             start_time = time.time()
             last_update_time = start_time
 
-            self.status.emit(f"PD-L1 세포 검출 중... (총 {total_patches}개 패치)")
+            self.status.emit(f"Detecting PD-L1 cells... ({total_patches} total patches)")
 
             for patch_row in range(width // self.original_size - 1):
                 if self.is_cancelled:
@@ -223,17 +223,17 @@ class PDL1DetectionWorker(QThread):
                         remaining = total_patches - processed_patches
                         eta = remaining / patches_per_sec if patches_per_sec > 0 else 0
                         self.status.emit(
-                            f"패치 {processed_patches}/{total_patches} | "
-                            f"조직:{tissue_patches} ROI:{roi_patches} | "
-                            f"세포:{detected_cells_count}개 | {patches_per_sec:.1f}it/s | ETA:{eta:.0f}s"
+                            f"Patch {processed_patches}/{total_patches} | "
+                            f"Tissue:{tissue_patches} ROI:{roi_patches} | "
+                            f"Cells:{detected_cells_count} | {patches_per_sec:.1f}it/s | ETA:{eta:.0f}s"
                         )
                         last_update_time = current_time
 
             if self.is_cancelled:
-                self.error.emit("검출이 취소되었습니다.")
+                self.error.emit("Detection cancelled.")
                 return
 
-            self.status.emit(f"결과 정리 중... ({detected_cells_count}개 검출)")
+            self.status.emit(f"Finalizing results... ({detected_cells_count} detected)")
             self.progress.emit(95)
 
             # TPS 계산 (Non-Tumor 포함 전체 세포로 계산)
@@ -250,7 +250,7 @@ class PDL1DetectionWorker(QThread):
                 'num_cells': len(tumor_cells),
                 'class_counts': class_counts,
                 'tps': tps,
-                'message': f'PD-L1 검출 완료: {len(tumor_cells)}개 종양세포, TPS={tps:.1f}% ({total_time:.1f}s)'
+                'message': f'PD-L1 detection complete: {len(tumor_cells)} tumor cells, TPS={tps:.1f}% ({total_time:.1f}s)'
             }
 
             self.progress.emit(100)
@@ -258,7 +258,7 @@ class PDL1DetectionWorker(QThread):
 
         except Exception as e:
             import traceback
-            self.error.emit(f"PD-L1 검출 중 오류: {str(e)}\n{traceback.format_exc()}")
+            self.error.emit(f"PD-L1 detection error: {str(e)}\n{traceback.format_exc()}")
 
     def _create_tissue_mask(self):
         """조직 영역 마스크 생성 (고속 최적화)"""
@@ -282,7 +282,7 @@ class PDL1DetectionWorker(QThread):
             mask = cv2.resize(mask, (target_width, target_height), interpolation=cv2.INTER_NEAREST)
             return mask
         except Exception as e:
-            print(f"마스크 생성 실패: {e}")
+            print(f"Mask creation failed: {e}")
             width, height = self.slide.dimensions
             return np.ones((height // 64, width // 64), dtype=np.uint8) * 255
 
@@ -366,7 +366,7 @@ class PDL1DetectionWorker(QThread):
                         })
 
         except Exception as e:
-            print(f"패치 처리 오류 ({start_x}, {start_y}): {e}")
+            print(f"Patch processing error ({start_x}, {start_y}): {e}")
 
         return cells
 
@@ -424,30 +424,30 @@ class PDL1Detection(QObject):
                 model_path = str(self.default_model_path)
 
             if not os.path.exists(model_path):
-                self.detectionError.emit(f"모델 파일을 찾을 수 없습니다: {model_path}")
+                self.detectionError.emit(f"Model file not found: {model_path}")
                 return False
 
             checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
             self.model.load_state_dict(checkpoint['model_state_dict'])
-            print(f"PD-L1 모델 로드 완료: {model_path}")
+            print(f"PD-L1 model loaded: {model_path}")
 
             self.model.eval()
             return True
 
         except Exception as e:
             import traceback
-            self.detectionError.emit(f"PD-L1 모델 로드 실패: {str(e)}")
+            self.detectionError.emit(f"PD-L1 model load failed: {str(e)}")
             traceback.print_exc()
             return False
 
     def run_detection(self, slide, roi_polygons=None):
         """PD-L1 검출 실행"""
         if self.model is None:
-            self.detectionError.emit("모델이 로드되지 않았습니다.")
+            self.detectionError.emit("Model not loaded.")
             return
 
         if self.worker and self.worker.isRunning():
-            print("이미 PD-L1 검출 작업이 실행 중입니다.")
+            print("PD-L1 detection is already running.")
             return
 
         self.worker = PDL1DetectionWorker(slide, self.model, roi_polygons, self.device)
@@ -483,7 +483,7 @@ class PDL1Detection(QObject):
             torch.cuda.synchronize()
         import gc
         gc.collect()
-        print("PD-L1 모델 언로드 완료")
+        print("PD-L1 model unloaded")
 
     def is_model_loaded(self):
         return self.model is not None

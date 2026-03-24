@@ -1,39 +1,39 @@
 # Comprehensive Pathology AI Solution
 
-대용량 병리 이미지(WSI) 뷰어 + AI 분석(검출/분할/분류) 결과를 통합 시각화·검증하는 Windows 데스크톱 애플리케이션입니다.
+A Windows desktop application that integrates visualization and validation of large-scale pathology image (WSI) viewer and AI analysis (detection/segmentation/classification) results.
 
 ---
 
-## 주요 기능
+## Key Features
 
 | 기능 | 설명 |
 |------|------|
-| **WSI 뷰어** | 타일 기반 LOD 렌더링, 줌/패닝, 미니맵 내비게이션 (0.01x ~ 40x) |
-| **H&E Cell Detection** | H&E 병리 이미지에서 8종 세포 검출 + 오버레이 표시 |
-| **Tumor Segmentation** | Breast/Stomach 조직 분할(Stroma / Non-Tumor / Tumor) + 마스크 오버레이 표시 |
-| **Epithelial 재분류** | Segmentation 기반 상피 세포 Tumor/Benign 자동 재분류(조직 타입에 따라) |
-| **PD-L1 Detection** | PD-L1 양성/음성 종양 세포 검출 및 TPS 계산 |
-| **ROI 어노테이션** | 폴리곤/사각형/포인트로 분석 영역 지정(저장/불러오기 지원) |
-| **결과 시각화** | 클래스 분포, 공간 히트맵, confidence 분포, 확률 맵 + **PDF 내보내기** |
-| **결과 관리** | JSON 저장/불러오기, 자동 저장(옵션) |
+| **WSI Viewer** | Tile-based LOD rendering, zoom/pan, minimap navigation (0.01x ~ 40x) |
+| **H&E Cell Detection** | Detect 8 cell types in H&E pathology images + overlay visualization |
+| **Tumor Segmentation** | Breast/Stomach tissue segmentation (Stroma / Non-Tumor / Tumor) + overlay mask |
+| **Epithelial Reclassification** | Automatic tumor/benign reclassification of epithelial cells based on segmentation (by tissue type) |
+| **PD-L1 Detection** | Detect PD-L1 positive/negative tumor cells and compute TPS |
+| **ROI Annotation** | Define analysis regions with polygon/rectangle/point (save/load supported) |
+| **Result Visualization** | Class distribution, spatial heatmap, confidence histogram, probability map + **PDF export** |
+| **Result Management** | Save/load JSON, autosave option |
 
 ---
 
-## 빠른 시작 (사용자)
+## Quick Start (User)
 
-### Windows 독립 실행(포터블)
+### Windows Standalone (Portable)
 
-1. `PathologyAIViewer_Portable.zip` 다운로드
-2. 압축 해제
-3. `PathologyAIViewer.exe` 실행
+1. Download `PathologyAIViewer_Portable.zip`
+2. Extract archive
+3. Run `PathologyAIViewer.exe`
 
-> Python 설치 불필요 / 추가 패키지 설치 불필요
+> No Python installation required / No additional package installation required
 
 ---
 
-## 개발 환경 설정 (개발자)
+## Development Setup (Developer)
 
-### 요구사항
+### Requirements
 
 - **OS**: Windows 10/11 64-bit
 - **Python**: 3.12
