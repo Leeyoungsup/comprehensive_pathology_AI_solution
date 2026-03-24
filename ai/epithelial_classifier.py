@@ -577,13 +577,25 @@ class EpithelialClassificationWorker(QThread):
         print(f"Epithelial cells to reclassify: {epithelial_count}")
 
         # 2단계: DBSCAN 클러스터링 (관 단위 그룹핑)
+        # seg_class를 피처에 포함하여 segmentation 영역이 다른 세포는 클러스터링되지 않도록 함
         if epithelial_count > 0:
             coords_arr = np.array(epi_coords)
-            clustering = DBSCAN(eps=100, min_samples=3).fit(coords_arr)
+            seg_arr_for_cluster = np.array(epi_seg_classes, dtype=np.float64)
+
+            # seg_class에 큰 가중치를 부여하여 다른 영역 세포가 같은 클러스터에 포함되지 않도록 함
+            # seg_penalty > eps 이므로 seg_class가 다르면 절대 같은 클러스터 불가
+            DBSCAN_EPS = 50
+            SEG_PENALTY = 200
+            feature_arr = np.column_stack([
+                coords_arr,
+                seg_arr_for_cluster * SEG_PENALTY
+            ])
+            clustering = DBSCAN(eps=DBSCAN_EPS, min_samples=3).fit(feature_arr)
             labels = clustering.labels_
 
-            # 3단계: 클러스터별 Tumor 비율 판정 — numpy 벡터화 (O(n), 기존 O(n×k) 루프 제거)
-            TUMOR_RATIO_THRESHOLD = 0.1
+            # 3단계: 클러스터별 Tumor 비율 판정 — numpy 벡터화
+            # 같은 seg 영역 내에서만 클러스터가 형성되므로 다수결이 안전하게 적용됨
+            TUMOR_RATIO_THRESHOLD = 0.5
             epi_seg_arr = np.array(epi_seg_classes, dtype=np.int32)
             valid_mask = labels >= 0  # DBSCAN noise(-1) 제외
             if valid_mask.any():
