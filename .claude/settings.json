@@ -11,7 +11,9 @@
       "Bash(python -c \"import ast; ast.parse\\(open\\(''ui/wsi_view_widget.py'', encoding=''utf-8''\\).read\\(\\)\\); print\\(''ui/wsi_view_widget.py: OK''\\)\")",
       "Bash(python -c \"import xml.etree.ElementTree as ET; ET.parse\\(''ui/viewer.ui''\\); print\\(''viewer.ui: OK''\\)\")",
       "Bash(python -c \"import ast; ast.parse\\(open\\(''ui/viewer.py'', encoding=''utf-8''\\).read\\(\\)\\); print\\(''OK''\\)\")",
-      "Bash(python -c \"import ast; ast.parse\\(open\\(''ai/virtual_stain.py'', encoding=''utf-8''\\).read\\(\\)\\); print\\(''OK''\\)\")"
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''ai/virtual_stain.py'', encoding=''utf-8''\\).read\\(\\)\\); print\\(''OK''\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''ui/wsi_view_widget.py'', encoding=''utf-8''\\).read\\(\\)\\); print\\(''wsi_view_widget: OK''\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''ui/viewer.py'', encoding=''utf-8''\\).read\\(\\)\\); print\\(''viewer: OK''\\)\")"
     ]
   }
 }

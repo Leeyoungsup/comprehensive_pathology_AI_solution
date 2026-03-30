@@ -1,7 +1,7 @@
 """
 Virtual Stain Module
 CycleGAN-based virtual staining: IHC → H&E, Unstained → H&E
-Uses overlap-tile blending with batched GPU inference.
+Pipeline: prefetch I/O ↔ FP16 batched GPU inference ↔ blend accumulation.
 """
 
 import numpy as np
@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 from PIL import Image
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
 from PyQt5.QtCore import QThread, pyqtSignal
 
@@ -83,19 +84,22 @@ def _make_blend_weight(size, overlap):
     return np.outer(w, w)
 
 
-def _pil_to_tensor(pil_img):
-    """PIL RGB image → normalized tensor [-1, 1], shape (3, H, W)."""
-    arr = np.array(pil_img, dtype=np.float32)       # (H, W, 3)
-    t = torch.from_numpy(arr).permute(2, 0, 1)      # (3, H, W)
-    t = t / 255.0 * 2.0 - 1.0                       # [0,255] → [-1,1]
-    return t
+def _read_patch(slide, x0, y0, best_level, level_read, ps):
+    """Read a single patch from the slide (runs in I/O thread)."""
+    region = slide.read_region((x0, y0), best_level, (level_read, level_read))
+    region = region.convert('RGB')
+    if region.size != (ps, ps):
+        region = region.resize((ps, ps), Image.BILINEAR)
+    return np.array(region, dtype=np.float32)
 
 
 class VirtualStainWorker(QThread):
     """
     Background worker for WSI-level virtual staining.
-    Optimized: tissue-mask pre-filtering, batched GPU inference,
-    no redundant resize, float32 accumulation.
+    Pipeline architecture:
+      - ThreadPool prefetches next batch of patches from disk
+      - GPU runs FP16 inference on current batch
+      - CPU accumulates blended results
     """
 
     finished = pyqtSignal(dict)
@@ -104,7 +108,8 @@ class VirtualStainWorker(QThread):
     error = pyqtSignal(str)
 
     def __init__(self, image_path, model_path, stain_type="ihc_membrane",
-                 target_mpp=2.0, patch_size=512, batch_size=4, roi_bounds=None):
+                 target_mpp=2.0, patch_size=512, batch_size=4,
+                 roi_bounds=None, roi_polygons=None):
         super().__init__()
         self.image_path = image_path
         self.model_path = model_path
@@ -113,6 +118,7 @@ class VirtualStainWorker(QThread):
         self.patch_size = patch_size
         self.batch_size = batch_size
         self.roi_bounds = roi_bounds
+        self.roi_polygons = roi_polygons  # [[(x,y), ...], ...] WSI level-0 coords
         self.is_cancelled = False
 
     def cancel(self):
@@ -122,6 +128,7 @@ class VirtualStainWorker(QThread):
         import openslide
 
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        use_fp16 = (device.type == 'cuda')
         slide = None
         generator = None
 
@@ -133,6 +140,8 @@ class VirtualStainWorker(QThread):
             generator = Generator(3, 3).to(device)
             generator.load_state_dict(torch.load(self.model_path, map_location=device))
             generator.eval()
+            if use_fp16:
+                generator = generator.half()
 
             if self.is_cancelled:
                 return
@@ -178,7 +187,7 @@ class VirtualStainWorker(QThread):
             if self.is_cancelled:
                 return
 
-            # ── 3. Tissue mask (patch-level, fast) ──
+            # ── 3. Tissue mask (patch-level) ──
             self.status.emit("Creating tissue mask...")
             tissue_grid = self._build_tissue_grid(
                 slide, x_min, y_min, canvas_l0_w, canvas_l0_h,
@@ -193,98 +202,92 @@ class VirtualStainWorker(QThread):
             if self.is_cancelled:
                 return
 
-            # ── 4. Batched inference with overlap blending ──
+            # ── 4. Build flat list of all patches with tissue flag ──
+            all_patches = []
+            for yi in range(n_py):
+                for xi in range(n_px):
+                    all_patches.append((
+                        xi, yi,
+                        pos_x[xi], pos_y[yi],
+                        xi * stride, yi * stride,
+                        bool(tissue_grid[yi, xi]),
+                    ))
+
+            # ── 5. Pipelined inference ──
             blend_weight = _make_blend_weight(ps, overlap)
-            blend_3ch = blend_weight[:, :, None]  # pre-broadcast
+            blend_3ch = blend_weight[:, :, None]
 
             output_acc = np.zeros((out_h, out_w, 3), dtype=np.float32)
             input_acc = np.zeros((out_h, out_w, 3), dtype=np.float32)
             weight_acc = np.zeros((out_h, out_w), dtype=np.float32)
 
-            # Collect tissue patches for batched processing
             tissue_count = 0
-            processed_rows = 0
+            total = len(all_patches)
+            bs = self.batch_size
+            io_workers = min(4, bs)
 
-            with torch.no_grad():
-                for yi in range(n_py):
+            # Collect tissue patches into sub-batches
+            # Process: prefetch I/O → GPU batch → accumulate
+            tissue_batch = []   # [(px, py, tensor, region_np), ...]
+            processed = 0
+
+            with torch.inference_mode(), ThreadPoolExecutor(max_workers=io_workers) as pool:
+                for patch_idx, (xi, yi, x0, y0, px, py_c, is_tissue) in enumerate(all_patches):
                     if self.is_cancelled:
                         return
 
-                    # Collect this row's tissue patches into a batch
-                    batch_tensors = []
-                    batch_coords = []     # (px, py) canvas coords
-                    batch_regions_np = [] # for input_acc
+                    # Submit I/O to thread pool and get result
+                    future = pool.submit(_read_patch, slide, x0, y0, best_level, level_read, ps)
+                    region_np = future.result()
 
-                    for xi in range(n_px):
-                        px = xi * stride
-                        py_c = yi * stride
-                        x0 = pos_x[xi]
-                        y0 = pos_y[yi]
+                    # Accumulate input
+                    input_acc[py_c:py_c + ps, px:px + ps] += region_np * blend_3ch
 
-                        is_tissue = tissue_grid[yi, xi]
+                    if not is_tissue:
+                        # Background: copy input directly
+                        output_acc[py_c:py_c + ps, px:px + ps] += region_np * blend_3ch
+                        weight_acc[py_c:py_c + ps, px:px + ps] += blend_weight
+                    else:
+                        # Prepare tensor from numpy (no PIL round-trip)
+                        t = torch.from_numpy(region_np).permute(2, 0, 1)  # (3,H,W)
+                        t = t / 255.0 * 2.0 - 1.0
+                        tissue_batch.append((px, py_c, t))
 
-                        if not is_tissue:
-                            # Background: read & blend directly (skip GPU)
-                            region = slide.read_region((x0, y0), best_level,
-                                                       (level_read, level_read))
-                            region = region.convert('RGB')
-                            if region.size != (ps, ps):
-                                region = region.resize((ps, ps), Image.BILINEAR)
-                            region_np = np.array(region, dtype=np.float32)
+                    # Flush batch when full or at end of row
+                    is_end_of_row = (xi == n_px - 1)
+                    batch_full = len(tissue_batch) >= bs
+                    if tissue_batch and (batch_full or is_end_of_row):
+                        self._run_batch(
+                            generator, device, use_fp16, tissue_batch,
+                            output_acc, weight_acc, blend_3ch, blend_weight, ps
+                        )
+                        tissue_count += len(tissue_batch)
+                        tissue_batch.clear()
 
-                            input_acc[py_c:py_c + ps, px:px + ps] += region_np * blend_3ch
-                            output_acc[py_c:py_c + ps, px:px + ps] += region_np * blend_3ch
-                            weight_acc[py_c:py_c + ps, px:px + ps] += blend_weight
-                            continue
+                    processed += 1
 
-                        # Tissue patch: read, prepare tensor
-                        region = slide.read_region((x0, y0), best_level,
-                                                   (level_read, level_read))
-                        region = region.convert('RGB')
-                        if region.size != (ps, ps):
-                            region = region.resize((ps, ps), Image.BILINEAR)
+                    # Progress every row
+                    if is_end_of_row:
+                        pct = 8 + int(87 * (yi + 1) / n_py)
+                        self.progress.emit(pct)
+                        self.status.emit(
+                            f"Virtual staining... row {yi + 1}/{n_py} "
+                            f"({tissue_count} tissue patches)"
+                        )
 
-                        region_np = np.array(region, dtype=np.float32)
-                        input_acc[py_c:py_c + ps, px:px + ps] += region_np * blend_3ch
-
-                        batch_tensors.append(_pil_to_tensor(region))
-                        batch_coords.append((px, py_c))
-                        batch_regions_np.append(region_np)
-
-                    # Process tissue batch for this row
-                    if batch_tensors:
-                        # Sub-batch to stay within VRAM
-                        for b_start in range(0, len(batch_tensors), self.batch_size):
-                            if self.is_cancelled:
-                                return
-                            b_end = min(b_start + self.batch_size, len(batch_tensors))
-                            batch = torch.stack(batch_tensors[b_start:b_end]).to(device)
-
-                            fake_batch = generator(batch)  # (B, 3, H, W)
-                            fake_batch = (fake_batch.cpu() * 0.5 + 0.5).clamp(0, 1)
-
-                            for i in range(fake_batch.shape[0]):
-                                idx = b_start + i
-                                px, py_c = batch_coords[idx]
-                                fake_np = (fake_batch[i].permute(1, 2, 0).numpy() * 255.0)
-
-                                output_acc[py_c:py_c + ps, px:px + ps] += fake_np * blend_3ch
-                                weight_acc[py_c:py_c + ps, px:px + ps] += blend_weight
-
-                        tissue_count += len(batch_tensors)
-
-                    processed_rows += 1
-                    pct = 8 + int(87 * processed_rows / n_py)
-                    self.progress.emit(pct)
-                    self.status.emit(
-                        f"Virtual staining... row {processed_rows}/{n_py} "
-                        f"({tissue_count} tissue patches)"
-                    )
+            # Flush remaining
+            if tissue_batch:
+                self._run_batch(
+                    generator, device, use_fp16, tissue_batch,
+                    output_acc, weight_acc, blend_3ch, blend_weight, ps
+                )
+                tissue_count += len(tissue_batch)
+                tissue_batch.clear()
 
             if self.is_cancelled:
                 return
 
-            # ── 5. Normalize & compose ──
+            # ── 6. Normalize & compose ──
             self.status.emit("Composing final image...")
             uncovered = weight_acc < 0.01
             weight_acc = np.maximum(weight_acc, 1e-10)
@@ -293,7 +296,6 @@ class VirtualStainWorker(QThread):
             output_canvas[uncovered] = 255
             input_canvas[uncovered] = 255
 
-            # Restore background from input
             tissue_mask_full = self._grid_to_pixel_mask(
                 tissue_grid, n_px, n_py, stride, ps, out_w, out_h
             )
@@ -326,13 +328,30 @@ class VirtualStainWorker(QThread):
                 except Exception:
                     pass
 
+    @staticmethod
+    def _run_batch(generator, device, use_fp16, tissue_batch,
+                   output_acc, weight_acc, blend_3ch, blend_weight, ps):
+        """Run a single batch through the generator and accumulate results."""
+        tensors = [item[2] for item in tissue_batch]
+        batch = torch.stack(tensors).to(device, non_blocking=True)
+        if use_fp16:
+            batch = batch.half()
+
+        fake_batch = generator(batch)
+
+        # Back to float32 CPU
+        fake_batch = fake_batch.float().cpu()
+        fake_batch = (fake_batch * 0.5 + 0.5).clamp_(0, 1)
+
+        for i, (px, py_c, _) in enumerate(tissue_batch):
+            fake_np = (fake_batch[i].permute(1, 2, 0).numpy() * 255.0)
+            output_acc[py_c:py_c + ps, px:px + ps] += fake_np * blend_3ch
+            weight_acc[py_c:py_c + ps, px:px + ps] += blend_weight
+
     def _build_tissue_grid(self, slide, x_min, y_min,
                            canvas_l0_w, canvas_l0_h,
                            n_px, n_py, stride, ps, out_w, out_h):
-        """
-        Build a (n_py, n_px) boolean grid: True = tissue patch.
-        Uses a low-res thumbnail for speed.
-        """
+        """Build a (n_py, n_px) boolean grid: True = tissue patch."""
         mask_level = slide.get_best_level_for_downsample(
             canvas_l0_w / max(out_w // 4, 1)
         )
@@ -350,13 +369,11 @@ class VirtualStainWorker(QThread):
         pixel_tissue = binary_fill_holes(pixel_tissue)
         pixel_tissue = binary_opening(pixel_tissue, disk(3))
 
-        # Resize to canvas size
         tissue_full = np.array(
             Image.fromarray(pixel_tissue.astype(np.uint8) * 255).resize(
                 (out_w, out_h), Image.NEAREST)
         ) > 127
 
-        # Downsample to patch grid
         grid = np.zeros((n_py, n_px), dtype=bool)
         for yi in range(n_py):
             for xi in range(n_px):
@@ -369,7 +386,7 @@ class VirtualStainWorker(QThread):
 
     @staticmethod
     def _grid_to_pixel_mask(grid, n_px, n_py, stride, ps, out_w, out_h):
-        """Convert patch-level grid back to pixel-level mask for background restore."""
+        """Convert patch-level grid back to pixel-level mask."""
         mask = np.zeros((out_h, out_w), dtype=bool)
         for yi in range(n_py):
             for xi in range(n_px):

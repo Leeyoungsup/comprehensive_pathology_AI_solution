@@ -827,17 +827,16 @@ class PathologyViewer(QMainWindow):
                                  f"Virtual stain model not found:\n{model_path}")
             return
 
-        # ROI bounds
+        # ROI bounds & polygons
         roi_bounds = None
+        roi_polygons = None
         if self.wsi_viewer.annotation_list.annotations:
-            from core.annotation import Annotation
             all_coords = []
+            roi_polygons = []
             for ann in self.wsi_viewer.annotation_list.annotations:
-                pts = ann.get('points', [])
-                if pts:
-                    xs = [p[0] for p in pts]
-                    ys = [p[1] for p in pts]
-                    all_coords.extend(list(zip(xs, ys)))
+                if ann.coordinates:
+                    all_coords.extend(ann.coordinates)
+                    roi_polygons.append(ann.coordinates)
             if all_coords:
                 xs = [c[0] for c in all_coords]
                 ys = [c[1] for c in all_coords]
@@ -858,6 +857,7 @@ class PathologyViewer(QMainWindow):
             target_mpp=2.0,
             patch_size=512,
             roi_bounds=roi_bounds,
+            roi_polygons=roi_polygons,
         )
         self.virtual_stain_worker.finished.connect(self.on_virtual_stain_complete)
         self.virtual_stain_worker.progress.connect(self.on_ai_progress)
@@ -913,8 +913,7 @@ class PathologyViewer(QMainWindow):
         """Virtual stain 오버레이 표시/숨김 (체크박스 토글)"""
         if self.wsi_viewer.virtual_stain_canvas is None:
             return
-        self.wsi_viewer.virtual_stain_visible = checked
-        self.wsi_viewer.update_virtual_stain_overlay()
+        self.wsi_viewer.set_virtual_stain_visible(checked)
         self.statusbar.showMessage(
             f"Virtual stain overlay: {'Visible' if checked else 'Hidden'}"
         )
