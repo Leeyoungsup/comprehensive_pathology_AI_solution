@@ -150,12 +150,8 @@ class WSIViewWidget(QGraphicsView):
             width, height = self.tile_manager.get_level_dimensions(0)
             self.scene_scale = 1.0  # 레벨 0 기준으로 1:1 스케일
             
-            # Scene 여유 공간 설정
-            margin = max(width, height) * 0.1
-            self.scene.setSceneRect(
-                -margin, -margin,
-                width + 2 * margin, height + 2 * margin
-            )
+            # Scene 크기를 이미지 크기로 설정 (여백 없음, 클램핑으로 제어)
+            self.scene.setSceneRect(0, 0, width, height)
 
             # min_zoom 동적 계산 (이미지가 뷰포트보다 작아지지 않도록)
             self._update_min_zoom()
@@ -194,7 +190,8 @@ class WSIViewWidget(QGraphicsView):
             self.update_field_of_view()
     
     def _update_min_zoom(self):
-        """뷰포트와 이미지 크기를 기반으로 최소 줌 레벨을 동적 계산"""
+        """뷰포트와 이미지 크기를 기반으로 최소 줌 레벨을 동적 계산.
+        min()으로 이미지 전체가 보이도록 함."""
         if not self.tile_manager:
             return
         img_w, img_h = self.tile_manager.get_level_dimensions(0)
@@ -202,12 +199,12 @@ class WSIViewWidget(QGraphicsView):
         vp_w, vp_h = vp.width(), vp.height()
         if vp_w <= 0 or vp_h <= 0 or img_w <= 0 or img_h <= 0:
             return
-        # 이미지가 뷰포트를 채우는 최소 스케일 (fit scale)
+        # min: 이미지 전체가 뷰포트 안에 보이는 스케일
         fit_scale = min(vp_w / img_w, vp_h / img_h)
         self.min_zoom = fit_scale
 
     def fit_to_window(self):
-        """이미지를 윈도우 크기에 맞추기 (레터박스 없이)"""
+        """이미지를 윈도우 크기에 맞추기 (레터박스 없이, 뷰포트를 꽉 채움)"""
         if not self.tile_manager:
             return
 
@@ -219,7 +216,7 @@ class WSIViewWidget(QGraphicsView):
         if vp_w <= 0 or vp_h <= 0:
             return
 
-        # 이미지 전체가 보이도록 스케일 계산 (KeepAspectRatio)
+        # min: 이미지 전체가 뷰포트 안에 보이도록
         scale = min(vp_w / img_w, vp_h / img_h)
 
         self.resetTransform()
@@ -238,13 +235,35 @@ class WSIViewWidget(QGraphicsView):
         return self.tile_manager.mpp / self.zoom_level
 
     def _clamp_view_to_image(self):
-        """뷰 중심이 이미지 영역 밖으로 벗어나지 않도록 클램핑"""
+        """뷰 가장자리가 이미지 밖으로 벗어나지 않도록 클램핑.
+        뷰포트에 빈 공간(레터박스)이 보이지 않도록 뷰 중심을 제한한다."""
         if not self.tile_manager:
             return
         img_w, img_h = self.tile_manager.get_level_dimensions(0)
-        view_center = self.mapToScene(self.viewport().rect().center())
-        cx = max(0, min(view_center.x(), img_w))
-        cy = max(0, min(view_center.y(), img_h))
+        vp = self.viewport().rect()
+        zoom = self.transform().m11()
+        if zoom <= 0:
+            return
+
+        # 뷰포트가 scene 좌표로 차지하는 크기
+        half_vw = (vp.width() / zoom) / 2.0
+        half_vh = (vp.height() / zoom) / 2.0
+
+        view_center = self.mapToScene(vp.center())
+        cx, cy = view_center.x(), view_center.y()
+
+        # 뷰 가장자리가 이미지 경계 안에 있도록 중심 제한
+        # 이미지가 뷰포트보다 큰 축: 가장자리가 밖으로 나가지 않게
+        # 이미지가 뷰포트보다 작은 축: 이미지 중앙 고정 (발생하지 않아야 함)
+        if img_w > half_vw * 2:
+            cx = max(half_vw, min(cx, img_w - half_vw))
+        else:
+            cx = img_w / 2.0
+        if img_h > half_vh * 2:
+            cy = max(half_vh, min(cy, img_h - half_vh))
+        else:
+            cy = img_h / 2.0
+
         if cx != view_center.x() or cy != view_center.y():
             self.centerOn(cx, cy)
 
