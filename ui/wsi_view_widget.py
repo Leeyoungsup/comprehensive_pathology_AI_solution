@@ -6,7 +6,7 @@ ASAP 구조를 참고한 타일 기반 렌더링 시스템
 
 from PyQt5.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QMainWindow
 from PyQt5.QtCore import Qt, QPoint, QRectF, pyqtSignal, QEvent, QTimer
-from PyQt5.QtGui import QWheelEvent, QMouseEvent, QPainter, QBrush, QColor, QKeyEvent
+from PyQt5.QtGui import QWheelEvent, QMouseEvent, QPainter, QBrush, QColor, QKeyEvent, QPalette
 from pathlib import Path
 import sys
 
@@ -57,9 +57,10 @@ class WSIViewWidget(QGraphicsView):
         # Scene 설정
         self.scene = QGraphicsScene(self)
         self.setScene(self.scene)
-        self.scene.setBackgroundBrush(QBrush(QColor(255, 255, 255)))
-        # Viewport 배경도 흰색 (scene 바깥 영역)
-        self.setStyleSheet("QGraphicsView { background: white; border: none; }")
+        self.scene.setBackgroundBrush(QBrush(QColor(0, 0, 0)))
+        # Viewport 배경 (scene 바깥 레터박스 영역) — 슬라이드 로드 전 검은색
+        self.setStyleSheet("QGraphicsView { border: none; }")
+        self._set_viewport_bg(QColor(0, 0, 0))
         
         # WSI 관련 속성
         self.tile_manager = None
@@ -160,6 +161,9 @@ class WSIViewWidget(QGraphicsView):
             self._pending_fit = True
             self.fit_to_window()
             
+            # 슬라이드 배경색 추정 (썸네일 4모서리 픽셀 평균)
+            self._update_background_from_slide()
+
             # 미니맵 초기화 및 표시
             thumbnail = self.tile_manager.get_thumbnail((300, 300))
             if thumbnail:
@@ -189,6 +193,34 @@ class WSIViewWidget(QGraphicsView):
             self.centerOn(img_x, img_y)
             self.update_field_of_view()
     
+    def _set_viewport_bg(self, color: QColor):
+        """뷰포트 레터박스 배경색 설정 (scene 바깥 영역)."""
+        palette = self.viewport().palette()
+        palette.setColor(QPalette.Window, color)
+        self.viewport().setPalette(palette)
+        self.viewport().setAutoFillBackground(True)
+
+    def _update_background_from_slide(self):
+        """슬라이드 썸네일의 4모서리 픽셀 평균으로 배경색 추정."""
+        import numpy as np
+        try:
+            thumb = self.tile_manager.slide.get_thumbnail((128, 128)).convert('RGB')
+            arr = np.array(thumb)
+            h, w = arr.shape[:2]
+            margin = max(1, min(8, h // 8, w // 8))
+            corners = np.concatenate([
+                arr[:margin, :margin].reshape(-1, 3),
+                arr[:margin, -margin:].reshape(-1, 3),
+                arr[-margin:, :margin].reshape(-1, 3),
+                arr[-margin:, -margin:].reshape(-1, 3),
+            ])
+            r, g, b = int(corners[:, 0].mean()), int(corners[:, 1].mean()), int(corners[:, 2].mean())
+            bg = QColor(r, g, b)
+            self.scene.setBackgroundBrush(QBrush(bg))
+            self._set_viewport_bg(bg)
+        except Exception:
+            pass
+
     def _update_min_zoom(self):
         """뷰포트와 이미지 크기를 기반으로 최소 줌 레벨을 동적 계산.
         min()으로 이미지 전체가 보이도록 함."""
