@@ -1,8 +1,8 @@
 """
-FastAPI main app
+FastAPI main app (v3 - Multi-Instance)
 
-HnE Cell Detection REST API server
-Run: uvicorn api.main:app --host 0.0.0.0 --port 8000
+Multiple folder watchers with per-instance GPU assignment.
+Run: uvicorn api.main:app --host 0.0.0.0 --port 8001
 """
 
 from __future__ import annotations
@@ -12,10 +12,11 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import torch
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-# Add project root to sys.path (ensure import paths for ai modules, etc.)
+# Add project root to sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -24,19 +25,19 @@ if str(PROJECT_ROOT) not in sys.path:
 _openslide_lib = PROJECT_ROOT / "libs" / "openslide_lib"
 if _openslide_lib.exists():
     import os
+
     os.add_dll_directory(str(_openslide_lib))
     os.environ["PATH"] = str(_openslide_lib) + os.pathsep + os.environ.get("PATH", "")
-    # If DLLs are in a bin/ subdirectory
     _openslide_bin = _openslide_lib / "bin"
     if _openslide_bin.exists():
         os.add_dll_directory(str(_openslide_bin))
         os.environ["PATH"] = str(_openslide_bin) + os.pathsep + os.environ.get("PATH", "")
 
-from api.services.detection_api_service import get_detection_service
+from api.folder_watcher import get_watcher_manager
 from api.routers.detection import router as detection_router
 
 # ============================================================================
-# Server start time (for uptime calculation)
+# Server start time
 # ============================================================================
 _start_time: float = 0.0
 
@@ -46,51 +47,55 @@ def get_start_time() -> float:
 
 
 # ============================================================================
-# Lifespan (startup / shutdown)
+# Lifespan
 # ============================================================================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Manage resources on app startup/shutdown"""
     global _start_time
     _start_time = time.time()
 
     print("=" * 60)
-    print("  HnE Cell Detection API Server Starting...")
+    print("  Pathology AI - Multi-Instance Watcher API")
     print("=" * 60)
 
-    # Pre-load detection model
-    service = get_detection_service()
-    print(f"Device: {service.get_device_str()}")
-
-    model_path = PROJECT_ROOT / "model" / "HnE_detection.pt"
-    if model_path.exists():
-        success = service.load_detection_model(str(model_path))
-        if success:
-            print(f"Detection model loaded: {model_path.name}")
-        else:
-            print(f"Failed to load detection model: {model_path}")
+    # GPU info
+    if torch.cuda.is_available():
+        n_gpus = torch.cuda.device_count()
+        print(f"  GPUs available: {n_gpus}")
+        for i in range(n_gpus):
+            name = torch.cuda.get_device_name(i)
+            props = torch.cuda.get_device_properties(i)
+            total = getattr(props, "total_memory", 0) or getattr(props, "total_mem", 0)
+            print(f"    cuda:{i} - {name} ({total / (1024**3):.1f} GB)")
     else:
-        print(f"Detection model file not found: {model_path}")
-        print("  -> Will attempt auto-load on /detection/analyze call")
+        print("  GPU: Not available (CPU mode)")
 
-    # Check segmentation model file existence
-    for name in ["HnE_BR_segmentation.pt", "HnE_ST_segmentation.pt"]:
-        seg_path = PROJECT_ROOT / "model" / name
-        status = "✓" if seg_path.exists() else "✗"
-        print(f"  {status} {name}")
+    # Check model files
+    model_dir = PROJECT_ROOT / "model"
+    for name in ["HnE_detection.pt", "HnE_BR_segmentation.pt", "HnE_ST_segmentation.pt"]:
+        path = model_dir / name
+        status = "OK" if path.exists() else "NOT FOUND"
+        print(f"  {name}: {status}")
 
     print("=" * 60)
-    print("  Server ready!")
-    print("  Docs: http://localhost:8000/docs")
+    print("  Server ready! Docs: http://localhost:8001/docs")
+    print()
+    print("  Quick start:")
+    print("    POST /api/v1/detection/instances")
+    print("      instance_id=my_watcher")
+    print("      watch_folder=C:/path/to/slides")
+    print("      device=cuda:0")
+    print("      tissue_type=Breast")
     print("=" * 60)
 
-    yield  # App running
+    yield
 
     # Shutdown
-    print("Server shutting down...")
-    service.unload_detection_model()
-    print("Models unloaded")
+    print("Shutting down all instances...")
+    manager = get_watcher_manager()
+    manager.stop_all()
+    print("Shutdown complete.")
 
 
 # ============================================================================
@@ -98,19 +103,17 @@ async def lifespan(app: FastAPI):
 # ============================================================================
 
 app = FastAPI(
-    title="HnE Cell Detection API",
+    title="Pathology AI - Multi-Instance Watcher API",
     description=(
-        "REST API for detecting cells in H&E-stained pathology images (WSI) "
-        "and automatically reclassifying Epithelial cells as Tumor/Benign "
-        "for Breast/Stomach tissue"
+        "Run multiple independent folder watchers, each with its own GPU device "
+        "and tissue type. Automatically detects cells in WSI slides and saves results."
     ),
-    version="1.0.0",
+    version="3.0.0",
     lifespan=lifespan,
     docs_url="/docs",
     redoc_url="/redoc",
 )
 
-# CORS configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -119,34 +122,35 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Register router (prefix: /api/v1)
 app.include_router(detection_router, prefix="/api/v1")
 
-
-# ============================================================================
-# Root
-# ============================================================================
 
 @app.get("/", tags=["root"])
 async def root():
     return {
-        "name": "HnE Cell Detection API",
-        "version": "1.0.0",
+        "name": "Pathology AI - Multi-Instance Watcher API",
+        "version": "3.0.0",
         "docs": "/docs",
-        "api_prefix": "/api/v1",
+        "endpoints": {
+            "create_instance": "POST /api/v1/detection/instances",
+            "list_instances": "GET  /api/v1/detection/instances",
+            "instance_status": "GET  /api/v1/detection/instances/{id}/status",
+            "instance_slides": "GET  /api/v1/detection/instances/{id}/slides",
+            "start_instance": "POST /api/v1/detection/instances/{id}/start",
+            "stop_instance": "POST /api/v1/detection/instances/{id}/stop",
+            "delete_instance": "DELETE /api/v1/detection/instances/{id}",
+            "health": "GET  /api/v1/detection/health",
+        },
     }
 
 
-# ============================================================================
-# CLI execution
-# ============================================================================
-
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(
         "api.main:app",
         host="0.0.0.0",
-        port=8000,
+        port=8002,
         reload=False,
         log_level="info",
     )

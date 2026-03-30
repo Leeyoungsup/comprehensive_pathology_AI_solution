@@ -59,6 +59,10 @@ class PathologyViewer(QMainWindow):
         self.is_pdl1_running = False
         self.current_pdl1_result = None
 
+        # Virtual Stain module
+        self.virtual_stain_worker = None
+        self.is_virtual_stain_running = False
+
         # Per-class detection result cache
         self.current_detection_result = None
         
@@ -200,6 +204,8 @@ class PathologyViewer(QMainWindow):
         self.btnTumorSegmentation.clicked.connect(self.run_tumor_segmentation)
         self.btnVisualization.clicked.connect(self.show_detection_visualization)
         self.btnPDL1Detection.clicked.connect(self.run_pdl1_detection)
+        self.btnIHCtoHnEMembrane.clicked.connect(self.run_virtual_stain_ihc_membrane)
+        self.chkShowVirtualStain.toggled.connect(self.toggle_virtual_stain)
 
         # 조직 타입 Radio button
         self.radioBreast.toggled.connect(self.on_tissue_type_changed)
@@ -268,8 +274,13 @@ class PathologyViewer(QMainWindow):
             # 이전 결과 모두 초기화
             self.current_detection_result = None
             self.current_segmentation_result = None
+            self.current_pdl1_result = None
+            self.all_raw_cells = []
+            self.current_class_thresholds = {}
+            self.is_pdl1_mode = False
             self.wsi_viewer.clear_detection_results()  # Detection overlay 제거
             self.wsi_viewer.clear_segmentation_overlay()  # Segmentation overlay 제거
+            self.clear_virtual_stain()                 # Virtual Stain overlay 제거
             self.wsi_viewer.clear_annotations()        # Annotation/Polygon 제거
             self.annotation_panel.clear_annotations()  # Annotation 패널 테이블 초기화
             self.resultList.clear()                    # 결과 리스트 초기화
@@ -792,6 +803,130 @@ class PathologyViewer(QMainWindow):
         except Exception as e:
             print(f"PD-L1 auto-save failed: {e}")
 
+    # ── Virtual Stain (IHC → H&E) ──
+
+    def run_virtual_stain_ihc_membrane(self):
+        """IHC → H&E (Membrane) virtual staining"""
+        if self.is_virtual_stain_running:
+            # Cancel
+            self.btnIHCtoHnEMembrane.setText("IHC → H&&E (Membrane)")
+            self.is_virtual_stain_running = False
+            if self.virtual_stain_worker:
+                self.virtual_stain_worker.cancel()
+            self.statusbar.showMessage("Virtual staining stopped.")
+            return
+
+        if not self.current_image_path:
+            self.statusbar.showMessage("Please load an image first.")
+            return
+
+        # Model path
+        model_path = os.path.join(str(project_root), "model", "F_99.pth")
+        if not os.path.exists(model_path):
+            QMessageBox.critical(self, "Error",
+                                 f"Virtual stain model not found:\n{model_path}")
+            return
+
+        # ROI bounds
+        roi_bounds = None
+        if self.wsi_viewer.annotation_list.annotations:
+            from core.annotation import Annotation
+            all_coords = []
+            for ann in self.wsi_viewer.annotation_list.annotations:
+                pts = ann.get('points', [])
+                if pts:
+                    xs = [p[0] for p in pts]
+                    ys = [p[1] for p in pts]
+                    all_coords.extend(list(zip(xs, ys)))
+            if all_coords:
+                xs = [c[0] for c in all_coords]
+                ys = [c[1] for c in all_coords]
+                roi_bounds = (int(min(xs)), int(min(ys)),
+                              int(max(xs)), int(max(ys)))
+
+        # Button state
+        self.btnIHCtoHnEMembrane.setText("⏸ Stop")
+        self.is_virtual_stain_running = True
+        self.progressBar.setValue(0)
+        self.progressLabel.setText("Initializing Virtual Stain...")
+
+        from ai.virtual_stain import VirtualStainWorker
+        self.virtual_stain_worker = VirtualStainWorker(
+            image_path=self.current_image_path,
+            model_path=model_path,
+            stain_type="ihc_membrane",
+            target_mpp=2.0,
+            patch_size=512,
+            roi_bounds=roi_bounds,
+        )
+        self.virtual_stain_worker.finished.connect(self.on_virtual_stain_complete)
+        self.virtual_stain_worker.progress.connect(self.on_ai_progress)
+        self.virtual_stain_worker.status.connect(self.on_detection_status)
+        self.virtual_stain_worker.error.connect(self.on_virtual_stain_error)
+        self.virtual_stain_worker.start()
+
+        self.statusbar.showMessage("Running IHC → H&E (Membrane) virtual staining...")
+
+    def on_virtual_stain_complete(self, result):
+        """Virtual staining 완료 → WSI 뷰어에 오버레이로 표시"""
+        self.is_virtual_stain_running = False
+        self.btnIHCtoHnEMembrane.setText("IHC → H&&E (Membrane)")
+
+        tissue_count = result.get('tissue_count', 0)
+        total = result.get('total_patches', 0)
+
+        self.progressBar.setValue(100)
+        self.progressLabel.setText("Virtual staining complete")
+
+        # WSI 뷰어에 오버레이 표시 (줌/패닝 동기화)
+        self.wsi_viewer.set_virtual_stain_overlay(
+            canvas=result['canvas'],
+            metadata={
+                'roi_origin': result['roi_origin'],
+                'target_mpp': result['target_mpp'],
+                'canvas_l0_w': result['canvas_l0_w'],
+                'canvas_l0_h': result['canvas_l0_h'],
+            }
+        )
+
+        # 체크박스 활성화 + 체크
+        self.chkShowVirtualStain.setEnabled(True)
+        self.chkShowVirtualStain.blockSignals(True)
+        self.chkShowVirtualStain.setChecked(True)
+        self.chkShowVirtualStain.blockSignals(False)
+
+        self.statusbar.showMessage(
+            f"Virtual staining complete — {tissue_count}/{total} tissue patches"
+        )
+
+    def on_virtual_stain_error(self, error_msg):
+        """Virtual staining 에러"""
+        self.is_virtual_stain_running = False
+        self.btnIHCtoHnEMembrane.setText("IHC → H&&E (Membrane)")
+        self.progressLabel.setText("Virtual staining failed")
+        self.statusbar.showMessage("Virtual staining failed")
+        print(error_msg)
+        QMessageBox.critical(self, "Error",
+                             f"Virtual staining failed:\n{error_msg.split(chr(10))[0]}")
+
+    def toggle_virtual_stain(self, checked):
+        """Virtual stain 오버레이 표시/숨김 (체크박스 토글)"""
+        if self.wsi_viewer.virtual_stain_canvas is None:
+            return
+        self.wsi_viewer.virtual_stain_visible = checked
+        self.wsi_viewer.update_virtual_stain_overlay()
+        self.statusbar.showMessage(
+            f"Virtual stain overlay: {'Visible' if checked else 'Hidden'}"
+        )
+
+    def clear_virtual_stain(self):
+        """Virtual stain 오버레이 제거"""
+        self.wsi_viewer.clear_virtual_stain_overlay()
+        self.chkShowVirtualStain.blockSignals(True)
+        self.chkShowVirtualStain.setEnabled(False)
+        self.chkShowVirtualStain.setChecked(False)
+        self.chkShowVirtualStain.blockSignals(False)
+
     def update_segmentation_result_list(self):
         """Segmentation 결과를 리스트에 표시"""
         if not self.current_segmentation_result:
@@ -1289,6 +1424,9 @@ class PathologyViewer(QMainWindow):
             self.all_raw_cells = []
             self.current_class_thresholds = {}
             self.is_pdl1_mode = False
+
+            # Virtual Stain 초기화
+            self.clear_virtual_stain()
 
             # 결과 리스트 초기화
             self.resultList.clear()

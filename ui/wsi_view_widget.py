@@ -107,6 +107,12 @@ class WSIViewWidget(QGraphicsView):
         self.segmentation_class_names = None
         self.segmentation_class_visibility = {}  # 클래스별 가시성
         self.segmentation_roi_bounds = None  # ROI 영역 정보
+
+        # Virtual Stain 오버레이
+        self.virtual_stain_overlay_item = None  # QGraphicsPixmapItem
+        self.virtual_stain_canvas = None         # np.ndarray (H, W, 3)
+        self.virtual_stain_metadata = None       # dict with roi_origin, target_mpp, canvas_l0_w/h
+        self.virtual_stain_visible = True
         
         # 오버레이 업데이트 디바운싱 타이머
         self.overlay_update_timer = QTimer(self)
@@ -285,6 +291,10 @@ class WSIViewWidget(QGraphicsView):
         # Segmentation 오버레이 업데이트
         if self.segmentation_mask is not None:
             self.update_segmentation_overlay()
+
+        # Virtual Stain 오버레이 업데이트
+        if self.virtual_stain_canvas is not None:
+            self.update_virtual_stain_overlay()
         
         # 즉시 캐시된 타일 렌더링
         self.on_tiles_updated()
@@ -689,6 +699,85 @@ class WSIViewWidget(QGraphicsView):
         if hasattr(self, 'segmentation_roi_polygons'):
             self.segmentation_roi_polygons = None
     
+    # ── Virtual Stain Overlay ──
+
+    def set_virtual_stain_overlay(self, canvas, metadata):
+        """
+        Virtual stain 결과를 WSI 좌표에 오버레이로 표시.
+        canvas: np.ndarray (H, W, 3) uint8 RGB
+        metadata: dict with 'roi_origin', 'target_mpp', 'canvas_l0_w', 'canvas_l0_h'
+        """
+        self.virtual_stain_canvas = canvas
+        self.virtual_stain_metadata = metadata
+        self.virtual_stain_visible = True
+        self.update_virtual_stain_overlay()
+
+    def update_virtual_stain_overlay(self):
+        """Virtual stain 오버레이를 현재 뷰에 맞게 업데이트"""
+        if self.virtual_stain_canvas is None or self.virtual_stain_metadata is None:
+            return
+
+        # 기존 아이템 제거
+        if self.virtual_stain_overlay_item:
+            try:
+                self.scene.removeItem(self.virtual_stain_overlay_item)
+            except RuntimeError:
+                pass
+            self.virtual_stain_overlay_item = None
+
+        if not self.virtual_stain_visible:
+            return
+
+        import numpy as np
+        from PyQt5.QtGui import QImage, QPixmap
+
+        canvas = self.virtual_stain_canvas
+        meta = self.virtual_stain_metadata
+        h, w = canvas.shape[:2]
+
+        # WSI level-0 좌표 원점
+        origin_x, origin_y = meta.get('roi_origin', (0, 0))
+        # canvas가 커버하는 level-0 영역 크기
+        canvas_l0_w = meta.get('canvas_l0_w', w)
+        canvas_l0_h = meta.get('canvas_l0_h', h)
+
+        # scale: canvas 1px이 WSI level-0에서 몇 px인지
+        actual_scale_x = canvas_l0_w / w
+        actual_scale_y = canvas_l0_h / h
+        actual_scale = (actual_scale_x + actual_scale_y) / 2.0
+
+        # RGB → QPixmap
+        bytes_per_line = 3 * w
+        qimage = QImage(canvas.data, w, h, bytes_per_line, QImage.Format_RGB888)
+        pixmap = QPixmap.fromImage(qimage)
+
+        self.virtual_stain_overlay_item = QGraphicsPixmapItem(pixmap)
+        self.virtual_stain_overlay_item.setPos(origin_x, origin_y)
+        self.virtual_stain_overlay_item.setScale(actual_scale)
+        self.virtual_stain_overlay_item.setZValue(40)  # 타일 위, segmentation 아래
+        self.scene.addItem(self.virtual_stain_overlay_item)
+
+    def toggle_virtual_stain_overlay(self):
+        """Virtual stain 오버레이 표시/숨김 토글"""
+        if self.virtual_stain_canvas is None:
+            return False
+        self.virtual_stain_visible = not self.virtual_stain_visible
+        self.update_virtual_stain_overlay()
+        return self.virtual_stain_visible
+
+    def clear_virtual_stain_overlay(self):
+        """Virtual stain 오버레이 제거"""
+        if self.virtual_stain_overlay_item:
+            try:
+                self.scene.removeItem(self.virtual_stain_overlay_item)
+            except RuntimeError:
+                pass
+            self.virtual_stain_overlay_item = None
+
+        self.virtual_stain_canvas = None
+        self.virtual_stain_metadata = None
+        self.virtual_stain_visible = True
+
     def set_detection_class_visibility(self, cls_id, visible):
         """특정 클래스의 가시성 설정"""
         if self.detection_overlay:

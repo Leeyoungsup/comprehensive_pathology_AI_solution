@@ -158,6 +158,69 @@
                </item>
               </layout>
              </widget>
+             <widget class="QWidget" name="virtualStainTab">
+              <attribute name="title">
+               <string>Virtual Stain</string>
+              </attribute>
+              <layout class="QVBoxLayout" name="verticalLayout_vstain">
+               <item>
+                <widget class="QGroupBox" name="vstainAIGroup">
+                 <property name="title">
+                  <string>AI</string>
+                 </property>
+                 <layout class="QVBoxLayout" name="verticalLayout_vstain_ai">
+                  <item>
+                   <widget class="QPushButton" name="btnIHCtoHnEMembrane">
+                    <property name="text">
+                     <string>IHC → H&amp;E (Membrane)</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item>
+                   <widget class="QPushButton" name="btnIHCtoHnENucleus">
+                    <property name="text">
+                     <string>IHC → H&amp;E (Nucleus)</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item>
+                   <widget class="QPushButton" name="btnUnstainedToHnE">
+                    <property name="text">
+                     <string>Unstained → H&amp;E</string>
+                    </property>
+                   </widget>
+                  </item>
+                 </layout>
+                </widget>
+               </item>
+               <item>
+                <widget class="QCheckBox" name="chkShowVirtualStain">
+                 <property name="text">
+                  <string>Show Virtual Stain Result</string>
+                 </property>
+                 <property name="enabled">
+                  <bool>false</bool>
+                 </property>
+                 <property name="checked">
+                  <bool>false</bool>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <spacer name="verticalSpacer_vstain">
+                 <property name="orientation">
+                  <enum>Qt::Vertical</enum>
+                 </property>
+                 <property name="sizeHint" stdset="0">
+                  <size>
+                   <width>20</width>
+                   <height>40</height>
+                  </size>
+                 </property>
+                </spacer>
+               </item>
+              </layout>
+             </widget>
              <widget class="QWidget" name="pdl1Tab">
               <attribute name="title">
                <string>PD-L1</string>
@@ -204,11 +267,11 @@
                </item>
               </layout>
              </widget>
-             <widget class="QWidget" name="her2Tab">
+             <widget class="QWidget" name="subtypingTab">
               <attribute name="title">
-               <string>HER2</string>
+               <string>Subtyping</string>
               </attribute>
-              <layout class="QVBoxLayout" name="verticalLayout_her2">
+              <layout class="QVBoxLayout" name="verticalLayout_subtyping">
                <item>
                 <widget class="QPushButton" name="btnHER2Detection">
                  <property name="text">
@@ -216,26 +279,6 @@
                  </property>
                 </widget>
                </item>
-               <item>
-                <spacer name="verticalSpacer_her2">
-                 <property name="orientation">
-                  <enum>Qt::Vertical</enum>
-                 </property>
-                 <property name="sizeHint" stdset="0">
-                  <size>
-                   <width>20</width>
-                   <height>40</height>
-                  </size>
-                 </property>
-                </spacer>
-               </item>
-              </layout>
-             </widget>
-             <widget class="QWidget" name="erTab">
-              <attribute name="title">
-               <string>ER/PR</string>
-              </attribute>
-              <layout class="QVBoxLayout" name="verticalLayout_er">
                <item>
                 <widget class="QPushButton" name="btnERDetection">
                  <property name="text">
@@ -251,7 +294,14 @@
                 </widget>
                </item>
                <item>
-                <spacer name="verticalSpacer_er">
+                <widget class="QPushButton" name="btnKi67Detection">
+                 <property name="text">
+                  <string>Ki-67 Detection</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <spacer name="verticalSpacer_subtyping">
                  <property name="orientation">
                   <enum>Qt::Vertical</enum>
                  </property>

@@ -1,209 +1,108 @@
 """
-Pydantic schema definitions
-Request/response models for the HnE Cell Detection API
+Pydantic schema definitions for the Folder Watcher API (Multi-Instance)
 """
 
 from __future__ import annotations
 
-from enum import Enum
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field, field_validator
-
-
-# ============================================================================
-# Enums
-# ============================================================================
-
-class TissueType(str, Enum):
-    BREAST = "Breast"
-    STOMACH = "Stomach"
-    OTHER = "Other"
-
-
-# ============================================================================
-# ROI related
-# ============================================================================
-
-class PolygonROI(BaseModel):
-    """Polygon-shaped ROI"""
-    type: str = "Polygon"
-    coordinates: List[List[float]] = Field(..., description="Coordinate array in [[x1,y1],[x2,y2],...] format")
-
-
-class RectangleROI(BaseModel):
-    """Rectangle-shaped ROI"""
-    type: str = "Rectangle"
-    x: float
-    y: float
-    width: float
-    height: float
-
-
-ROIItem = Union[PolygonROI, RectangleROI]
-
-
-# ============================================================================
-# Cell results
-# ============================================================================
-
-class CellDetectionItem(BaseModel):
-    """Individual detected cell"""
-    x: float = Field(..., description="WSI level-0 X coordinate")
-    y: float = Field(..., description="WSI level-0 Y coordinate")
-    cls_id: int = Field(..., ge=0, le=7, description="Class ID (0-7)")
-    cls_name: str = Field(..., description="Class name")
-    confidence: float = Field(..., ge=0.0, le=1.0, description="Detection confidence")
-
-
-# ============================================================================
-# Summary
-# ============================================================================
-
-CLASS_NAMES = {
-    0: "Neutrophil",
-    1: "Epithelial",
-    2: "Lymphocyte",
-    3: "Plasma",
-    4: "Eosinophil",
-    5: "Connective tissue",
-    6: "Tumor Epithelial",
-    7: "Benign Epithelial",
-}
-
-CLASS_COLORS = {
-    0: "#FF4500",
-    1: "#00FF00",
-    2: "#0000FF",
-    3: "#FFFF00",
-    4: "#8A2BE2",
-    5: "#808080",
-    6: "#FF0000",
-    7: "#00FF00",
-}
-
-
-class EpithelialBreakdown(BaseModel):
-    """Epithelial reclassification details"""
-    total_original_epithelial: int = 0
-    reclassified_to_tumor: int = 0
-    reclassified_to_benign: int = 0
-    tumor_ratio: float = 0.0
-
-
-class DetectionSummary(BaseModel):
-    """Detection result summary"""
-    total_cells: int = 0
-    class_counts: Dict[str, int] = Field(
-        default_factory=lambda: {name: 0 for name in CLASS_NAMES.values()}
-    )
-    epithelial_breakdown: Optional[EpithelialBreakdown] = None
-
-
-class ImageMetadata(BaseModel):
-    """Image metadata"""
-    image_name: str = ""
-    image_dimensions: List[int] = Field(default_factory=lambda: [0, 0])
-    mpp: float = 0.25
-    tissue_type: str = ""
-    model_name: str = "HnE_detection"
-    model_version: str = "YOLOv11m"
-    auto_epithelial_classify: bool = True
-    roi_applied: bool = False
-
-
-# ============================================================================
-# Segmentation
-# ============================================================================
-
-class SegmentationResult(BaseModel):
-    """Segmentation mask result"""
-    mask_shape: List[int] = Field(default_factory=list)
-    output_mpp: float = 4.0
-    wsi_mpp: float = 0.25
-    region_offset: List[int] = Field(default_factory=lambda: [0, 0])
-    class_names: List[str] = Field(
-        default_factory=lambda: ["Background", "Stroma", "Non_Tumor", "Tumor"]
-    )
-    class_polygons: Optional[Dict[str, Any]] = None
-    polygon_coordinate_system: str = "wsi_level0"
+from pydantic import BaseModel, Field
 
 
 # ============================================================================
 # Response Models
 # ============================================================================
 
-class DetectionResponse(BaseModel):
-    """Detection success response"""
-    status: str = "success"
-    task_id: str = ""
+class InstanceConfig(BaseModel):
+    """Instance configuration info."""
+    watch_folder: str
+    output_folder: str
+    device: str = "cuda:0"
+    tissue_type: str = "Other"
+    auto_epithelial_classify: bool = False
+    scan_interval_sec: int = 10
+
+
+class DetectionCurrent(BaseModel):
+    """Currently running detection info."""
+    slide_path: str
+    file_name: str
+    started_at: str
+    progress: int = 0
+    message: str = ""
+    elapsed_sec: float = 0.0
+
+
+class DetectionHistoryItem(BaseModel):
+    """Detection history entry."""
+    file_name: str
+    slide_path: str
+    status: str
+    total_cells: Optional[int] = None
+    error: Optional[str] = None
     processing_time_sec: float = 0.0
-    metadata: ImageMetadata = Field(default_factory=ImageMetadata)
-    summary: DetectionSummary = Field(default_factory=DetectionSummary)
-    cells: List[CellDetectionItem] = Field(default_factory=list)
-    segmentation: Optional[SegmentationResult] = None
-    saved_path: Optional[str] = Field(None, description="Result JSON save path (when output_path is specified)")
+    result_path: Optional[str] = None
+    completed_at: str = ""
 
 
-
-# ============================================================================
-# Model Info
-# ============================================================================
-
-class ModelInfo(BaseModel):
-    """Model information"""
-    id: str
-    name: str
-    version: str
-    file: str
-    num_classes: int
-    classes: List[str]
-    input_size: Optional[int] = None
-    patch_size_level0: Optional[int] = None
-    output_mpp: Optional[float] = None
-    loaded: bool = False
-    device: Optional[str] = None
+class DetectionInfo(BaseModel):
+    """Detection state info."""
+    is_running: bool = False
+    current: Optional[DetectionCurrent] = None
+    recent_history: List[DetectionHistoryItem] = Field(default_factory=list)
 
 
-class ModelsResponse(BaseModel):
-    """Model list response"""
-    models: List[ModelInfo] = Field(default_factory=list)
+class SummaryInfo(BaseModel):
+    """Slide processing summary."""
+    total_slides: int = 0
+    completed: int = 0
+    pending: int = 0
 
 
-# ============================================================================
-# Health
-# ============================================================================
-
-class GPUInfo(BaseModel):
-    """GPU information"""
-    available: bool = False
-    device: Optional[str] = None
-    memory_total_gb: Optional[float] = None
-    memory_used_gb: Optional[float] = None
-    cuda_version: Optional[str] = None
+class InstanceStatus(BaseModel):
+    """Full status of a single watcher instance."""
+    instance_id: str
+    config: InstanceConfig
+    watcher_running: bool = False
+    detection: DetectionInfo = Field(default_factory=DetectionInfo)
+    summary: SummaryInfo = Field(default_factory=SummaryInfo)
 
 
-class HealthResponse(BaseModel):
-    """Service status response"""
-    status: str = "healthy"
-    version: str = "1.0.0"
-    gpu: GPUInfo = Field(default_factory=GPUInfo)
-    models: Dict[str, Any] = Field(default_factory=dict)
-    uptime_sec: float = 0.0
+class SlideEntry(BaseModel):
+    """Single slide entry from registry."""
+    slide_path: str
+    file_name: str
+    ai_completed: bool = False
+    ai_result_path: Optional[str] = None
+    registered_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    last_error: Optional[str] = None
+    last_error_at: Optional[str] = None
 
 
-# ============================================================================
-# Error
-# ============================================================================
-
-class ErrorDetail(BaseModel):
-    """Error details"""
-    code: str
-    message: str
-    detail: Optional[str] = None
+class SlidesResponse(BaseModel):
+    """Slides list response for an instance."""
+    instance_id: str
+    total: int = 0
+    completed: int = 0
+    pending: int = 0
+    slides: List[SlideEntry] = Field(default_factory=list)
 
 
-class ErrorResponse(BaseModel):
-    """Error response"""
-    status: str = "error"
-    error: ErrorDetail
+class CreateInstanceResponse(BaseModel):
+    """Response after creating an instance."""
+    status: str = "success"
+    message: str = ""
+    instance: InstanceStatus
+
+
+class MessageResponse(BaseModel):
+    """Simple message response."""
+    status: str = "success"
+    message: str = ""
+
+
+class AllInstancesResponse(BaseModel):
+    """List of all instances."""
+    total_instances: int = 0
+    instances: List[InstanceStatus] = Field(default_factory=list)

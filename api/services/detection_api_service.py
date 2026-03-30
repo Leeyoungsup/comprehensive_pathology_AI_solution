@@ -121,8 +121,11 @@ class DetectionAPIService:
     allowing multiple requests to call detect() sequentially/concurrently.
     """
 
-    def __init__(self):
-        self._device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    def __init__(self, device: str = None):
+        if device:
+            self._device = torch.device(device)
+        else:
+            self._device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self._model = None            # YOLOv11m detection model
         self._model_lock = threading.Lock()  # Model load/use synchronization
 

@@ -4,7 +4,14 @@
       "Read(//c/Users/liive/OneDrive/Desktop/project/**)",
       "Bash(grep -r -n ^[^:]*[uAC00-uD7AF] --include=*.py .)",
       "Bash(/tmp/korean_text_analysis.txt:*)",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''ai/virtual_stain.py'', encoding=''utf-8''\\).read\\(\\)\\); print\\(''ai/virtual_stain.py: OK''\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''ui/viewer_ui.py'', encoding=''utf-8''\\).read\\(\\)\\); print\\(''ui/viewer_ui.py: OK''\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''ui/viewer.py'', encoding=''utf-8''\\).read\\(\\)\\); print\\(''ui/viewer.py: OK''\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''ui/wsi_view_widget.py'', encoding=''utf-8''\\).read\\(\\)\\); print\\(''ui/wsi_view_widget.py: OK''\\)\")",
+      "Bash(python -c \"import xml.etree.ElementTree as ET; ET.parse\\(''ui/viewer.ui''\\); print\\(''viewer.ui: OK''\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''ui/viewer.py'', encoding=''utf-8''\\).read\\(\\)\\); print\\(''OK''\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''ai/virtual_stain.py'', encoding=''utf-8''\\).read\\(\\)\\); print\\(''OK''\\)\")"
     ]
   }
 }
