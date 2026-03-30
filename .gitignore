@@ -3,10 +3,12 @@ model/HnE_ST_segmentation.pt
 model/HnE_BR_segmentation.pt
 model/PDL1_TPS_detection.pt
 model/HnE_detection_backup.pt
+model/F_99.pth
 dist/
 dist_nuitka/
 build/
 PathologyAIViewer_Portable/
+PathologyAIViewer_Portable.zip
 __pycache__/
 ai/__pycache__/
 ai/nets/__pycache__/>
