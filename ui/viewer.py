@@ -838,7 +838,7 @@ class PathologyViewer(QMainWindow):
             return
 
         # Model path
-        model_path = os.path.join(str(project_root), "model", "F_99.pth")
+        model_path = os.path.join(str(project_root), "model", "IHC_HnE_virtual_stain_membrane.pth")
         if not os.path.exists(model_path):
             QMessageBox.critical(self, "Error",
                                  f"Virtual stain model not found:\n{model_path}")

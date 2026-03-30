@@ -3,7 +3,7 @@ model/HnE_ST_segmentation.pt
 model/HnE_BR_segmentation.pt
 model/PDL1_TPS_detection.pt
 model/HnE_detection_backup.pt
-model/F_99.pth
+model/IHC_HnE_virtual_stain_membrane.pth
 dist/
 dist_nuitka/
 build/
