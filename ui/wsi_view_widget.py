@@ -6,7 +6,7 @@ ASAP 구조를 참고한 타일 기반 렌더링 시스템
 
 from PyQt5.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QMainWindow
 from PyQt5.QtCore import Qt, QPoint, QRectF, pyqtSignal, QEvent, QTimer
-from PyQt5.QtGui import QWheelEvent, QMouseEvent, QPainter, QBrush, QColor, QKeyEvent, QPalette
+from PyQt5.QtGui import QWheelEvent, QMouseEvent, QPainter, QBrush, QColor, QKeyEvent
 from pathlib import Path
 import sys
 
@@ -58,9 +58,8 @@ class WSIViewWidget(QGraphicsView):
         self.scene = QGraphicsScene(self)
         self.setScene(self.scene)
         self.scene.setBackgroundBrush(QBrush(QColor(0, 0, 0)))
-        # View 자체의 배경 (레터박스 포함 전체 뷰포트) — 슬라이드 로드 전 검은색
-        self.setBackgroundBrush(QBrush(QColor(0, 0, 0)))
-        self.setStyleSheet("QGraphicsView { border: none; }")
+        # Viewport 배경 (scene 바깥 영역) — 슬라이드 로드 전 검은색
+        self.setStyleSheet("QGraphicsView { background: black; border: none; }")
         
         # WSI 관련 속성
         self.tile_manager = None
@@ -193,13 +192,6 @@ class WSIViewWidget(QGraphicsView):
             self.centerOn(img_x, img_y)
             self.update_field_of_view()
     
-    def _set_viewport_bg(self, color: QColor):
-        """뷰포트 레터박스 배경색 설정 (scene 바깥 영역)."""
-        palette = self.viewport().palette()
-        palette.setColor(QPalette.Window, color)
-        self.viewport().setPalette(palette)
-        self.viewport().setAutoFillBackground(True)
-
     def _update_background_from_slide(self):
         """슬라이드 썸네일의 4모서리 픽셀 평균으로 배경색 추정."""
         import numpy as np
@@ -217,7 +209,9 @@ class WSIViewWidget(QGraphicsView):
             r, g, b = int(corners[:, 0].mean()), int(corners[:, 1].mean()), int(corners[:, 2].mean())
             bg = QColor(r, g, b)
             self.scene.setBackgroundBrush(QBrush(bg))
-            self.setBackgroundBrush(QBrush(bg))
+            self.setStyleSheet(
+                f"QGraphicsView {{ background: rgb({r},{g},{b}); border: none; }}"
+            )
         except Exception:
             pass
 
