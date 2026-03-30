@@ -151,12 +151,15 @@ class WSIViewWidget(QGraphicsView):
             self.scene_scale = 1.0  # 레벨 0 기준으로 1:1 스케일
             
             # Scene 여유 공간 설정
-            margin = max(width, height) * 0.5
+            margin = max(width, height) * 0.1
             self.scene.setSceneRect(
                 -margin, -margin,
                 width + 2 * margin, height + 2 * margin
             )
-            
+
+            # min_zoom 동적 계산 (이미지가 뷰포트보다 작아지지 않도록)
+            self._update_min_zoom()
+
             # 초기 뷰 설정 (위젯 크기가 확정된 후 재실행)
             self._pending_fit = True
             self.fit_to_window()
@@ -190,6 +193,19 @@ class WSIViewWidget(QGraphicsView):
             self.centerOn(img_x, img_y)
             self.update_field_of_view()
     
+    def _update_min_zoom(self):
+        """뷰포트와 이미지 크기를 기반으로 최소 줌 레벨을 동적 계산"""
+        if not self.tile_manager:
+            return
+        img_w, img_h = self.tile_manager.get_level_dimensions(0)
+        vp = self.viewport().rect()
+        vp_w, vp_h = vp.width(), vp.height()
+        if vp_w <= 0 or vp_h <= 0 or img_w <= 0 or img_h <= 0:
+            return
+        # 이미지가 뷰포트를 채우는 최소 스케일 (fit scale)
+        fit_scale = min(vp_w / img_w, vp_h / img_h)
+        self.min_zoom = fit_scale
+
     def fit_to_window(self):
         """이미지를 윈도우 크기에 맞추기 (레터박스 없이)"""
         if not self.tile_manager:
@@ -221,22 +237,33 @@ class WSIViewWidget(QGraphicsView):
             return float('inf')
         return self.tile_manager.mpp / self.zoom_level
 
+    def _clamp_view_to_image(self):
+        """뷰 중심이 이미지 영역 밖으로 벗어나지 않도록 클램핑"""
+        if not self.tile_manager:
+            return
+        img_w, img_h = self.tile_manager.get_level_dimensions(0)
+        view_center = self.mapToScene(self.viewport().rect().center())
+        cx = max(0, min(view_center.x(), img_w))
+        cy = max(0, min(view_center.y(), img_h))
+        if cx != view_center.x() or cy != view_center.y():
+            self.centerOn(cx, cy)
+
     def set_zoom(self, zoom_level, anchor_pos=None):
         """줌 레벨 설정"""
         if not self.tile_manager:
             return
-        
+
         # 줌 레벨 제한
         zoom_level = max(self.min_zoom, min(self.max_zoom, zoom_level))
-        
+
         if anchor_pos:
             # 마우스 위치 기준 줌 (부분적 센터링)
             old_center = self.mapToScene(self.viewport().rect().center())
             target_pos = self.mapToScene(anchor_pos)
-            
+
             self.resetTransform()
             self.scale(zoom_level, zoom_level)
-            
+
             # 현재 중심과 마우스 위치의 중간 지점으로 이동 (30% 센터링 강도)
             centering_strength = 0.3  # 0.0 = 센터링 없음, 1.0 = 완전 센터링
             new_center_x = old_center.x() + (target_pos.x() - old_center.x()) * centering_strength
@@ -249,10 +276,13 @@ class WSIViewWidget(QGraphicsView):
             self.scale(zoom_level, zoom_level)
             self.centerOn(center)
         
+        # 뷰가 이미지 밖으로 벗어나지 않도록 클램핑
+        self._clamp_view_to_image()
+
         self.zoom_level = zoom_level
         self.zoomChanged.emit(zoom_level)
         self.update_field_of_view()
-    
+
     def zoom_in(self, anchor_pos=None):
         """줌 인"""
         if self.zoom_level >= self.max_zoom:
@@ -930,7 +960,8 @@ class WSIViewWidget(QGraphicsView):
             v_bar = self.verticalScrollBar()
             h_bar.setValue(h_bar.value() - delta.x())
             v_bar.setValue(v_bar.value() - delta.y())
-            
+
+            self._clamp_view_to_image()
             self.update_field_of_view()
             event.accept()
             return
@@ -1076,6 +1107,9 @@ class WSIViewWidget(QGraphicsView):
     def resizeEvent(self, event):
         """윈도우 크기 변경 시 처리"""
         super().resizeEvent(event)
+
+        # 뷰포트 크기 변경 시 min_zoom 재계산
+        self._update_min_zoom()
 
         # 초기 로드 시 위젯 크기 확정 후 fit 재실행
         if self._pending_fit and self.tile_manager:

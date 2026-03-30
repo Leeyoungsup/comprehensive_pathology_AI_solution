@@ -85,12 +85,15 @@ def _make_blend_weight(size, overlap):
 
 
 def _read_patch(slide, x0, y0, best_level, level_read, ps):
-    """Read a single patch from the slide (runs in I/O thread)."""
+    """Read a single patch from the slide (runs in I/O thread).
+    Out-of-bounds pixels are composited onto a white background."""
     region = slide.read_region((x0, y0), best_level, (level_read, level_read))
-    region = region.convert('RGB')
-    if region.size != (ps, ps):
-        region = region.resize((ps, ps), Image.BILINEAR)
-    return np.array(region, dtype=np.float32)
+    # RGBA → 흰색 배경 합성 (경계 밖 투명 픽셀이 검정이 되는 것 방지)
+    white_bg = Image.new('RGB', region.size, (255, 255, 255))
+    white_bg.paste(region, mask=region.split()[3])  # alpha 채널을 마스크로 사용
+    if white_bg.size != (ps, ps):
+        white_bg = white_bg.resize((ps, ps), Image.BILINEAR)
+    return np.array(white_bg, dtype=np.float32)
 
 
 class VirtualStainWorker(QThread):
@@ -208,14 +211,19 @@ class VirtualStainWorker(QThread):
                 return
 
             # ── 4. Build flat list of all patches with tissue flag ──
+            # 경계를 넘는 패치는 추론 스킵 (is_tissue=False)
             all_patches = []
             for yi in range(n_py):
                 for xi in range(n_px):
+                    x0 = pos_x[xi]
+                    y0 = pos_y[yi]
+                    out_of_bounds = (x0 + read_size > W) or (y0 + read_size > H)
+                    is_tissue = bool(tissue_grid[yi, xi]) and not out_of_bounds
                     all_patches.append((
                         xi, yi,
-                        pos_x[xi], pos_y[yi],
+                        x0, y0,
                         xi * stride, yi * stride,
-                        bool(tissue_grid[yi, xi]),
+                        is_tissue,
                     ))
 
             # ── 5. Pipelined inference ──
