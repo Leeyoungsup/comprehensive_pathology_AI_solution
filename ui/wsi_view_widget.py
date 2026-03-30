@@ -57,7 +57,9 @@ class WSIViewWidget(QGraphicsView):
         # Scene 설정
         self.scene = QGraphicsScene(self)
         self.setScene(self.scene)
-        self.scene.setBackgroundBrush(QBrush(QColor(43, 43, 43)))
+        self.scene.setBackgroundBrush(QBrush(QColor(255, 255, 255)))
+        # Viewport 배경도 흰색 (scene 바깥 영역)
+        self.setStyleSheet("QGraphicsView { background: white; border: none; }")
         
         # WSI 관련 속성
         self.tile_manager = None
@@ -89,6 +91,9 @@ class WSIViewWidget(QGraphicsView):
         self.last_view_pos = None  # 마지막 점 추가 위치 (view 좌표)
         # 지속 그리기 플래그 (툴을 켜둔 상태에서 계속 그리기)
         self.keep_drawing = False
+
+        # 초기 로드 후 첫 resize에서 fit 재실행 플래그
+        self._pending_fit = False
         
         # 미니맵 위젯 (오버레이)
         self.minimap = MiniMap(self)
@@ -152,7 +157,8 @@ class WSIViewWidget(QGraphicsView):
                 width + 2 * margin, height + 2 * margin
             )
             
-            # 초기 뷰 설정
+            # 초기 뷰 설정 (위젯 크기가 확정된 후 재실행)
+            self._pending_fit = True
             self.fit_to_window()
             
             # 미니맵 초기화 및 표시
@@ -185,21 +191,26 @@ class WSIViewWidget(QGraphicsView):
             self.update_field_of_view()
     
     def fit_to_window(self):
-        """이미지를 윈도우 크기에 맞추기"""
+        """이미지를 윈도우 크기에 맞추기 (레터박스 없이)"""
         if not self.tile_manager:
             return
-        
-        # 최상위 레벨 크기 가져오기
+
         level = 0
-        width, height = self.tile_manager.get_level_dimensions(level)
-        print(f"Fit to window: image size = {width}x{height}")
-        
-        # 화면에 맞추기
-        self.fitInView(0, 0, width, height, Qt.KeepAspectRatio)
-        
-        # 현재 줌 레벨 계산
+        img_w, img_h = self.tile_manager.get_level_dimensions(level)
+
+        vp = self.viewport().rect()
+        vp_w, vp_h = vp.width(), vp.height()
+        if vp_w <= 0 or vp_h <= 0:
+            return
+
+        # 이미지 전체가 보이도록 스케일 계산 (KeepAspectRatio)
+        scale = min(vp_w / img_w, vp_h / img_h)
+
+        self.resetTransform()
+        self.scale(scale, scale)
+        self.centerOn(img_w / 2.0, img_h / 2.0)
+
         self.zoom_level = self.transform().m11()
-        print(f"Initial zoom level: {self.zoom_level}")
         self.update_field_of_view()
     
     def get_effective_mpp(self):
@@ -709,22 +720,28 @@ class WSIViewWidget(QGraphicsView):
         self.virtual_stain_metadata = metadata
         self.virtual_stain_visible = True
 
-        from PyQt5.QtGui import QImage, QPixmap
+        from PyQt5.QtGui import QImage, QPixmap, QTransform
 
         h, w = canvas.shape[:2]
         origin_x, origin_y = metadata.get('roi_origin', (0, 0))
         canvas_l0_w = metadata.get('canvas_l0_w', w)
         canvas_l0_h = metadata.get('canvas_l0_h', h)
-        actual_scale = ((canvas_l0_w / w) + (canvas_l0_h / h)) / 2.0
+        scale_x = canvas_l0_w / w
+        scale_y = canvas_l0_h / h
 
-        # QPixmap 1회 생성 & 캐시
-        bytes_per_line = 3 * w
-        qimage = QImage(canvas.data, w, h, bytes_per_line, QImage.Format_RGB888)
+        # QPixmap 1회 생성 & 캐시 (RGBA for polygon masking)
+        channels = canvas.shape[2] if canvas.ndim == 3 else 1
+        if channels == 4:
+            bytes_per_line = 4 * w
+            qimage = QImage(canvas.data, w, h, bytes_per_line, QImage.Format_RGBA8888)
+        else:
+            bytes_per_line = 3 * w
+            qimage = QImage(canvas.data, w, h, bytes_per_line, QImage.Format_RGB888)
         pixmap = QPixmap.fromImage(qimage.copy())  # deep copy (numpy 수명과 분리)
 
         self.virtual_stain_overlay_item = QGraphicsPixmapItem(pixmap)
         self.virtual_stain_overlay_item.setPos(origin_x, origin_y)
-        self.virtual_stain_overlay_item.setScale(actual_scale)
+        self.virtual_stain_overlay_item.setTransform(QTransform.fromScale(scale_x, scale_y))
         self.virtual_stain_overlay_item.setZValue(40)
         self.scene.addItem(self.virtual_stain_overlay_item)
 
@@ -775,6 +792,16 @@ class WSIViewWidget(QGraphicsView):
         
         event.accept()
     
+    def _clamp_to_image(self, scene_pos):
+        """Scene 좌표를 이미지 영역(0,0)~(W,H) 내로 클램핑"""
+        x, y = scene_pos.x(), scene_pos.y()
+        if self.tile_manager:
+            w, h = self.tile_manager.get_level_dimensions(0)
+            x = max(0, min(x, w))
+            y = max(0, min(y, h))
+        from PyQt5.QtCore import QPointF
+        return QPointF(x, y)
+
     def mousePressEvent(self, event: QMouseEvent):
         """마우스 버튼 누름"""
         # Ctrl+드래그 시 패닝 (모든 모드에서 동작)
@@ -788,8 +815,8 @@ class WSIViewWidget(QGraphicsView):
         # Annotation 그리기 모드
         if self.annotation_mode == AnnotationMode.DRAWING_POLYGON:
             if event.button() == Qt.LeftButton:
-                # Scene 좌표로 변환
-                scene_pos = self.mapToScene(event.pos())
+                # Scene 좌표로 변환 (이미지 범위 내로 클램핑)
+                scene_pos = self._clamp_to_image(self.mapToScene(event.pos()))
                 
                 # 시작점 근처 체크 (최소 2점 이후, 즉 3번째 클릭부터)
                 # 2점 + 현재 클릭 = 3점이므로 유효한 polygon
@@ -836,9 +863,9 @@ class WSIViewWidget(QGraphicsView):
         
         elif self.annotation_mode == AnnotationMode.DRAWING_RECTANGLE:
             if event.button() == Qt.LeftButton:
-                # Scene 좌표로 변환
-                scene_pos = self.mapToScene(event.pos())
-                
+                # Scene 좌표로 변환 (이미지 범위 내로 클램핑)
+                scene_pos = self._clamp_to_image(self.mapToScene(event.pos()))
+
                 # Rectangle 그리기 시작
                 self.current_drawing = DrawingRectangleItem(self.annotation_color)
                 self.current_drawing.set_start_point(scene_pos.x(), scene_pos.y())
@@ -855,9 +882,9 @@ class WSIViewWidget(QGraphicsView):
         
         elif self.annotation_mode == AnnotationMode.DRAWING_POINT:
             if event.button() == Qt.LeftButton:
-                # Scene 좌표로 변환
-                scene_pos = self.mapToScene(event.pos())
-                
+                # Scene 좌표로 변환 (이미지 범위 내로 클램핑)
+                scene_pos = self._clamp_to_image(self.mapToScene(event.pos()))
+
                 # Point 즉시 생성
                 self.finish_drawing_point(scene_pos.x(), scene_pos.y())
                 
@@ -911,7 +938,7 @@ class WSIViewWidget(QGraphicsView):
         # Annotation 그리기 모드
         if self.annotation_mode == AnnotationMode.DRAWING_POLYGON and self.current_drawing:
             try:
-                scene_pos = self.mapToScene(event.pos())
+                scene_pos = self._clamp_to_image(self.mapToScene(event.pos()))
 
                 # 시작점 근처에 있는지 확인 (화면 좌표 기준으로 체크)
                 is_near_start = False
@@ -962,7 +989,7 @@ class WSIViewWidget(QGraphicsView):
         
         elif self.annotation_mode == AnnotationMode.DRAWING_RECTANGLE and self.is_drawing_drag and self.current_drawing:
             # Rectangle 그리기 중
-            scene_pos = self.mapToScene(event.pos())
+            scene_pos = self._clamp_to_image(self.mapToScene(event.pos()))
             self.current_drawing.update_end_point(scene_pos.x(), scene_pos.y())
             event.accept()
             return
@@ -1049,13 +1076,18 @@ class WSIViewWidget(QGraphicsView):
     def resizeEvent(self, event):
         """윈도우 크기 변경 시 처리"""
         super().resizeEvent(event)
-        
+
+        # 초기 로드 시 위젯 크기 확정 후 fit 재실행
+        if self._pending_fit and self.tile_manager:
+            self._pending_fit = False
+            QTimer.singleShot(0, self.fit_to_window)
+
         # 미니맵 위치 조정
         if hasattr(self, 'minimap'):
             minimap_x = 10
             minimap_y = self.height() - self.minimap.height() - 10
             self.minimap.move(minimap_x, minimap_y)
-        
+
         self.update_field_of_view()
     
     def close(self):

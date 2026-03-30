@@ -455,12 +455,15 @@ class PathologyViewer(QMainWindow):
             self.statusbar.showMessage("Please load an image first.")
             return
         
+        # AI 시작: 그리기 모드 해제
+        self.wsi_viewer.exit_drawing_mode()
+
         # 기존 Segmentation 결과 제거
         self.wsi_viewer.clear_segmentation_overlay()
         self.current_segmentation_result = None
         # ResultList 완전 초기화
         self.resultList.clear()
-        
+
         # Update button state
         self.btnHneCellDetection.setText("⏸ Stop")
         self.is_detection_running = True
@@ -566,6 +569,9 @@ class PathologyViewer(QMainWindow):
             QMessageBox.warning(self, "Warning", "Tumor segmentation cannot be performed in Other type.\nPlease select Breast or Stomach.")
             return
 
+        # AI 시작: 그리기 모드 해제
+        self.wsi_viewer.exit_drawing_mode()
+
         # 기존 Detection 결과 제거
         self.current_detection_result = None
         self.wsi_viewer.clear_detection_overlay()
@@ -637,6 +643,10 @@ class PathologyViewer(QMainWindow):
         self.progressLabel.setText("Segmentation complete")
         self.statusbar.showMessage("Tumor Segmentation complete")
 
+        # AI 완료: annotation 제거
+        self.wsi_viewer.clear_annotations()
+        self.annotation_panel.clear_annotations()
+
         # 자동저장
         if self.chkAutoSave.isChecked():
             self._auto_save_segmentation_result()
@@ -663,6 +673,9 @@ class PathologyViewer(QMainWindow):
         if not self.current_image_path:
             self.statusbar.showMessage("Please load an image first.")
             return
+
+        # AI 시작: 그리기 모드 해제
+        self.wsi_viewer.exit_drawing_mode()
 
         # 기존 결과 제거
         self.wsi_viewer.clear_segmentation_overlay()
@@ -759,6 +772,10 @@ class PathologyViewer(QMainWindow):
         if self.chkAutoSave.isChecked():
             self._auto_save_pdl1_result()
 
+        # AI 완료: annotation 제거
+        self.wsi_viewer.clear_annotations()
+        self.annotation_panel.clear_annotations()
+
         tps_category = self._get_tps_category(tps)
         self.statusbar.showMessage(f"PD-L1 detection complete - TPS: {tps:.1f}% ({tps_category})")
 
@@ -827,6 +844,9 @@ class PathologyViewer(QMainWindow):
                                  f"Virtual stain model not found:\n{model_path}")
             return
 
+        # AI 시작: 그리기 모드 해제
+        self.wsi_viewer.exit_drawing_mode()
+
         # ROI bounds & polygons
         roi_bounds = None
         roi_polygons = None
@@ -840,8 +860,19 @@ class PathologyViewer(QMainWindow):
             if all_coords:
                 xs = [c[0] for c in all_coords]
                 ys = [c[1] for c in all_coords]
-                roi_bounds = (int(min(xs)), int(min(ys)),
-                              int(max(xs)), int(max(ys)))
+                # 이미지 범위로 클램핑 (레터박스 영역 제외)
+                tile_mgr = self.wsi_viewer.get_tile_manager()
+                if tile_mgr:
+                    img_w, img_h = tile_mgr.get_level_dimensions(0)
+                    roi_bounds = (
+                        max(0, int(min(xs))),
+                        max(0, int(min(ys))),
+                        min(img_w, int(max(xs))),
+                        min(img_h, int(max(ys))),
+                    )
+                else:
+                    roi_bounds = (int(min(xs)), int(min(ys)),
+                                  int(max(xs)), int(max(ys)))
 
         # Button state
         self.btnIHCtoHnEMembrane.setText("⏸ Stop")
@@ -894,6 +925,10 @@ class PathologyViewer(QMainWindow):
         self.chkShowVirtualStain.blockSignals(True)
         self.chkShowVirtualStain.setChecked(True)
         self.chkShowVirtualStain.blockSignals(False)
+
+        # AI 완료: annotation 제거
+        self.wsi_viewer.clear_annotations()
+        self.annotation_panel.clear_annotations()
 
         self.statusbar.showMessage(
             f"Virtual staining complete — {tissue_count}/{total} tissue patches"
@@ -1105,6 +1140,10 @@ class PathologyViewer(QMainWindow):
         # 자동저장
         if self.chkAutoSave.isChecked():
             self._auto_save_detection_result()
+
+        # AI 완료: annotation 제거
+        self.wsi_viewer.clear_annotations()
+        self.annotation_panel.clear_annotations()
 
         # 버튼 상태 복원
         self.btnHneCellDetection.setText("(Integrated) Cell Detection")
@@ -1998,6 +2037,9 @@ class PathologyViewer(QMainWindow):
         if self.current_detection_result is None:
             QMessageBox.warning(self, "Warning", "Please run Cell Detection first.")
             return
+
+        # AI 시작: 그리기 모드 해제
+        self.wsi_viewer.exit_drawing_mode()
 
         # Load segmentation model if not loaded
         if not self.epithelial_classification_service.is_model_loaded():

@@ -176,6 +176,11 @@ class VirtualStainWorker(QThread):
             if not pos_x or not pos_y:
                 self.error.emit("ROI is too small for virtual staining.")
                 return
+            # Ensure grid fully covers the ROI bounding box
+            if pos_x[-1] + read_size < x_max:
+                pos_x.append(max(pos_x[-1] + read_stride, x_max - read_size))
+            if pos_y[-1] + read_size < y_max:
+                pos_y.append(max(pos_y[-1] + read_stride, y_max - read_size))
 
             n_px, n_py = len(pos_x), len(pos_y)
             out_w = (n_px - 1) * stride + ps
@@ -301,9 +306,30 @@ class VirtualStainWorker(QThread):
             )
             output_canvas[~tissue_mask_full] = input_canvas[~tissue_mask_full]
 
+            # ── 7. Polygon ROI masking → RGBA ──
+            import cv2
+            alpha = np.full((out_h, out_w), 255, dtype=np.uint8)
+            if self.roi_polygons:
+                # Convert WSI level-0 polygon coords to canvas pixel coords
+                scale_x = out_w / canvas_l0_w
+                scale_y = out_h / canvas_l0_h
+                poly_mask = np.zeros((out_h, out_w), dtype=np.uint8)
+                for poly_coords in self.roi_polygons:
+                    pts = np.array([
+                        [round((x - x_min) * scale_x),
+                         round((y - y_min) * scale_y)]
+                        for x, y in poly_coords
+                    ], dtype=np.int32)
+                    cv2.fillPoly(poly_mask, [pts], 255)
+                alpha = poly_mask
+
+            rgba_canvas = np.ascontiguousarray(
+                np.dstack([output_canvas, alpha])
+            )
+
             self.progress.emit(100)
             self.finished.emit({
-                'canvas': output_canvas,
+                'canvas': rgba_canvas,
                 'input_canvas': input_canvas,
                 'stain_type': self.stain_type,
                 'roi_origin': (x_min, y_min),
