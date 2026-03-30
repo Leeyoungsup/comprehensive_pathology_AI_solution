@@ -58,9 +58,9 @@ class WSIViewWidget(QGraphicsView):
         self.scene = QGraphicsScene(self)
         self.setScene(self.scene)
         self.scene.setBackgroundBrush(QBrush(QColor(0, 0, 0)))
-        # Viewport 배경 (scene 바깥 레터박스 영역) — 슬라이드 로드 전 검은색
+        # View 자체의 배경 (레터박스 포함 전체 뷰포트) — 슬라이드 로드 전 검은색
+        self.setBackgroundBrush(QBrush(QColor(0, 0, 0)))
         self.setStyleSheet("QGraphicsView { border: none; }")
-        self._set_viewport_bg(QColor(0, 0, 0))
         
         # WSI 관련 속성
         self.tile_manager = None
@@ -217,7 +217,7 @@ class WSIViewWidget(QGraphicsView):
             r, g, b = int(corners[:, 0].mean()), int(corners[:, 1].mean()), int(corners[:, 2].mean())
             bg = QColor(r, g, b)
             self.scene.setBackgroundBrush(QBrush(bg))
-            self._set_viewport_bg(bg)
+            self.setBackgroundBrush(QBrush(bg))
         except Exception:
             pass
 
