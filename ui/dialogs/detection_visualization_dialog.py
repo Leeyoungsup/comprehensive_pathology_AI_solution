@@ -677,7 +677,7 @@ class DetectionVisualizationDialog(QDialog):
         # Footer
         fig.text(0.5, 0.01,
                  f'Generated: {datetime.datetime.now().strftime("%Y-%m-%d %H:%M")}  |  '
-                 'Comprehensive Pathology AI Solution',
+                 'MeDICus Studio',
                  ha='center', va='bottom', fontsize=8, color=SUBTEXT)
         return fig
 

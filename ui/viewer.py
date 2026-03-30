@@ -1,17 +1,27 @@
 """
-Pathology Image Viewer Main Window
-Refactored simplified version - handles UI composition and event processing only
+MeDICus Studio - Main Window
+Handles UI composition and event processing
 """
 
-from PyQt5 import uic
-from PyQt5.QtWidgets import QMainWindow, QFileDialog, QVBoxLayout, QHBoxLayout, QMessageBox, QAction, QToolBar
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QIcon
-from pathlib import Path
-import os
+import json
 import sys
+import os
+import time
+from datetime import datetime
+from functools import partial
+from pathlib import Path
 
-# Add project root
+import numpy as np
+
+from PyQt5 import uic
+from PyQt5.QtWidgets import (
+    QMainWindow, QFileDialog, QMessageBox,
+    QApplication, QListWidgetItem, QWidget,
+    QHBoxLayout, QLabel, QSlider, QCheckBox,
+)
+from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtGui import QIcon, QPixmap, QColor
+
 project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
@@ -19,8 +29,8 @@ if str(project_root) not in sys.path:
 from ui.wsi_view_widget import WSIViewWidget, AnnotationMode
 from ui.annotation_panel import AnnotationPanel
 from ui.dialogs import show_slide_info_dialog
-
-# Service layer import
+from core.annotation import AnnotationType
+from utils.coordinate_utils import mask_to_polygons, polygons_to_mask
 from backend.services import (
     DetectionService,
     SlideService,
@@ -30,7 +40,7 @@ from backend.services import (
 
 
 class PathologyViewer(QMainWindow):
-    """Pathology Image Viewer Main Window"""
+    """MeDICus Studio Main Window"""
     
     def __init__(self):
         super().__init__()
@@ -124,8 +134,6 @@ class PathologyViewer(QMainWindow):
     
     def setup_ui_additions(self):
         """추가 UI 요소 설정 (프로그래밍 방식으로 버튼 추가 등)"""
-        from PyQt5.QtWidgets import QCheckBox, QHBoxLayout, QWidget
-
         # 자동저장 + 자동시각화 체크박스를 나란히 배치
         self.chkAutoSave = QCheckBox("Auto Save")
         self.chkAutoSave.setChecked(False)
@@ -193,9 +201,6 @@ class PathologyViewer(QMainWindow):
         self.actionDrawPoint.toggled.connect(self.toggle_draw_point)
         if hasattr(self, 'actionStopDrawing'):
             self.actionStopDrawing.triggered.connect(self.stop_drawing)
-        # self.actionClearROI.triggered.connect(self.clear_roi)
-        # self.actionSaveROI.triggered.connect(self.save_annotations)
-        # self.actionLoadROI.triggered.connect(self.load_annotations)
         
         # AI 버튼
         self.btnSegmentation.clicked.connect(self.run_segmentation)
@@ -224,7 +229,6 @@ class PathologyViewer(QMainWindow):
         self.is_pdl1_mode = False
 
         # confidence 슬라이더 debounce 타이머 (무거운 overlay 재구축을 지연)
-        from PyQt5.QtCore import QTimer
         self._conf_debounce_timer = QTimer(self)
         self._conf_debounce_timer.setSingleShot(True)
         self._conf_debounce_timer.setInterval(250)
@@ -254,7 +258,7 @@ class PathologyViewer(QMainWindow):
         """이미지 파일 열기"""
         file_path, _ = QFileDialog.getOpenFileName(
             self,
-            "Select Pathology Image",
+            "Open Image",
             "",
             "Image Files (*.png *.jpg *.jpeg *.tif *.tiff *.svs *.ndpi);;All Files (*)"
         )
@@ -290,7 +294,7 @@ class PathologyViewer(QMainWindow):
             self.progressBar.setValue(0)
             self.progressLabel.setText("AI Progress")
 
-            self.setWindowTitle(f"Pathology Image Analysis System - [{file_name}]")
+            self.setWindowTitle(f"MeDICus Studio - [{file_name}]")
             self.statusbar.showMessage(f"Image loaded: {file_name}")
         else:
             self.statusbar.showMessage("Image load failed")
@@ -311,7 +315,6 @@ class PathologyViewer(QMainWindow):
     def show_detection_visualization(self):
         """HnE 검출 결과 시각화 창 표시 (싱글턴 - 기존 창 닫고 열기)"""
         if not self.all_raw_cells:
-            from PyQt5.QtWidgets import QMessageBox
             QMessageBox.information(self, "Notice", "No detection results to display.")
             return
 
@@ -319,7 +322,6 @@ class PathologyViewer(QMainWindow):
             self._visualization_dialog.close()
 
         from ui.dialogs.detection_visualization_dialog import show_detection_visualization
-        import numpy as np
         tile_manager = self.wsi_viewer.get_tile_manager()
         slide_dimensions = None
         thumbnail_np = None
@@ -413,7 +415,6 @@ class PathologyViewer(QMainWindow):
         # Initialize AI module (first use)
         if self.tissue_segmentation is None:
             self.statusbar.showMessage("Initializing tissue segmentation module...")
-            from PyQt5.QtWidgets import QApplication
             QApplication.processEvents()
             self.setup_ai_modules()
         
@@ -431,7 +432,6 @@ class PathologyViewer(QMainWindow):
         # Initialize AI module (first use)
         if self.tissue_classification is None:
             self.statusbar.showMessage("Initializing cancer classification module...")
-            from PyQt5.QtWidgets import QApplication
             QApplication.processEvents()
             self.setup_ai_modules()
         
@@ -474,7 +474,6 @@ class PathologyViewer(QMainWindow):
         
         # Initialize AI module
         self.statusbar.showMessage("Initializing detection module...")
-        from PyQt5.QtWidgets import QApplication
         QApplication.processEvents()
         self.setup_ai_modules()
         
@@ -502,7 +501,6 @@ class PathologyViewer(QMainWindow):
             roi_count = len(roi_polygons)
             
             # ROI 타입별 카운트
-            from core.annotation import AnnotationType
             type_counts = {}
             for ann in roi_polygons:
                 type_name = ann.type.value
@@ -520,8 +518,6 @@ class PathologyViewer(QMainWindow):
         # Open slide (via service)
         try:
             QApplication.processEvents()
-            
-            import time
             start_time = time.time()
             slide, message = self.detection_service.open_slide(self.current_image_path)
             
@@ -690,8 +686,6 @@ class PathologyViewer(QMainWindow):
 
         self.progressBar.setValue(0)
         self.progressLabel.setText("Initializing PD-L1...")
-
-        from PyQt5.QtWidgets import QApplication
         QApplication.processEvents()
 
         # Initialize PD-L1 module
@@ -793,9 +787,6 @@ class PathologyViewer(QMainWindow):
         if not self.current_pdl1_result or not self.current_image_path:
             return
         try:
-            import json
-            from datetime import datetime
-
             wsi_dir = Path(self.current_image_path).parent
             wsi_stem = Path(self.current_image_path).stem
             save_path = wsi_dir / f"{wsi_stem}_pdl1_result.json"
@@ -965,11 +956,7 @@ class PathologyViewer(QMainWindow):
         """Segmentation 결과를 리스트에 표시"""
         if not self.current_segmentation_result:
             return
-        
-        from PyQt5.QtWidgets import QListWidgetItem
-        from PyQt5.QtCore import Qt
-        from PyQt5.QtGui import QIcon, QPixmap, QColor
-        
+
         mask = self.current_segmentation_result['mask']
         class_names_raw = self.current_segmentation_result['class_names']
         metadata = self.current_segmentation_result['metadata']
@@ -1004,8 +991,6 @@ class PathologyViewer(QMainWindow):
         self.resultList.addItem(header_item)
         
         # ROI 영역 내의 픽셀만 카운트
-        import numpy as np
-        
         if roi_bounds:
             # ROI 영역 계산
             roi_x_min, roi_y_min, roi_x_max, roi_y_max = roi_bounds
@@ -1165,11 +1150,6 @@ class PathologyViewer(QMainWindow):
 
     def _update_result_list_with_sliders(self, class_names, class_colors, is_pdl1=False):
         """클래스별 confidence 슬라이더를 포함한 결과 리스트 생성"""
-        from PyQt5.QtWidgets import QListWidgetItem, QWidget, QHBoxLayout, QLabel, QSlider, QCheckBox
-        from PyQt5.QtCore import Qt
-        from PyQt5.QtGui import QPixmap, QColor, QIcon
-        from functools import partial
-
         self.resultList.blockSignals(True)
         self.resultList.clear()
 
@@ -1283,8 +1263,6 @@ class PathologyViewer(QMainWindow):
 
     def _on_class_confidence_changed(self, cls_id, value):
         """클래스별 confidence threshold 슬라이더 변경 — 라벨만 즉시 갱신, overlay는 debounce"""
-        from PyQt5.QtWidgets import QLabel
-
         self.current_class_thresholds[cls_id] = value
 
         # 라벨만 즉시 업데이트 (빠름)
@@ -1302,9 +1280,6 @@ class PathologyViewer(QMainWindow):
 
     def _apply_confidence_filter(self):
         """debounce 후 실제 필터링 및 overlay 갱신"""
-        from PyQt5.QtWidgets import QLabel
-        from PyQt5.QtCore import Qt
-
         filtered_cells = self._get_filtered_cells()
 
         # 클래스별 카운트 라벨 업데이트
@@ -1358,7 +1333,6 @@ class PathologyViewer(QMainWindow):
 
     def on_result_list_item_changed(self, item):
         """체크박스 상태 변경 처리: 전체/개별 클래스 표시 토글"""
-        from PyQt5.QtCore import Qt
         user_data = item.data(Qt.UserRole)
         visible = item.checkState() == Qt.Checked
 
@@ -1386,8 +1360,6 @@ class PathologyViewer(QMainWindow):
 
         # 전체 아이템 토글 시 모든 클래스에 반영
         if cls_id is None:
-            from ai.detection import CLASS_NAMES
-            # 신호 중복 방지
             self.resultList.blockSignals(True)
             for i in range(1, self.resultList.count()):
                 class_item = self.resultList.item(i)
@@ -1480,9 +1452,6 @@ class PathologyViewer(QMainWindow):
         if not self.current_detection_result or not self.current_image_path:
             return
         try:
-            import json
-            from datetime import datetime
-
             wsi_dir = Path(self.current_image_path).parent
             wsi_stem = Path(self.current_image_path).stem
             save_path = wsi_dir / f"{wsi_stem}_detection_result.json"
@@ -1516,10 +1485,6 @@ class PathologyViewer(QMainWindow):
         if not self.current_segmentation_result or not self.current_image_path:
             return
         try:
-            import json
-            from datetime import datetime
-            from utils.coordinate_utils import mask_to_polygons
-
             wsi_dir = Path(self.current_image_path).parent
             wsi_stem = Path(self.current_image_path).stem
             save_path = wsi_dir / f"{wsi_stem}_segmentation_result.json"
@@ -1603,9 +1568,6 @@ class PathologyViewer(QMainWindow):
         
         if file_path:
             try:
-                import json
-                from datetime import datetime
-                
                 # 파일 확장자 확인
                 if file_path.endswith('.json'):
                     # numpy 배열은 JSON 직렬화 불가 → 시각화 전용 필드 제외
@@ -1660,12 +1622,7 @@ class PathologyViewer(QMainWindow):
             return
 
         try:
-            import json
-            from datetime import datetime
-            from utils.coordinate_utils import mask_to_polygons
-
             self.statusbar.showMessage("Converting segmentation results...")
-            from PyQt5.QtWidgets import QApplication
             QApplication.processEvents()
 
             seg_result = self.current_segmentation_result
@@ -1735,8 +1692,6 @@ class PathologyViewer(QMainWindow):
         
         if file_path:
             try:
-                import json
-                
                 with open(file_path, 'r', encoding='utf-8') as f:
                     loaded_data = json.load(f)
                 
@@ -1811,10 +1766,7 @@ class PathologyViewer(QMainWindow):
 
     def _load_segmentation_result(self, result, metadata=None):
         """Segmentation 결과 로드 처리 (polygon JSON → mask 복원 → overlay 표시)"""
-        from utils.coordinate_utils import polygons_to_mask
-
         self.statusbar.showMessage("Restoring segmentation results...")
-        from PyQt5.QtWidgets import QApplication
         QApplication.processEvents()
 
         seg_metadata = result.get('segmentation_metadata', {})
@@ -2044,7 +1996,6 @@ class PathologyViewer(QMainWindow):
         # Load segmentation model if not loaded
         if not self.epithelial_classification_service.is_model_loaded():
             self.statusbar.showMessage("Loading segmentation model...")
-            from PyQt5.QtWidgets import QApplication
             QApplication.processEvents()
 
             success, msg = self.epithelial_classification_service.load_model()

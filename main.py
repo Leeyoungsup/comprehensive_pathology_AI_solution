@@ -1,5 +1,5 @@
 """
-Comprehensive Pathology AI Solution - Main Entry Point
+MeDICus Studio - Main Entry Point
 Pathology image viewer and integrated AI analysis program
 """
 
@@ -24,21 +24,18 @@ if getattr(sys, 'frozen', False) or _is_nuitka:
     else:
         # PyInstaller --onedir or Nuitka --standalone: same folder as EXE
         bundle_dir = application_path
-
-    # Explicitly enable Torch JIT in Nuitka standalone
     os.environ.setdefault('PYTORCH_JIT', '1')
 else:
     # Running as script (development mode)
     application_path = Path(__file__).parent
     bundle_dir = application_path
 
-# Add project root to Python path
 sys.path.insert(0, str(application_path))
 
 # DLL path configuration (must run before imports)
 dll_paths = [
-    bundle_dir,  # Same directory as the executable
-    bundle_dir / "torch" / "lib",  # PyTorch DLL
+    bundle_dir,
+    bundle_dir / "torch" / "lib",
     bundle_dir / "_internal",
     bundle_dir / "_internal" / "torch" / "lib",
     bundle_dir / "libs",
@@ -46,27 +43,24 @@ dll_paths = [
     bundle_dir / "openslide_bin",
     application_path / "libs",
     application_path / "libs" / "openslide_lib" / "bin",
-    application_path / "torch" / "lib",  # PyTorch DLL (development mode)
+    application_path / "torch" / "lib",
 ]
 
-# Set OpenSlide environment variable (important!)
+# Set OpenSlide environment variable
 for dll_path in dll_paths:
     if dll_path.exists():
         os.environ['OPENSLIDE_PATH'] = str(dll_path)
         break
 
-# Add to PATH environment variable (prepend)
-path_additions = []
-for dll_path in dll_paths:
-    if dll_path.exists():
-        path_str = str(dll_path)
-        if path_str not in os.environ.get('PATH', ''):
-            path_additions.append(path_str)
-
+# Add existing paths to PATH (prepend)
+path_additions = [
+    str(p) for p in dll_paths
+    if p.exists() and str(p) not in os.environ.get('PATH', '')
+]
 if path_additions:
     os.environ['PATH'] = os.pathsep.join(path_additions) + os.pathsep + os.environ.get('PATH', '')
 
-# Add DLL directories for Windows 10+
+# Register DLL directories for Windows 10+
 for dll_path in dll_paths:
     if dll_path.exists():
         try:
@@ -80,66 +74,57 @@ from PyQt5.QtCore import Qt
 import traceback
 import logging
 
-# Logging configuration (file output disabled, console only)
 logging.basicConfig(
-    level=logging.WARNING,  # Only output WARNING and above
+    level=logging.WARNING,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout)
-    ]
+    handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger(__name__)
+
 
 def main():
     """Run the main application"""
     try:
-
         app = QApplication(sys.argv)
-        app.setApplicationName("Pathology AI Viewer")
+        app.setApplicationName("MeDICus Studio")
 
         # Set application icon
-        try:
-            icon_path = bundle_dir / "icon" / "app_icon.ico"
-            if not icon_path.exists():
-                icon_path = application_path / "icon" / "app_icon.ico"
-            if icon_path.exists():
+        icon_path = bundle_dir / "icon" / "app_icon.ico"
+        if not icon_path.exists():
+            icon_path = application_path / "icon" / "app_icon.ico"
+        if icon_path.exists():
+            try:
                 app.setWindowIcon(QIcon(str(icon_path)))
-        except Exception:
-            pass
+            except Exception:
+                pass
 
-        # Show splash screen (display before heavy imports)
+        # Show splash screen before heavy imports
         splash = None
         logo_path = bundle_dir / "logo" / "Logo.png"
         if not logo_path.exists():
             logo_path = application_path / "logo" / "Logo.png"
         if logo_path.exists():
-            splash_pixmap = QPixmap(str(logo_path))
-            splash = QSplashScreen(splash_pixmap, Qt.WindowStaysOnTopHint)
+            splash = QSplashScreen(QPixmap(str(logo_path)), Qt.WindowStaysOnTopHint)
             splash.show()
             app.processEvents()
 
-        # Heavy imports (after splash screen)
         from ui.viewer import PathologyViewer
 
         viewer = PathologyViewer()
-        try:
-            if 'icon_path' in locals() and icon_path.exists():
+        if icon_path.exists():
+            try:
                 viewer.setWindowIcon(QIcon(str(icon_path)))
-        except Exception:
-            pass
+            except Exception:
+                pass
 
         if splash:
             splash.finish(viewer)
         viewer.show()
-        
-        
-        # logger.info("Application started")
-        sys.exit(app.exec())
-        
-    except Exception as e:
-        error_msg = f"Fatal error occurred:\n\n{str(e)}\n\n{traceback.format_exc()}"
-        logger.critical(error_msg)
 
+        sys.exit(app.exec())
+
+    except Exception as e:
+        logger.critical(f"Fatal error occurred:\n\n{e}\n\n{traceback.format_exc()}")
         sys.exit(1)
 
 
