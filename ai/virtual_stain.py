@@ -312,15 +312,13 @@ class VirtualStainWorker(QThread):
             tissue_mask_full = self._grid_to_pixel_mask(
                 tissue_grid, n_px, n_py, stride, ps, out_w, out_h
             )
-            # 비조직 영역은 alpha=0으로 투명 처리되므로 원본 덮어쓰기 불필요
+            output_canvas[~tissue_mask_full] = input_canvas[~tissue_mask_full]
 
-            # ── 7. Alpha channel: 조직 영역만 불투명, 비조직은 투명 ──
+            # ── 7. Polygon ROI masking → RGBA ──
             import cv2
-            # 비조직 영역은 alpha=0 → 원본 WSI 타일이 그대로 보임
-            alpha = np.where(tissue_mask_full, 255, 0).astype(np.uint8)
-
+            alpha = np.full((out_h, out_w), 255, dtype=np.uint8)
             if self.roi_polygons:
-                # ROI 폴리곤 바깥도 투명 처리
+                # Convert WSI level-0 polygon coords to canvas pixel coords
                 scale_x = out_w / canvas_l0_w
                 scale_y = out_h / canvas_l0_h
                 poly_mask = np.zeros((out_h, out_w), dtype=np.uint8)
@@ -331,7 +329,7 @@ class VirtualStainWorker(QThread):
                         for x, y in poly_coords
                     ], dtype=np.int32)
                     cv2.fillPoly(poly_mask, [pts], 255)
-                alpha = np.minimum(alpha, poly_mask)
+                alpha = poly_mask
 
             rgba_canvas = np.ascontiguousarray(
                 np.dstack([output_canvas, alpha])
