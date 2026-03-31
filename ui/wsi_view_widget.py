@@ -1,16 +1,23 @@
 """
 WSI 뷰어 위젯
 대용량 병리 이미지(WSI) 표시, 줌/패닝 기능을 담당하는 커스텀 QGraphicsView
-ASAP 구조를 참고한 타일 기반 렌더링 시스템
+타일 기반 렌더링 시스템
 """
 
-from PyQt5.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QMainWindow
-from PyQt5.QtCore import Qt, QPoint, QRectF, pyqtSignal, QEvent, QTimer
-from PyQt5.QtGui import QWheelEvent, QMouseEvent, QPainter, QBrush, QColor, QKeyEvent
-from pathlib import Path
 import sys
+import traceback
+from pathlib import Path
 
-# 프로젝트 루트 추가
+import numpy as np
+
+from PyQt5.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QMainWindow
+from PyQt5.QtCore import Qt, QPoint, QPointF, QRectF, pyqtSignal, QEvent, QTimer
+from PyQt5.QtGui import (
+    QWheelEvent, QMouseEvent, QKeyEvent,
+    QPainter, QBrush, QColor,
+    QImage, QPixmap, QTransform,
+)
+
 project_root = Path(__file__).parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
@@ -32,7 +39,7 @@ class AnnotationMode:
 
 
 class WSIViewWidget(QGraphicsView):
-    """WSI 표시 및 마우스 인터랙션을 처리하는 커스텀 위젯"""
+    """WSI 표시 및 마우스 인터랙션 처리 위젯"""
     
     zoomChanged = pyqtSignal(float)
     fieldOfViewChanged = pyqtSignal(QRectF, int)
@@ -178,7 +185,6 @@ class WSIViewWidget(QGraphicsView):
             
         except Exception as e:
             print(f"WSI load failed: {e}")
-            import traceback
             traceback.print_exc()
             return False
     
@@ -194,7 +200,6 @@ class WSIViewWidget(QGraphicsView):
     
     def _update_background_from_slide(self):
         """슬라이드 썸네일의 4모서리 픽셀 평균으로 배경색 추정."""
-        import numpy as np
         try:
             thumb = self.tile_manager.slide.get_thumbnail((128, 128)).convert('RGB')
             arr = np.array(thumb)
@@ -619,8 +624,6 @@ class WSIViewWidget(QGraphicsView):
     
     def _create_segmentation_rgba_image(self):
         """Segmentation 마스크를 RGBA 이미지로 미리 변환 (ROI 마스킹 포함)"""
-        import numpy as np
-        
         if self.segmentation_mask is None:
             self.segmentation_rgba_cache = None
             return
@@ -720,9 +723,6 @@ class WSIViewWidget(QGraphicsView):
                 pass
             self.segmentation_overlay_item = None
         
-        import numpy as np
-        from PyQt5.QtGui import QImage, QPixmap
-        
         # 가시성 필터링된 RGBA 이미지 생성
         rgba_filtered = self.segmentation_rgba_cache.copy()
         
@@ -794,8 +794,6 @@ class WSIViewWidget(QGraphicsView):
         self.virtual_stain_canvas = canvas
         self.virtual_stain_metadata = metadata
         self.virtual_stain_visible = True
-
-        from PyQt5.QtGui import QImage, QPixmap, QTransform
 
         h, w = canvas.shape[:2]
         origin_x, origin_y = metadata.get('roi_origin', (0, 0))
@@ -874,7 +872,6 @@ class WSIViewWidget(QGraphicsView):
             w, h = self.tile_manager.get_level_dimensions(0)
             x = max(0, min(x, w))
             y = max(0, min(y, h))
-        from PyQt5.QtCore import QPointF
         return QPointF(x, y)
 
     def mousePressEvent(self, event: QMouseEvent):

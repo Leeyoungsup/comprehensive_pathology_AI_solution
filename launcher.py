@@ -1,5 +1,5 @@
 """
-Pathology AI Viewer Launcher
+MeDICus Studio Launcher
 Launcher that runs without console
 """
 import sys

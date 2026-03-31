@@ -778,9 +778,9 @@ class PathologyViewer(QMainWindow):
         if tps < 1:
             return "Negative (<1%)"
         elif tps < 50:
-            return f"Low positive (1-49%)"
+            return "Low positive (1-49%)"
         else:
-            return f"High positive (≥50%)"
+            return "High positive (≥50%)"
 
     def _auto_save_pdl1_result(self):
         """PD-L1 결과를 WSI 파일 위치에 자동 저장"""
@@ -1813,59 +1813,45 @@ class PathologyViewer(QMainWindow):
 
     # === Annotation 기능 ===
     
+    def _toggle_draw_mode(self, checked, draw_fn, status_msg, other_actions):
+        """그리기 모드 토글 공통 로직"""
+        if checked:
+            for action in other_actions:
+                if hasattr(self, action) and getattr(self, action).isChecked():
+                    getattr(self, action).setChecked(False)
+            self.wsi_viewer.keep_drawing = True
+            draw_fn()
+            self.statusbar.showMessage(status_msg)
+        else:
+            self.wsi_viewer.exit_drawing_mode()
+            self.statusbar.showMessage("Ready")
+
     def toggle_draw_polygon(self, checked):
         """Polygon 그리기 토글"""
-        if checked:
-            # 다른 그리기 버튼 해제
-            if hasattr(self, 'actionDrawRectangle') and self.actionDrawRectangle.isChecked():
-                self.actionDrawRectangle.setChecked(False)
-            if hasattr(self, 'actionDrawPoint') and self.actionDrawPoint.isChecked():
-                self.actionDrawPoint.setChecked(False)
-            
-            # Polygon 그리기 모드 활성화 (지속 그리기)
-            self.wsi_viewer.keep_drawing = True
-            self.wsi_viewer.start_drawing_polygon()
-            self.statusbar.showMessage("ROI drawing mode (persistent): Click to add points, right-click to complete, ESC to cancel")
-        else:
-            # 일반 모드로 복귀
-            self.wsi_viewer.exit_drawing_mode()
-            self.statusbar.showMessage("Ready")
-    
+        self._toggle_draw_mode(
+            checked,
+            self.wsi_viewer.start_drawing_polygon,
+            "ROI drawing mode (persistent): Click to add points, right-click to complete, ESC to cancel",
+            ['actionDrawRectangle', 'actionDrawPoint'],
+        )
+
     def toggle_draw_rectangle(self, checked):
         """Rectangle 그리기 토글"""
-        if checked:
-            # 다른 그리기 버튼 해제
-            if self.actionDrawPolygon.isChecked():
-                self.actionDrawPolygon.setChecked(False)
-            if hasattr(self, 'actionDrawPoint') and self.actionDrawPoint.isChecked():
-                self.actionDrawPoint.setChecked(False)
-            
-            # Rectangle 그리기 모드 활성화 (지속 그리기)
-            self.wsi_viewer.keep_drawing = True
-            self.wsi_viewer.start_drawing_rectangle()
-            self.statusbar.showMessage("Rectangle drawing mode (persistent): Drag to create rectangle, ESC to cancel")
-        else:
-            # 일반 모드로 복귀
-            self.wsi_viewer.exit_drawing_mode()
-            self.statusbar.showMessage("Ready")
-    
+        self._toggle_draw_mode(
+            checked,
+            self.wsi_viewer.start_drawing_rectangle,
+            "Rectangle drawing mode (persistent): Drag to create rectangle, ESC to cancel",
+            ['actionDrawPolygon', 'actionDrawPoint'],
+        )
+
     def toggle_draw_point(self, checked):
         """Point 그리기 토글"""
-        if checked:
-            # 다른 그리기 버튼 해제
-            if self.actionDrawPolygon.isChecked():
-                self.actionDrawPolygon.setChecked(False)
-            if hasattr(self, 'actionDrawRectangle') and self.actionDrawRectangle.isChecked():
-                self.actionDrawRectangle.setChecked(False)
-            
-            # Point 그리기 모드 활성화 (지속 그리기)
-            self.wsi_viewer.keep_drawing = True
-            self.wsi_viewer.start_drawing_point()
-            self.statusbar.showMessage("Point drawing mode (persistent): Click to add points, right-click to finish, ESC to cancel")
-        else:
-            # 일반 모드로 복귀
-            self.wsi_viewer.exit_drawing_mode()
-            self.statusbar.showMessage("Ready")
+        self._toggle_draw_mode(
+            checked,
+            self.wsi_viewer.start_drawing_point,
+            "Point drawing mode (persistent): Click to add points, right-click to finish, ESC to cancel",
+            ['actionDrawPolygon', 'actionDrawRectangle'],
+        )
     
     def start_draw_roi(self):
         """ROI 그리기 시작 (레거시 지원)"""

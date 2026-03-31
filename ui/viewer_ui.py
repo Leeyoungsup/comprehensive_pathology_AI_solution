@@ -312,7 +312,7 @@ class Ui_MainWindow(object):
 
     def retranslateUi(self, MainWindow):
         _translate = QtCore.QCoreApplication.translate
-        MainWindow.setWindowTitle(_translate("MainWindow", "Pathology Image Analysis System"))
+        MainWindow.setWindowTitle(_translate("MainWindow", "MeDICus Studio"))
         self.imageViewer.setText(_translate("MainWindow", "Image Viewer Area"))
         self.groupBox.setTitle(_translate("MainWindow", "AI Analysis"))
         self.tissueTypeGroup.setTitle(_translate("MainWindow", "Tissue Type"))

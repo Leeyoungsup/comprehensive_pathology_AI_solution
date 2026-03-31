@@ -1,5 +1,5 @@
 """
-Pathology AI Viewer - Launch Program
+MeDICus Studio - Launch Program
 Run without console
 """
 import sys
