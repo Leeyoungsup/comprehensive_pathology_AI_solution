@@ -8,7 +8,9 @@ dist/
 dist_nuitka/
 build/
 PathologyAIViewer_Portable/
+MedicusStudio/
 PathologyAIViewer_Portable.zip
+MedicusStudio.zip
 __pycache__/
 ai/__pycache__/
 ai/nets/__pycache__/>
