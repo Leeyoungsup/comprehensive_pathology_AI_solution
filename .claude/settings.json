@@ -15,7 +15,15 @@
       "Bash(python -c \"import ast; ast.parse\\(open\\(''ui/wsi_view_widget.py'', encoding=''utf-8''\\).read\\(\\)\\); print\\(''wsi_view_widget: OK''\\)\")",
       "Bash(python -c \"import ast; ast.parse\\(open\\(''ui/viewer.py'', encoding=''utf-8''\\).read\\(\\)\\); print\\(''viewer: OK''\\)\")",
       "Bash(python main.py)",
-      "Bash(xargs wc:*)"
+      "Bash(xargs wc:*)",
+      "Bash(\"c:/Users/liive/OneDrive/Desktop/project/comprehensive_pathology_AI_solution/build_nuitka.bat\":*)",
+      "Bash(xxd \"c:/Users/liive/OneDrive/Desktop/project/comprehensive_pathology_AI_solution/build_nuitka.bat\")",
+      "Bash(pip install:*)",
+      "Bash(python -c \"import certifi; print\\(certifi.__file__\\)\")",
+      "Read(//c/Users/liive/.conda/envs/yslee/Lib/site-packages/**)"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\liive\\.conda\\envs\\yslee\\Lib\\site-packages\\certifi"
     ]
   }
 }

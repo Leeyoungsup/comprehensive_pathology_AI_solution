@@ -3,99 +3,124 @@ chcp 65001 >nul
 setlocal enabledelayedexpansion
 
 echo ========================================
-echo Nuitka 빌드 (PyTorch + PyQt5 네이티브 컴파일)
+echo MeDICus Studio - Nuitka Build
 echo ========================================
 echo.
 
-:: conda 환경 확인
-if "%CONDA_PREFIX%"=="" (
-    echo   오류: CONDA_PREFIX 환경변수가 없습니다. conda 환경을 활성화하세요.
-    pause
-    exit /b 1
-)
+echo [1/4] Checking build environment...
 
-:: Nuitka 설치 확인
-echo [1/4] Nuitka 설치 확인...
-python -m nuitka --version >nul 2>&1
+call pip show nuitka >nul 2>&1
 if %errorlevel% neq 0 (
-    echo   Nuitka 설치 중...
-    pip install nuitka ordered-set
+    echo   Installing Nuitka...
+    call pip install nuitka ordered-set zstandard
     if %errorlevel% neq 0 (
-        echo   오류: Nuitka 설치 실패
+        echo   Error: Nuitka install failed
         pause
         exit /b 1
     )
 )
-echo   완료
+echo   Nuitka: OK
+
+where cl >nul 2>&1
+if %errorlevel% neq 0 (
+    echo.
+    echo   [WARNING] MSVC compiler cl.exe not found in PATH.
+    echo   Please run this script from Developer Command Prompt
+    echo   or install Visual Studio Build Tools.
+    echo.
+    pause
+)
+echo   Compiler: OK
 echo.
 
-:: 기존 빌드 정리
-echo [2/4] 기존 빌드 정리...
+echo [2/4] Cleaning previous build...
 if exist dist_nuitka rd /s /q dist_nuitka
 if exist main.build rd /s /q main.build
-if exist main.dist rd /s /q main.dist
-echo   완료
+echo   Done
 echo.
 
-:: Nuitka 빌드 (앱 코드만 컴파일)
-echo [3/4] 빌드 시작 (앱 코드만 컴파일, 라이브러리는 raw 포함)...
-echo   (화면이 멈춘 것처럼 보여도 정상입니다)
+echo [3/4] Starting Nuitka build...
+echo   This may take 30 min to 1 hour. Please wait.
 echo.
 
-python -m nuitka ^
-  --standalone ^
-  --plugin-enable=pyqt5 ^
-  --nofollow-import-to=torch,torchvision,torchaudio ^
-  --nofollow-import-to=ultralytics,segmentation_models_pytorch,timm ^
-  --nofollow-import-to=cv2,skimage,scipy,PIL,yaml,pandas,matplotlib,openslide ^
-  --nofollow-import-to=pyparsing,packaging,cycler,kiwisolver,contourpy,fonttools ^
-  --nofollow-import-to=dateutil,pytz,requests,urllib3,certifi,tqdm,psutil ^
-  --include-data-dir=model=model ^
-  --include-data-dir=libs=libs ^
-  --include-data-dir=icon=icon ^
-  --include-data-dir=logo=logo ^
-  --include-data-dir=ui=ui ^
-  --module-parameter=torch-disable-jit=no ^
-  --windows-console-mode=attach ^
-  --windows-icon-from-ico=icon\app_icon.ico ^
-  --output-dir=dist_nuitka ^
-  main.py
+set ICON_OPTION=
+if exist icon\app_icon.ico (
+    set ICON_OPTION=--windows-icon-from-ico=icon\app_icon.ico
+    echo   Icon: icon\app_icon.ico
+)
+
+echo   Building...
+echo.
+
+python -m nuitka --standalone --windows-console-mode=disable --output-dir=dist_nuitka --company-name=MeDICus --product-name="MeDICus Studio" --product-version=1.0.0 %ICON_OPTION% --enable-plugin=pyqt5 --include-package=ai --include-package=backend --include-package=core --include-package=ui --include-package=utils --include-package=ultralytics --include-package=segmentation_models_pytorch --include-data-dir=icon=icon --include-data-dir=logo=logo --include-data-dir=model=model --include-data-dir=libs/openslide_lib=libs/openslide_lib --include-data-files=libs/openslide_lib/bin/libopenslide-1.dll=libs/openslide_lib/bin/libopenslide-1.dll main.py
 
 if %errorlevel% neq 0 (
     echo.
-    echo   오류: 빌드 실패
+    echo   Error: Nuitka build failed
+    echo   1. Check Visual Studio Build Tools
+    echo   2. Run from Developer Command Prompt
+    echo   3. pip install nuitka --upgrade
+    echo.
     pause
     exit /b 1
 )
 
-:: site-packages 전체 + stdlib 전체 복사
 echo.
-echo [4/4] site-packages 전체 + stdlib 복사 중 (기존 파일 유지)...
-echo   (라이브러리 용량이 커서 시간이 걸립니다)
-set SITE_PKG=%CONDA_PREFIX%\Lib\site-packages
-set DIST=%~dp0dist_nuitka\main.dist
+echo   Build complete!
+echo.
 
-:: Python 스크립트로 전체 복사 (기존 항목은 덮어쓰지 않음 = Nuitka 컴파일 버전 보호)
-"%CONDA_PREFIX%\python.exe" "%~dp0build_copy_deps.py" "%DIST%"
+echo [4/4] Creating deploy folder...
 
-if %errorlevel% neq 0 (
-    echo   경고: 일부 복사 실패 (무시하고 계속)
+set DIST_DIR=dist_nuitka\main.dist
+set DEPLOY_DIR=MeDICusStudio
+
+if not exist "%DIST_DIR%" (
+    echo   Error: %DIST_DIR% not found.
+    pause
+    exit /b 1
 )
 
-:: OpenSlide DLL을 main.dist 루트로 복사
-if exist "%~dp0libs\openslide_lib\bin" (
-    xcopy "%~dp0libs\openslide_lib\bin\*" "%DIST%\" /Y /Q >nul
-    echo   OpenSlide DLL 복사 완료
+if exist %DEPLOY_DIR% (
+    echo   Removing old %DEPLOY_DIR%...
+    rd /s /q %DEPLOY_DIR%
+)
+
+echo   Copying %DIST_DIR% to %DEPLOY_DIR%...
+xcopy "%DIST_DIR%" "%DEPLOY_DIR%\" /E /I /Y /Q >nul
+
+if not exist "%DEPLOY_DIR%\libs\openslide_lib\bin\libopenslide-1.dll" (
+    echo.
+    echo   [WARNING] OpenSlide DLL missing. Copying manually...
+    if not exist "%DEPLOY_DIR%\libs\openslide_lib\bin" mkdir "%DEPLOY_DIR%\libs\openslide_lib\bin"
+    xcopy "libs\openslide_lib" "%DEPLOY_DIR%\libs\openslide_lib\" /E /I /Y /Q >nul
+    echo   OpenSlide DLL copied
+)
+
+if exist "%DEPLOY_DIR%\main.exe" (
+    rename "%DEPLOY_DIR%\main.exe" MeDICusStudio.exe
+    echo   Renamed main.exe to MeDICusStudio.exe
 )
 
 echo.
 echo ========================================
-echo 빌드 완료!
+echo Nuitka Build Complete!
 echo ========================================
 echo.
-echo 실행 파일: dist_nuitka\main.dist\main.exe
+echo Deploy folder: %DEPLOY_DIR%\
+echo Executable:    %DEPLOY_DIR%\MeDICusStudio.exe
 echo.
-echo 배포 시:
-echo   dist_nuitka\main.dist\ 폴더 전체를 배포
+echo Resources:
+if exist "%DEPLOY_DIR%\libs\openslide_lib\bin\libopenslide-1.dll" (echo   [O] OpenSlide DLL) else (echo   [X] OpenSlide DLL - check needed!)
+if exist "%DEPLOY_DIR%\model" (echo   [O] AI model files) else (echo   [X] AI model files - check needed!)
+if exist "%DEPLOY_DIR%\icon" (echo   [O] Icons)
+if exist "%DEPLOY_DIR%\logo" (echo   [O] Logo)
 echo.
+
+if exist main.build (
+    echo Cleaning build cache...
+    rd /s /q main.build
+    echo Done
+    echo.
+)
+
 pause
