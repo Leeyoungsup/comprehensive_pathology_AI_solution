@@ -104,12 +104,38 @@ def main():
         if not logo_path.exists():
             logo_path = application_path / "logo" / "Logo.png"
         if logo_path.exists():
-            splash = QSplashScreen(QPixmap(str(logo_path)), Qt.WindowStaysOnTopHint)
+            splash_pixmap = QPixmap(str(logo_path))
+            splash = QSplashScreen(splash_pixmap, Qt.WindowStaysOnTopHint)
             splash.show()
             app.processEvents()
 
+        def splash_msg(text):
+            if splash:
+                splash.showMessage(
+                    f"{text}  ",
+                    Qt.AlignBottom | Qt.AlignRight,
+                    Qt.white,
+                )
+                app.processEvents()
+
+        splash_msg("Loading libraries...")
+        import numpy  # noqa: preload
+        import cv2  # noqa: preload
+        app.processEvents()
+
+        splash_msg("Loading AI frameworks...")
+        import torch  # noqa: preload
+        import torchvision  # noqa: preload
+        app.processEvents()
+
+        splash_msg("Loading slide engine...")
+        import openslide  # noqa: preload
+        app.processEvents()
+
+        splash_msg("Initializing UI...")
         from ui.viewer import PathologyViewer
 
+        splash_msg("Starting application...")
         viewer = PathologyViewer()
         if icon_path.exists():
             try:
@@ -130,3 +156,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    

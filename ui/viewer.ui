@@ -190,6 +190,45 @@
                     </property>
                    </widget>
                   </item>
+                  <item>
+                   <widget class="QLabel" name="lblMppTitle">
+                    <property name="text">
+                     <string>Resolution (MPP)</string>
+                    </property>
+                   </widget>
+                  </item>
+                  <item>
+                   <widget class="QSlider" name="sliderTargetMpp">
+                    <property name="minimum">
+                     <number>0</number>
+                    </property>
+                    <property name="maximum">
+                     <number>3</number>
+                    </property>
+                    <property name="value">
+                     <number>1</number>
+                    </property>
+                    <property name="orientation">
+                     <enum>Qt::Horizontal</enum>
+                    </property>
+                    <property name="tickPosition">
+                     <enum>QSlider::TicksBelow</enum>
+                    </property>
+                    <property name="tickInterval">
+                     <number>1</number>
+                    </property>
+                   </widget>
+                  </item>
+                  <item>
+                   <widget class="QLabel" name="lblMppValue">
+                    <property name="text">
+                     <string>*2.0 µm/px (x5) — Recommended</string>
+                    </property>
+                    <property name="alignment">
+                     <set>Qt::AlignCenter</set>
+                    </property>
+                   </widget>
+                  </item>
                  </layout>
                 </widget>
                </item>

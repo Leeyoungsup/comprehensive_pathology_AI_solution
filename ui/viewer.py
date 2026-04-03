@@ -212,6 +212,13 @@ class PathologyViewer(QMainWindow):
         self.btnIHCtoHnEMembrane.clicked.connect(self.run_virtual_stain_ihc_membrane)
         self.chkShowVirtualStain.toggled.connect(self.toggle_virtual_stain)
 
+        # Virtual Stain MPP 슬라이더
+        self._vs_mpp_options = [4.0, 2.0, 1.0, 0.5]
+        self._vs_mpp_labels = ["4.0 µm/px (x2.5)", "*2.0 µm/px (x5)", "1.0 µm/px (x10)", "0.5 µm/px (x20)"]
+        self._vs_mpp_recommended = 1  # index of *2.0
+        self.sliderTargetMpp.valueChanged.connect(self._on_vs_mpp_changed)
+        self._on_vs_mpp_changed(self.sliderTargetMpp.value())  # 초기 라벨 설정
+
         # 조직 타입 Radio button
         self.radioBreast.toggled.connect(self.on_tissue_type_changed)
         self.radioStomach.toggled.connect(self.on_tissue_type_changed)
@@ -813,6 +820,17 @@ class PathologyViewer(QMainWindow):
 
     # ── Virtual Stain (IHC → H&E) ──
 
+    def _on_vs_mpp_changed(self, index):
+        """Virtual Stain MPP 슬라이더 값 변경"""
+        label = self._vs_mpp_labels[index]
+        is_recommended = (index == self._vs_mpp_recommended)
+        if is_recommended:
+            self.lblMppValue.setText(f"★ {label} — Recommended")
+            self.lblMppValue.setStyleSheet("color: green; font-weight: bold;")
+        else:
+            self.lblMppValue.setText(label)
+            self.lblMppValue.setStyleSheet("")
+
     def run_virtual_stain_ihc_membrane(self):
         """IHC → H&E (Membrane) virtual staining"""
         if self.is_virtual_stain_running:
@@ -876,7 +894,7 @@ class PathologyViewer(QMainWindow):
             image_path=self.current_image_path,
             model_path=model_path,
             stain_type="ihc_membrane",
-            target_mpp=2.0,
+            target_mpp=self._vs_mpp_options[self.sliderTargetMpp.value()],
             patch_size=512,
             roi_bounds=roi_bounds,
             roi_polygons=roi_polygons,
