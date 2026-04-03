@@ -195,9 +195,9 @@ class VirtualStainWorker(QThread):
             if self.is_cancelled:
                 return
 
-            # ── 3. Tissue mask (patch-level) ──
+            # ── 3. Tissue mask (patch-level + pixel-level) ──
             self.status.emit("Creating tissue mask...")
-            tissue_grid = self._build_tissue_grid(
+            tissue_grid, tissue_pixel_mask = self._build_tissue_grid(
                 slide, x_min, y_min, canvas_l0_w, canvas_l0_h,
                 n_px, n_py, stride, ps, out_w, out_h
             )
@@ -309,10 +309,8 @@ class VirtualStainWorker(QThread):
             output_canvas[uncovered] = 255
             input_canvas[uncovered] = 255
 
-            tissue_mask_full = self._grid_to_pixel_mask(
-                tissue_grid, n_px, n_py, stride, ps, out_w, out_h
-            )
-            output_canvas[~tissue_mask_full] = input_canvas[~tissue_mask_full]
+            # 비조직 픽셀은 원본 입력값으로 덮어씌움 (픽셀 단위 정밀 마스킹)
+            output_canvas[~tissue_pixel_mask] = input_canvas[~tissue_pixel_mask]
 
             # ── 7. Polygon ROI masking → RGBA ──
             import cv2
@@ -385,7 +383,12 @@ class VirtualStainWorker(QThread):
     def _build_tissue_grid(self, slide, x_min, y_min,
                            canvas_l0_w, canvas_l0_h,
                            n_px, n_py, stride, ps, out_w, out_h):
-        """Build a (n_py, n_px) boolean grid: True = tissue patch."""
+        """Build a (n_py, n_px) boolean grid and pixel-level tissue mask.
+
+        Returns:
+            grid: (n_py, n_px) bool — True if patch contains tissue.
+            tissue_full: (out_h, out_w) bool — pixel-level tissue mask.
+        """
         mask_level = slide.get_best_level_for_downsample(
             canvas_l0_w / max(out_w // 4, 1)
         )
@@ -416,16 +419,5 @@ class VirtualStainWorker(QThread):
                 block = tissue_full[py:py + ps, px:px + ps]
                 grid[yi, xi] = block.size > 0 and block.mean() > 0.1
 
-        return grid
+        return grid, tissue_full
 
-    @staticmethod
-    def _grid_to_pixel_mask(grid, n_px, n_py, stride, ps, out_w, out_h):
-        """Convert patch-level grid back to pixel-level mask."""
-        mask = np.zeros((out_h, out_w), dtype=bool)
-        for yi in range(n_py):
-            for xi in range(n_px):
-                if grid[yi, xi]:
-                    px = xi * stride
-                    py = yi * stride
-                    mask[py:py + ps, px:px + ps] = True
-        return mask

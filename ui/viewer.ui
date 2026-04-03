@@ -77,7 +77,7 @@
              </property>
              <widget class="QWidget" name="hneTab">
               <attribute name="title">
-               <string>HnE</string>
+               <string>HE-Fit</string>
               </attribute>
               <layout class="QVBoxLayout" name="verticalLayout_7">
                <item>
@@ -160,7 +160,7 @@
              </widget>
              <widget class="QWidget" name="virtualStainTab">
               <attribute name="title">
-               <string>Virtual Stain</string>
+               <string>VS-IHC</string>
               </attribute>
               <layout class="QVBoxLayout" name="verticalLayout_vstain">
                <item>
@@ -223,7 +223,7 @@
              </widget>
              <widget class="QWidget" name="pdl1Tab">
               <attribute name="title">
-               <string>PD-L1</string>
+               <string>PD-Score</string>
               </attribute>
               <layout class="QVBoxLayout" name="verticalLayout_pdl1">
                <item>
@@ -269,7 +269,7 @@
              </widget>
              <widget class="QWidget" name="subtypingTab">
               <attribute name="title">
-               <string>Subtyping</string>
+               <string>Precise-BC</string>
               </attribute>
               <layout class="QVBoxLayout" name="verticalLayout_subtyping">
                <item>
@@ -317,7 +317,7 @@
              </widget>
              <widget class="QWidget" name="claudinTab">
               <attribute name="title">
-               <string>Claudin 18.2</string>
+               <string>CLDN-Target</string>
               </attribute>
               <layout class="QVBoxLayout" name="verticalLayout_claudin">
                <item>
