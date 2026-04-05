@@ -1,0 +1,40 @@
+# ============================================
+# MeDICus Studio - Requirements (Actual Use)
+# ============================================
+
+# GUI Framework
+PyQt5==5.15.10
+
+# Image Processing
+numpy==1.26.3
+opencv-python==4.9.0.80
+Pillow==10.2.0
+scikit-image==0.22.0
+
+# Deep Learning
+torch==2.9.1+cu128
+torchvision==0.24.1+cu128
+ultralytics==8.3.252
+segmentation_models_pytorch==0.5.0
+
+# Medical Imaging
+openslide-python==1.3.1
+
+# Scientific Computing
+scipy==1.16.3
+scikit-learn==1.8.0
+pandas==2.3.3
+
+# Visualization
+matplotlib==3.10.8
+tqdm==4.67.1
+
+# Configuration
+PyYAML==6.0.3
+
+# API Server
+fastapi==0.128.0
+uvicorn==0.40.0
+python-multipart==0.0.22
+httpx==0.28.1
+pydantic==2.12.4

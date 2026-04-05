@@ -114,7 +114,7 @@ def main():
                 splash.showMessage(
                     f"{text}  ",
                     Qt.AlignBottom | Qt.AlignRight,
-                    Qt.white,
+                    Qt.black,
                 )
                 app.processEvents()
 

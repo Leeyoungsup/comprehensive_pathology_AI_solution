@@ -52,7 +52,7 @@ if exist icon\app_icon.ico (
 echo   Building...
 echo.
 
-python -m nuitka --standalone --windows-console-mode=disable --output-dir=dist_nuitka --company-name=MeDICus --product-name="MeDICus Studio" --product-version=1.0.0 %ICON_OPTION% --enable-plugin=pyqt5 --include-package=ai --include-package=backend --include-package=core --include-package=ui --include-package=utils --include-package=ultralytics --include-package=segmentation_models_pytorch --include-data-dir=icon=icon --include-data-dir=logo=logo --include-data-dir=model=model --include-data-dir=libs/openslide_lib=libs/openslide_lib --include-data-files=libs/openslide_lib/bin/libopenslide-1.dll=libs/openslide_lib/bin/libopenslide-1.dll main.py
+python -m nuitka --standalone --windows-console-mode=disable --output-dir=dist_nuitka --company-name=MeDICus --product-name="MeDICus Studio" --product-version=1.0.0 %ICON_OPTION% --enable-plugin=pyqt5 --include-package=ai --include-package=backend --include-package=core --include-package=ui --include-package=utils --include-package=ultralytics --include-package=segmentation_models_pytorch --include-data-dir=icon=icon --include-data-dir=logo=logo --include-data-dir=model=model --include-data-dir=libs/openslide_lib=libs/openslide_lib --include-data-files=libs/openslide_lib/bin/libopenslide-1.dll=libs/openslide_lib/bin/libopenslide-1.dll --include-data-files=ui/viewer.ui=ui/viewer.ui --include-data-files=ai/utils/args.yaml=ai/utils/args.yaml main.py
 
 if %errorlevel% neq 0 (
     echo.
