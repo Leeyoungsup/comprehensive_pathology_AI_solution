@@ -185,6 +185,9 @@
                   </item>
                   <item>
                    <widget class="QPushButton" name="btnUnstainedToHnE">
+                    <property name="enabled">
+                     <bool>false</bool>
+                    </property>
                     <property name="text">
                      <string>Unstained → H&amp;E</string>
                     </property>

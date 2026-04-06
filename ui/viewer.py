@@ -151,6 +151,11 @@ class PathologyViewer(QMainWindow):
         self.groupBox.layout().addWidget(chk_row)
         chk_row.hide()  # 자동저장/자동시각화 체크박스 임시 숨김
 
+        # PD-Score, CLDN-Target 탭 비활성화
+        for i in range(self.aiTabWidget.count()):
+            if self.aiTabWidget.tabText(i) in ("PD-Score", "CLDN-Target"):
+                self.aiTabWidget.setTabEnabled(i, False)
+
     def setup_ai_modules(self):
         """
         AI 모듈 초기화 (Lazy Initialization)
