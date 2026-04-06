@@ -260,52 +260,6 @@
                </item>
               </layout>
              </widget>
-             <widget class="QWidget" name="pdl1Tab">
-              <attribute name="title">
-               <string>PD-Score</string>
-              </attribute>
-              <layout class="QVBoxLayout" name="verticalLayout_pdl1">
-               <item>
-                <widget class="QGroupBox" name="pdl1TissueTypeGroup">
-                 <property name="title">
-                  <string>Tissue Type</string>
-                 </property>
-                 <layout class="QVBoxLayout" name="verticalLayout_pdl1_tissue">
-                  <item>
-                   <widget class="QRadioButton" name="radioLung">
-                    <property name="text">
-                     <string>Lung</string>
-                    </property>
-                    <property name="checked">
-                     <bool>true</bool>
-                    </property>
-                   </widget>
-                  </item>
-                 </layout>
-                </widget>
-               </item>
-               <item>
-                <widget class="QPushButton" name="btnPDL1Detection">
-                 <property name="text">
-                  <string>PD-L1 Detection</string>
-                 </property>
-                </widget>
-               </item>
-               <item>
-                <spacer name="verticalSpacer_pdl1">
-                 <property name="orientation">
-                  <enum>Qt::Vertical</enum>
-                 </property>
-                 <property name="sizeHint" stdset="0">
-                  <size>
-                   <width>20</width>
-                   <height>40</height>
-                  </size>
-                 </property>
-                </spacer>
-               </item>
-              </layout>
-             </widget>
              <widget class="QWidget" name="subtypingTab">
               <attribute name="title">
                <string>Precise-BC</string>
@@ -341,6 +295,52 @@
                </item>
                <item>
                 <spacer name="verticalSpacer_subtyping">
+                 <property name="orientation">
+                  <enum>Qt::Vertical</enum>
+                 </property>
+                 <property name="sizeHint" stdset="0">
+                  <size>
+                   <width>20</width>
+                   <height>40</height>
+                  </size>
+                 </property>
+                </spacer>
+               </item>
+              </layout>
+             </widget>
+             <widget class="QWidget" name="pdl1Tab">
+              <attribute name="title">
+               <string>PD-Score</string>
+              </attribute>
+              <layout class="QVBoxLayout" name="verticalLayout_pdl1">
+               <item>
+                <widget class="QGroupBox" name="pdl1TissueTypeGroup">
+                 <property name="title">
+                  <string>Tissue Type</string>
+                 </property>
+                 <layout class="QVBoxLayout" name="verticalLayout_pdl1_tissue">
+                  <item>
+                   <widget class="QRadioButton" name="radioLung">
+                    <property name="text">
+                     <string>Lung</string>
+                    </property>
+                    <property name="checked">
+                     <bool>true</bool>
+                    </property>
+                   </widget>
+                  </item>
+                 </layout>
+                </widget>
+               </item>
+               <item>
+                <widget class="QPushButton" name="btnPDL1Detection">
+                 <property name="text">
+                  <string>PD-L1 Detection</string>
+                 </property>
+                </widget>
+               </item>
+               <item>
+                <spacer name="verticalSpacer_pdl1">
                  <property name="orientation">
                   <enum>Qt::Vertical</enum>
                  </property>
