@@ -22,6 +22,7 @@ import torch.nn.functional as F
 from PyQt5.QtCore import QThread, pyqtSignal, QObject
 from tqdm import tqdm
 import openslide
+import cv2
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -328,6 +329,13 @@ class WSISegmentationModel:
         read_size = int(patch_size_level0 / level_downsample)
         IO_WORKERS = 4 if image_path else 1  # image_path 없으면 단일 스레드(OpenSlide 비thread-safe)
 
+        # Pre-build flat LUT for PIL Image.point() (C-optimized, avoids NumPy roundtrip)
+        _calibration_flat_lut = None
+        if calibration_lut is not None:
+            _calibration_flat_lut = (
+                calibration_lut[0].tolist() + calibration_lut[1].tolist() + calibration_lut[2].tolist()
+            )
+
         def _read_patch(coord):
             x_abs, y_abs, x_rel, y_rel = coord
             try:
@@ -340,27 +348,26 @@ class WSISegmentationModel:
                     _sl = slide
                 region = _sl.read_region((x_abs, y_abs), read_level, (read_size, read_size))
 
-                # ICC color profile 적용 (slide → sRGB)
+                # RGBA → RGB
+                rgb = region.convert('RGB')
+
+                # ICC color profile 적용 (slide → sRGB) — C-optimized via Little CMS
                 if icc_transform:
                     from PIL import ImageCms
-                    rgb = region.convert('RGB')
                     ImageCms.applyTransform(rgb, icc_transform, inPlace=True)
-                else:
-                    rgb = region.convert('RGB')
 
-                rgb = rgb.resize((patch_size, patch_size), Image.BILINEAR)
-                arr = np.array(rgb)
+                # Aperio calibration via PIL.point() — C-optimized, no NumPy roundtrip
+                if _calibration_flat_lut is not None:
+                    rgb = rgb.point(_calibration_flat_lut)
 
-                # Aperio calibration (white balance + gamma)
-                if calibration_lut is not None:
-                    arr = arr.copy()
-                    arr[:, :, 0] = calibration_lut[0][arr[:, :, 0]]
-                    arr[:, :, 1] = calibration_lut[1][arr[:, :, 1]]
-                    arr[:, :, 2] = calibration_lut[2][arr[:, :, 2]]
+                # cv2.resize (C++/AVX) instead of PIL.resize (3-5x faster)
+                arr = np.asarray(rgb)
+                if arr.shape[0] != patch_size or arr.shape[1] != patch_size:
+                    arr = cv2.resize(arr, (patch_size, patch_size), interpolation=cv2.INTER_LINEAR)
 
                 if np.mean(arr > 220) >= 0.9:
                     return None, None
-                return torch.from_numpy(arr).permute(2, 0, 1).float() / 255.0, (x_rel, y_rel)
+                return torch.from_numpy(arr.copy()).permute(2, 0, 1).float() / 255.0, (x_rel, y_rel)
             except Exception:
                 return None, None
 

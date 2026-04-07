@@ -167,6 +167,12 @@ class DetectionWorker(QThread):
         self.image_path = image_path  # 병렬 I/O용 슬라이드 경로
         self.icc_transform = icc_transform  # ICC color profile transform (slide→sRGB)
         self.calibration_lut = calibration_lut  # Aperio calibration LUT (3, 256) numpy array
+        # Pre-build flat LUT for PIL Image.point() (C-optimized)
+        self.calibration_flat_lut = None
+        if calibration_lut is not None:
+            self.calibration_flat_lut = (
+                calibration_lut[0].tolist() + calibration_lut[1].tolist() + calibration_lut[2].tolist()
+            )
 
         # 설정
         self.image_size = 1024
@@ -529,22 +535,17 @@ class DetectionWorker(QThread):
                 (patch_x, patch_y), 0, (self.image_size, self.image_size)
             )
 
-            # ICC color profile 적용 (slide → sRGB)
+            # RGBA → RGB + color correction in PIL (C-optimized, avoids NumPy roundtrip)
+            patch_rgb = patch.convert('RGB')
+
             if self.icc_transform:
                 from PIL import ImageCms
-                patch_rgb = patch.convert('RGB')
                 ImageCms.applyTransform(patch_rgb, self.icc_transform, inPlace=True)
-                patch = np.array(patch_rgb)
-            else:
-                patch = np.array(patch)[:, :, :3]
 
-            # Aperio calibration (white balance + gamma)
-            if self.calibration_lut is not None:
-                patch = patch.copy()
-                patch[:, :, 0] = self.calibration_lut[0][patch[:, :, 0]]
-                patch[:, :, 1] = self.calibration_lut[1][patch[:, :, 1]]
-                patch[:, :, 2] = self.calibration_lut[2][patch[:, :, 2]]
+            if self.calibration_flat_lut is not None:
+                patch_rgb = patch_rgb.point(self.calibration_flat_lut)
 
+            patch = np.asarray(patch_rgb)
             patch = cv2.resize(patch, (512, 512))
             return torch.from_numpy(patch.copy()).permute(2, 0, 1).float() / 255.
         except Exception as e:
@@ -642,10 +643,21 @@ class DetectionWorker(QThread):
             # 패치 추출 (openslide)
             patch = self.slide.read_region((start_x, start_y), 0,
                                            (self.image_size, self.image_size))
-            patch = np.array(patch)[:, :, :3]
-            
+
+            # RGBA → RGB + color correction in PIL
+            patch_rgb = patch.convert('RGB')
+
+            if self.icc_transform:
+                from PIL import ImageCms
+                ImageCms.applyTransform(patch_rgb, self.icc_transform, inPlace=True)
+
+            if self.calibration_flat_lut is not None:
+                patch_rgb = patch_rgb.point(self.calibration_flat_lut)
+
+            patch = np.asarray(patch_rgb)
+
             # 리사이즈
-            patch = cv2.resize(patch[:, :, :3], (512, 512))
+            patch = cv2.resize(patch, (512, 512))
             
             # 텐서 변환
             torch_patch = torch.from_numpy(patch).permute(2, 0, 1).unsqueeze(0).float() / 255.

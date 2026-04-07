@@ -120,6 +120,12 @@ class PDL1DetectionWorker(QThread):
         self.is_cancelled = False
         self.icc_transform = icc_transform  # ICC color profile transform (slide→sRGB)
         self.calibration_lut = calibration_lut  # Aperio calibration LUT (3, 256) numpy array
+        # Pre-build flat LUT for PIL Image.point() (C-optimized)
+        self.calibration_flat_lut = None
+        if calibration_lut is not None:
+            self.calibration_flat_lut = (
+                calibration_lut[0].tolist() + calibration_lut[1].tolist() + calibration_lut[2].tolist()
+            )
 
         self.image_size = 512
 
