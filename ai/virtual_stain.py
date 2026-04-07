@@ -410,10 +410,18 @@ class VirtualStainWorker(QThread):
                            n_px, n_py, stride, ps, out_w, out_h):
         """Build a (n_py, n_px) boolean grid and pixel-level tissue mask.
 
+        Color Deconvolution + 텍스처 기반 조직 검출:
+        1) RGB → OD → H-DAB color deconvolution (Ruifrok & Johnston 2001)
+        2) Hematoxylin OD + DAB OD 각각 Otsu → union = 염색 영역
+        3) 텍스처(국소 std) → 염색 안 되었지만 구조 있는 조직 추가 검출
+        4) 밝기 peak → 확실한 유리 배경 제거
+
         Returns:
             grid: (n_py, n_px) bool — True if patch contains tissue.
             tissue_full: (out_h, out_w) bool — pixel-level tissue mask.
         """
+        import cv2 as _cv2
+
         mask_level = slide.get_best_level_for_downsample(
             canvas_l0_w / max(out_w // 4, 1)
         )
@@ -422,11 +430,67 @@ class VirtualStainWorker(QThread):
         mask_rh = max(int(canvas_l0_h / mask_ds), 1)
 
         mask_region = slide.read_region((x_min, y_min), mask_level, (mask_rw, mask_rh))
-        mask_np = np.array(mask_region.convert('RGB'), dtype=np.float32)
+        mask_np = np.array(mask_region.convert('RGB'), dtype=np.uint8)
 
-        rgb_std = np.std(mask_np, axis=2)
-        rgb_mean = np.mean(mask_np, axis=2)
-        pixel_tissue = (rgb_std > 5.0) | (rgb_mean < 220.0)
+        # ── Color Deconvolution (H-DAB) ──
+        # Stain vectors (Ruifrok & Johnston, Analytical and Quantitative
+        # Cytology and Histology, 2001) — hardcoded, well-established
+        # Row 0: Hematoxylin, Row 1: DAB, Row 2: Residual
+        stain_matrix = np.array([
+            [0.650, 0.704, 0.286],   # Hematoxylin
+            [0.268, 0.570, 0.776],   # DAB
+            [0.711, 0.423, 0.500],   # Residual
+        ], dtype=np.float64)
+
+        # Normalize rows
+        stain_matrix = stain_matrix / np.linalg.norm(stain_matrix, axis=1, keepdims=True)
+        # Inverse for deconvolution
+        deconv_matrix = np.linalg.inv(stain_matrix)
+
+        # RGB → Optical Density (Beer-Lambert)
+        rgb_f = mask_np.astype(np.float64)
+        rgb_f = np.maximum(rgb_f, 1.0)  # avoid log(0)
+        od = -np.log(rgb_f / 255.0)
+
+        # Deconvolve: OD * inv(stain_matrix)^T → per-stain OD
+        od_flat = od.reshape(-1, 3)
+        stain_od = od_flat @ deconv_matrix.T
+        h, w = mask_np.shape[:2]
+        stain_od = stain_od.reshape(h, w, 3)
+
+        hematoxylin_od = np.clip(stain_od[:, :, 0], 0, None)
+        dab_od = np.clip(stain_od[:, :, 1], 0, None)
+
+        # Scale to 0-255 for Otsu
+        hem_max = max(np.percentile(hematoxylin_od, 99.5), 0.01)
+        dab_max = max(np.percentile(dab_od, 99.5), 0.01)
+        hem_u8 = np.clip(hematoxylin_od / hem_max * 255, 0, 255).astype(np.uint8)
+        dab_u8 = np.clip(dab_od / dab_max * 255, 0, 255).astype(np.uint8)
+
+        # Otsu per channel
+        _, hem_mask = _cv2.threshold(hem_u8, 0, 255, _cv2.THRESH_BINARY + _cv2.THRESH_OTSU)
+        _, dab_mask = _cv2.threshold(dab_u8, 0, 255, _cv2.THRESH_BINARY + _cv2.THRESH_OTSU)
+
+        # ── 텍스처 (국소 std) — 무염색이지만 구조 있는 조직 보완 ──
+        gray = _cv2.cvtColor(mask_np, _cv2.COLOR_RGB2GRAY)
+        gray_f = gray.astype(np.float32)
+        ksize = (15, 15)
+        local_mean = _cv2.blur(gray_f, ksize)
+        local_sq_mean = _cv2.blur(gray_f ** 2, ksize)
+        local_std = np.sqrt(np.maximum(local_sq_mean - local_mean ** 2, 0))
+        std_scaled = np.clip(local_std * 10, 0, 255).astype(np.uint8)
+        _, texture_mask = _cv2.threshold(
+            std_scaled, 0, 255, _cv2.THRESH_BINARY + _cv2.THRESH_OTSU
+        )
+
+        # ── 확실한 유리 배경 제거 ──
+        hist = _cv2.calcHist([gray], [0], None, [256], [0, 256]).flatten()
+        bg_peak = int(np.argmax(hist[128:]) + 128)
+        definite_bg = (gray >= int(bg_peak * 0.95))  # 거의 흰색인 영역만
+
+        # 조직 = (Hematoxylin OR DAB OR 텍스처) AND NOT 확실한_배경
+        pixel_tissue = ((hem_mask > 0) | (dab_mask > 0) | (texture_mask > 0)) & (~definite_bg)
+
         pixel_tissue = binary_closing(pixel_tissue, disk(5))
         pixel_tissue = binary_fill_holes(pixel_tissue)
         pixel_tissue = binary_opening(pixel_tissue, disk(3))
