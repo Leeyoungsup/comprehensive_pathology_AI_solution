@@ -7,95 +7,94 @@ import openslide
 import numpy as np
 from PyQt5.QtCore import QObject, pyqtSignal, QThread, QRect, QRectF, QTimer
 from PyQt5.QtGui import QImage, QPixmap
+from PIL import ImageCms
 from collections import OrderedDict
 import threading
 import os
 
 class TileCache:
     """Tile cache management (inspired by ASAP's WSITileGraphicsItemCache)
-    Memory-efficient management with per-level size limits
+    Memory-efficient management with per-level size limits.
+    Uses per-level OrderedDict for O(1) eviction.
     """
 
     def __init__(self, max_tiles_per_level=None):
-        # Per-level LRU cache
-        self.cache = OrderedDict()  # {(tx, ty, level): pixmap}
+        # Per-level LRU caches — O(1) eviction per level
+        self._level_caches = {}  # {level: OrderedDict{(tx, ty): pixmap}}
 
-        # Max tiles per level (fewer for high resolution, more for low resolution)
         if max_tiles_per_level is None:
             self.max_tiles_per_level = {
-                0: 500,   # Level 0 (highest resolution): 500 tiles (512x512x4 bytes ~ 500MB)
-                1: 800,   # Level 1: 800 tiles
-                2: 1200,  # Level 2: 1200 tiles
-                3: 2000,  # Level 3+ (low resolution): 2000 tiles
+                0: 500,
+                1: 800,
+                2: 1200,
+                3: 2000,
             }
         else:
             self.max_tiles_per_level = max_tiles_per_level
 
-        # Track current tile count per level
-        self.level_counts = {0: 0, 1: 0, 2: 0, 3: 0}
         self.lock = threading.Lock()
         self.total_evictions = 0
 
+    def _get_level_cache(self, level):
+        if level not in self._level_caches:
+            self._level_caches[level] = OrderedDict()
+        return self._level_caches[level]
+
     def get(self, key):
         """Get tile from cache"""
+        tile_x, tile_y, level = key
         with self.lock:
-            if key in self.cache:
-                # LRU: Move recently used item to the end
-                self.cache.move_to_end(key)
-                return self.cache[key]
+            lc = self._level_caches.get(level)
+            if lc is not None:
+                tile_key = (tile_x, tile_y)
+                if tile_key in lc:
+                    lc.move_to_end(tile_key)
+                    return lc[tile_key]
         return None
 
     def put(self, key, pixmap):
-        """Store tile in cache (with per-level size limit)"""
+        """Store tile in cache (with per-level size limit, O(1) eviction)"""
         tile_x, tile_y, level = key
+        tile_key = (tile_x, tile_y)
 
         with self.lock:
-            # If already exists, just update position
-            if key in self.cache:
-                self.cache.move_to_end(key)
+            lc = self._get_level_cache(level)
+
+            if tile_key in lc:
+                lc.move_to_end(tile_key)
                 return
 
-            # Check max size for this level
             max_for_level = self.max_tiles_per_level.get(level, self.max_tiles_per_level[3])
 
-            # Evict oldest tile if level limit exceeded
-            if self.level_counts.get(level, 0) >= max_for_level:
-                self._evict_oldest_tile_for_level(level)
-
-            # Add new tile
-            self.cache[key] = pixmap
-            self.level_counts[level] = self.level_counts.get(level, 0) + 1
-
-    def _evict_oldest_tile_for_level(self, target_level):
-        """Evict the oldest tile for a specific level"""
-        # Find tiles for this level (in oldest-first order)
-        for key in list(self.cache.keys()):
-            tx, ty, level = key
-            if level == target_level:
-                del self.cache[key]
-                self.level_counts[level] -= 1
+            if len(lc) >= max_for_level:
+                lc.popitem(last=False)  # O(1) eviction of oldest
                 self.total_evictions += 1
-                return
+
+            lc[tile_key] = pixmap
 
     def get_all_keys(self):
         """Return all cache keys"""
         with self.lock:
-            return list(self.cache.keys())
+            keys = []
+            for level, lc in self._level_caches.items():
+                for (tx, ty) in lc:
+                    keys.append((tx, ty, level))
+            return keys
 
     def get_stats(self):
         """Return cache statistics"""
         with self.lock:
+            level_counts = {lvl: len(lc) for lvl, lc in self._level_caches.items()}
             return {
-                'total_tiles': len(self.cache),
-                'level_counts': dict(self.level_counts),
+                'total_tiles': sum(level_counts.values()),
+                'level_counts': level_counts,
                 'total_evictions': self.total_evictions
             }
 
     def clear(self):
         """Clear cache"""
         with self.lock:
-            self.cache.clear()
-            self.level_counts = {0: 0, 1: 0, 2: 0, 3: 0}
+            self._level_caches.clear()
 
     def clear_all(self):
         """Clear all caches"""
@@ -103,16 +102,22 @@ class TileCache:
 
 
 class TileLoader(QThread):
-    """Tile loading worker thread (inspired by ASAP's IOWorker)"""
+    """Tile loading worker thread (inspired by ASAP's IOWorker)
+    Uses event-driven queue (no polling) and set-based dedup for O(1) checks.
+    """
 
     tileLoaded = pyqtSignal(QPixmap, int, int, int)  # pixmap, tile_x, tile_y, level
 
-    def __init__(self, slide_path, tile_size=512):
+    def __init__(self, slide_path, tile_size=512, icc_transform=None, calibration_flat_lut=None):
         super().__init__()
         self.slide_path = slide_path
-        self._slide = None  # Opened exclusively within run() for this thread
+        self._slide = None
         self.tile_size = tile_size
+        self.icc_transform = icc_transform
+        self.calibration_flat_lut = calibration_flat_lut
+        # Deque-like list for ordered tasks + set for O(1) dedup
         self.tasks = []
+        self._task_set = set()
         self.running = True
         self.lock = threading.Lock()
         self.condition = threading.Condition(self.lock)
@@ -121,7 +126,8 @@ class TileLoader(QThread):
         """Add tile loading task (priority=True inserts at front of queue)"""
         with self.lock:
             task = (tile_x, tile_y, level)
-            if task not in self.tasks:
+            if task not in self._task_set:  # O(1) lookup
+                self._task_set.add(task)
                 if priority:
                     self.tasks.insert(0, task)
                 else:
@@ -132,9 +138,10 @@ class TileLoader(QThread):
         """Remove all pending tasks"""
         with self.lock:
             self.tasks.clear()
+            self._task_set.clear()
 
     def run(self):
-        """Worker thread execution - opens thread-exclusive OpenSlide"""
+        """Worker thread execution - event-driven, no polling"""
         try:
             self._slide = openslide.OpenSlide(self.slide_path)
         except Exception as e:
@@ -144,10 +151,11 @@ class TileLoader(QThread):
             while self.running:
                 task = None
                 with self.lock:
+                    while not self.tasks and self.running:
+                        self.condition.wait()  # Block until notified — no timeout polling
                     if self.tasks:
                         task = self.tasks.pop(0)
-                    else:
-                        self.condition.wait(timeout=0.1)
+                        self._task_set.discard(task)
 
                 if task:
                     tile_x, tile_y, level = task
@@ -164,42 +172,37 @@ class TileLoader(QThread):
         if self._slide is None:
             return None
         try:
-            # Calculate image coordinates
             downsample = self._slide.level_downsamples[level]
             x = int(tile_x * self.tile_size * downsample)
             y = int(tile_y * self.tile_size * downsample)
 
-            # Slide boundary check (based on level 0)
             level_0_width, level_0_height = self._slide.level_dimensions[0]
             if x >= level_0_width or y >= level_0_height:
                 return None
 
-            # Read tile
+            # Read RGBA tile from OpenSlide
             tile = self._slide.read_region(
                 (x, y),
                 level,
                 (self.tile_size, self.tile_size)
             )
 
-            # RGBA to RGB conversion
+            # RGBA to RGB
             tile_rgb = tile.convert('RGB')
 
-            # Convert to NumPy array
-            tile_array = np.array(tile_rgb)
+            # Apply ICC color profile (slide → sRGB)
+            if self.icc_transform:
+                ImageCms.applyTransform(tile_rgb, self.icc_transform, inPlace=True)
 
-            # Convert to QImage
-            height, width, channel = tile_array.shape
-            bytes_per_line = 3 * width
-            q_image = QImage(
-                tile_array.data,
-                width,
-                height,
-                bytes_per_line,
-                QImage.Format_RGB888
-            )
+            # Apply Aperio calibration
+            if self.calibration_flat_lut is not None:
+                tile_rgb = tile_rgb.point(self.calibration_flat_lut)
 
-            # Convert to QPixmap
-            return QPixmap.fromImage(q_image.copy())
+            # PIL → QPixmap: single-copy path via QImage
+            width, height = tile_rgb.size
+            raw = tile_rgb.tobytes("raw", "RGB")
+            q_image = QImage(raw, width, height, width * 3, QImage.Format_RGB888)
+            return QPixmap.fromImage(q_image)
 
         except Exception as e:
             print(f"Failed to load tile ({tile_x}, {tile_y}, level {level}): {e}")
@@ -217,7 +220,7 @@ class WSITileManager(QObject):
 
     tilesUpdated = pyqtSignal()
 
-    def __init__(self, slide_path, tile_size=2048, num_workers=8):
+    def __init__(self, slide_path, tile_size=512, num_workers=8):
         super().__init__()
         self.slide = None
         self.slide_path = slide_path
@@ -234,18 +237,26 @@ class WSITileManager(QObject):
         # 4-stage level mapping
         self.level_stages = []  # [level0, level1, level2, level3]
 
+        # ICC color profile transform (slide color space → sRGB)
+        self.icc_transform = None
+        # Aperio calibration LUT (white balance + gamma correction)
+        self.calibration_lut = None
+        self.calibration_flat_lut = None
+
         # Open WSI with OpenSlide
         try:
             self.slide = openslide.OpenSlide(slide_path)
             self._setup_level_stages()
             self.mpp = self._read_mpp()
+            self._build_icc_transform()
+            self._build_calibration_lut()
         except Exception as e:
             raise
 
         # Create worker threads (each worker opens independent OpenSlide)
         self.workers = []
         for _ in range(num_workers):
-            worker = TileLoader(slide_path, tile_size)
+            worker = TileLoader(slide_path, tile_size, self.icc_transform, self.calibration_flat_lut)
             worker.tileLoaded.connect(self.on_tile_loaded)
             worker.start()
             self.workers.append(worker)
@@ -269,6 +280,59 @@ class WSITileManager(QObject):
         except (ValueError, TypeError):
             pass
         return 0.25  # Default (based on 40x scan)
+
+    def _build_icc_transform(self):
+        """Build ICC color profile transform (slide → sRGB)"""
+        try:
+            icc_profile = self.slide.color_profile
+            if icc_profile:
+                srgb_profile = ImageCms.createProfile("sRGB")
+                self.icc_transform = ImageCms.buildTransform(
+                    icc_profile, srgb_profile, "RGB", "RGB"
+                )
+        except Exception as e:
+            print(f"ICC profile not applied: {e}")
+            self.icc_transform = None
+
+    def _build_calibration_lut(self):
+        """Build Aperio calibration LUT (white balance + gamma correction)
+
+        Produces:
+          - calibration_lut: (3, 256) NumPy array for thumbnail rendering
+          - calibration_flat_lut: flat list of 768 ints for PIL Image.point() (tile rendering)
+        """
+        try:
+            props = self.slide.properties
+            avg_r = props.get('aperio.CalibrationAverageRed')
+            avg_g = props.get('aperio.CalibrationAverageGreen')
+            avg_b = props.get('aperio.CalibrationAverageBlue')
+            gamma = props.get('aperio.Gamma')
+
+            if avg_r is None or gamma is None:
+                return
+
+            avg_r, avg_g, avg_b = float(avg_r), float(avg_g), float(avg_b)
+            gamma = float(gamma)
+
+            # White balance: normalize each channel so calibration average → 255
+            # Gamma correction: apply inverse gamma then re-encode
+            lut = np.zeros((3, 256), dtype=np.uint8)
+            for ch, avg in enumerate([avg_r, avg_g, avg_b]):
+                scale = 255.0 / max(avg, 1.0)
+                for i in range(256):
+                    linear = (i / 255.0) ** gamma
+                    corrected = min(linear * scale, 1.0)
+                    lut[ch, i] = int(corrected ** (1.0 / gamma) * 255.0 + 0.5)
+
+            self.calibration_lut = lut
+            # Flat LUT for PIL Image.point(): [R0..R255, G0..G255, B0..B255]
+            self.calibration_flat_lut = (
+                lut[0].tolist() + lut[1].tolist() + lut[2].tolist()
+            )
+        except Exception as e:
+            print(f"Aperio calibration not applied: {e}")
+            self.calibration_lut = None
+            self.calibration_flat_lut = None
 
     def _setup_level_stages(self):
         """Set up 4-stage level mapping"""
@@ -390,8 +454,8 @@ class WSITileManager(QObject):
             self.flush_all_workers()
             self.last_loaded_level = level
 
-        # Buffer range
-        buffer_tiles = 4
+        # Buffer range (smaller buffer since 512px tiles are more numerous)
+        buffer_tiles = 2
         start_tile_x = max(0, visible_start_x - buffer_tiles)
         start_tile_y = max(0, visible_start_y - buffer_tiles)
         end_tile_x = visible_end_x + buffer_tiles
@@ -465,7 +529,18 @@ class WSITileManager(QObject):
         try:
             thumbnail = self.slide.get_thumbnail(max_size)
             thumbnail_rgb = thumbnail.convert('RGB')
+
+            # Apply ICC color profile (slide → sRGB)
+            if self.icc_transform:
+                ImageCms.applyTransform(thumbnail_rgb, self.icc_transform, inPlace=True)
+
             thumbnail_array = np.array(thumbnail_rgb)
+
+            # Apply Aperio calibration (white balance + gamma)
+            if self.calibration_lut is not None:
+                thumbnail_array[:, :, 0] = self.calibration_lut[0][thumbnail_array[:, :, 0]]
+                thumbnail_array[:, :, 1] = self.calibration_lut[1][thumbnail_array[:, :, 1]]
+                thumbnail_array[:, :, 2] = self.calibration_lut[2][thumbnail_array[:, :, 2]]
 
             height, width, channel = thumbnail_array.shape
             bytes_per_line = 3 * width

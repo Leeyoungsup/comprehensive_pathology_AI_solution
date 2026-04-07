@@ -150,7 +150,7 @@ class WSIViewWidget(QGraphicsView):
             self.tile_items.clear()
             
             # 새로운 타일 매니저 생성
-            self.tile_manager = WSITileManager(wsi_path, num_workers=4)
+            self.tile_manager = WSITileManager(wsi_path, tile_size=512, num_workers=4)
             self.tile_manager.tilesUpdated.connect(self.on_tiles_updated)
             
             # Scene 크기 설정 (레벨 0 기준)
@@ -467,28 +467,26 @@ class WSIViewWidget(QGraphicsView):
             del self.tile_items[key]
     
     def _is_tile_covered(self, tx, ty, old_level, start_tile_x, start_tile_y, end_tile_x, end_tile_y, new_level, tile_size, level_downsample):
-        """이전 레벨 타일이 현재 레벨 타일로 완전히 덮였는지 확인"""
+        """이전 레벨 타일이 현재 레벨 타일로 완전히 덮였는지 확인 (O(1) 좌표 계산)"""
         old_downsample = self.tile_manager.get_level_downsample(old_level)
-        old_tile_x0 = tx * tile_size * old_downsample
-        old_tile_y0 = ty * tile_size * old_downsample
-        old_tile_x1 = old_tile_x0 + tile_size * old_downsample
-        old_tile_y1 = old_tile_y0 + tile_size * old_downsample
-        
-        # 현재 레벨 타일과 겹치는지 확인
-        for new_ty in range(start_tile_y, end_tile_y):
-            for new_tx in range(start_tile_x, end_tile_x):
-                new_tile_x0 = new_tx * tile_size * level_downsample
-                new_tile_y0 = new_ty * tile_size * level_downsample
-                new_tile_x1 = new_tile_x0 + tile_size * level_downsample
-                new_tile_y1 = new_tile_y0 + tile_size * level_downsample
-                
-                # 겹치는지 확인
-                if not (new_tile_x1 < old_tile_x0 or new_tile_x0 > old_tile_x1 or
-                        new_tile_y1 < old_tile_y0 or new_tile_y0 > old_tile_y1):
-                    # 겹치는 타일이 캐시에 있는지 확인
-                    if (new_tx, new_ty, new_level) not in self.tile_items:
-                        return False
-        
+        # 이전 레벨 타일의 level0 좌표 범위
+        old_x0 = tx * tile_size * old_downsample
+        old_y0 = ty * tile_size * old_downsample
+        old_x1 = old_x0 + tile_size * old_downsample
+        old_y1 = old_y0 + tile_size * old_downsample
+
+        # 이전 타일을 덮는 데 필요한 새 레벨 타일 인덱스 범위 계산
+        new_tile_size_l0 = tile_size * level_downsample
+        cover_tx0 = int(old_x0 / new_tile_size_l0)
+        cover_ty0 = int(old_y0 / new_tile_size_l0)
+        cover_tx1 = int((old_x1 - 1) / new_tile_size_l0)
+        cover_ty1 = int((old_y1 - 1) / new_tile_size_l0)
+
+        # 필요한 모든 새 레벨 타일이 렌더링되어 있는지 확인
+        for ntx in range(cover_tx0, cover_tx1 + 1):
+            for nty in range(cover_ty0, cover_ty1 + 1):
+                if (ntx, nty, new_level) not in self.tile_items:
+                    return False
         return True
     
     # ============== 검출 결과 오버레이 ==============

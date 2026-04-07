@@ -111,13 +111,15 @@ class PDL1DetectionWorker(QThread):
     error = pyqtSignal(str)
     status = pyqtSignal(str)
 
-    def __init__(self, slide, model, roi_polygons=None, device='cuda'):
+    def __init__(self, slide, model, roi_polygons=None, device='cuda', icc_transform=None, calibration_lut=None):
         super().__init__()
         self.slide = slide
         self.model = model
         self.roi_polygons = roi_polygons
         self.device = device
         self.is_cancelled = False
+        self.icc_transform = icc_transform  # ICC color profile transform (slide→sRGB)
+        self.calibration_lut = calibration_lut  # Aperio calibration LUT (3, 256) numpy array
 
         self.image_size = 512
 
@@ -315,7 +317,22 @@ class PDL1DetectionWorker(QThread):
         try:
             patch = self.slide.read_region((start_x, start_y), 0,
                                            (self.original_size, self.original_size))
-            patch = np.array(patch)[:, :, :3]
+
+            # ICC color profile 적용 (slide → sRGB)
+            if self.icc_transform:
+                from PIL import ImageCms
+                patch_rgb = patch.convert('RGB')
+                ImageCms.applyTransform(patch_rgb, self.icc_transform, inPlace=True)
+                patch = np.array(patch_rgb)
+            else:
+                patch = np.array(patch)[:, :, :3]
+
+            # Aperio calibration (white balance + gamma)
+            if self.calibration_lut is not None:
+                patch = patch.copy()
+                patch[:, :, 0] = self.calibration_lut[0][patch[:, :, 0]]
+                patch[:, :, 1] = self.calibration_lut[1][patch[:, :, 1]]
+                patch[:, :, 2] = self.calibration_lut[2][patch[:, :, 2]]
 
             # 리사이즈 (original_size → model input size)
             patch = cv2.resize(patch, (self.image_size, self.image_size))
@@ -440,7 +457,7 @@ class PDL1Detection(QObject):
             traceback.print_exc()
             return False
 
-    def run_detection(self, slide, roi_polygons=None):
+    def run_detection(self, slide, roi_polygons=None, icc_transform=None, calibration_lut=None):
         """PD-L1 검출 실행"""
         if self.model is None:
             self.detectionError.emit("Model not loaded.")
@@ -450,7 +467,9 @@ class PDL1Detection(QObject):
             print("PD-L1 detection is already running.")
             return
 
-        self.worker = PDL1DetectionWorker(slide, self.model, roi_polygons, self.device)
+        self.worker = PDL1DetectionWorker(slide, self.model, roi_polygons, self.device,
+                                          icc_transform=icc_transform,
+                                          calibration_lut=calibration_lut)
         self.worker.finished.connect(self._on_finished)
         self.worker.progress.connect(self._on_progress)
         self.worker.status.connect(self._on_status)

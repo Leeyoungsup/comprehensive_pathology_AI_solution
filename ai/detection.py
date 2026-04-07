@@ -155,7 +155,7 @@ class DetectionWorker(QThread):
     error = pyqtSignal(str)      # 에러 메시지
     status = pyqtSignal(str)     # 상태 메시지
     
-    def __init__(self, slide, model, roi_polygons=None, device='cuda', auto_classify_epithelial=True, tissue_type="Stomach", image_path=None):
+    def __init__(self, slide, model, roi_polygons=None, device='cuda', auto_classify_epithelial=True, tissue_type="Stomach", image_path=None, icc_transform=None, calibration_lut=None):
         super().__init__()
         self.slide = slide  # pyvips 또는 openslide 이미지
         self.model = model
@@ -165,6 +165,8 @@ class DetectionWorker(QThread):
         self.auto_classify_epithelial = auto_classify_epithelial  # 자동 Epithelial 재분류
         self.tissue_type = tissue_type  # 조직 타입 (Breast, Stomach, Other)
         self.image_path = image_path  # 병렬 I/O용 슬라이드 경로
+        self.icc_transform = icc_transform  # ICC color profile transform (slide→sRGB)
+        self.calibration_lut = calibration_lut  # Aperio calibration LUT (3, 256) numpy array
 
         # 설정
         self.image_size = 1024
@@ -526,9 +528,24 @@ class DetectionWorker(QThread):
             patch = slide.read_region(
                 (patch_x, patch_y), 0, (self.image_size, self.image_size)
             )
-            patch = np.array(patch)[:, :, :3]
+
+            # ICC color profile 적용 (slide → sRGB)
+            if self.icc_transform:
+                from PIL import ImageCms
+                patch_rgb = patch.convert('RGB')
+                ImageCms.applyTransform(patch_rgb, self.icc_transform, inPlace=True)
+                patch = np.array(patch_rgb)
+            else:
+                patch = np.array(patch)[:, :, :3]
+
+            # Aperio calibration (white balance + gamma)
+            if self.calibration_lut is not None:
+                patch = patch.copy()
+                patch[:, :, 0] = self.calibration_lut[0][patch[:, :, 0]]
+                patch[:, :, 1] = self.calibration_lut[1][patch[:, :, 1]]
+                patch[:, :, 2] = self.calibration_lut[2][patch[:, :, 2]]
+
             patch = cv2.resize(patch, (512, 512))
-            # .copy()로 numpy 배열 해제 후에도 텐서가 유효하도록 보장
             return torch.from_numpy(patch.copy()).permute(2, 0, 1).float() / 255.
         except Exception as e:
             print(f"Patch read error ({patch_x}, {patch_y}): {e}")
@@ -860,7 +877,9 @@ class DetectionWorker(QThread):
                 batch_size=8,
                 progress_callback=progress_callback,
                 status_callback=seg_status_callback,
-                roi_bounds=roi_bounds
+                roi_bounds=roi_bounds,
+                icc_transform=self.icc_transform,
+                calibration_lut=self.calibration_lut
             )
 
             self.last_prediction_mask = prediction_mask
@@ -993,7 +1012,7 @@ class CellDetection(QObject):
             self.detectionError.emit(f"Model load failed: {str(e)}")
             return False
     
-    def run_detection(self, slide, roi_polygons=None, auto_classify_epithelial=True, tissue_type="Stomach", image_path=None):
+    def run_detection(self, slide, roi_polygons=None, auto_classify_epithelial=True, tissue_type="Stomach", image_path=None, icc_transform=None, calibration_lut=None):
         """
         세포 검출 실행
 
@@ -1003,6 +1022,8 @@ class CellDetection(QObject):
             auto_classify_epithelial: Epithelial 자동 재분류 여부 (기본값: True)
             tissue_type: 조직 타입 (Breast, Stomach, Other)
             image_path: WSI 파일 경로 (병렬 I/O 활성화, None이면 단일 슬라이드 사용)
+            icc_transform: ICC color profile transform (slide→sRGB)
+            calibration_lut: Aperio calibration LUT (3, 256) numpy array
         """
         if self.model is None:
             self.detectionError.emit("Model is not loaded.")
@@ -1014,7 +1035,9 @@ class CellDetection(QObject):
         self.worker = DetectionWorker(slide, self.model, roi_polygons, self.device,
                                        auto_classify_epithelial=auto_classify_epithelial,
                                        tissue_type=tissue_type,
-                                       image_path=image_path)
+                                       image_path=image_path,
+                                       icc_transform=icc_transform,
+                                       calibration_lut=calibration_lut)
         self.worker.finished.connect(self._on_finished)
         self.worker.progress.connect(self._on_progress)
         self.worker.status.connect(self._on_status)

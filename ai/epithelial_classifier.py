@@ -166,7 +166,7 @@ class WSISegmentationModel:
 
         print(f"Segmentation model loaded from: {self.model_path}")
 
-    def predict_wsi(self, slide, patch_size=512, overlap_ratio=0.3, batch_size=8, progress_callback=None, status_callback=None, roi_bounds=None, image_path=None):
+    def predict_wsi(self, slide, patch_size=512, overlap_ratio=0.3, batch_size=8, progress_callback=None, status_callback=None, roi_bounds=None, image_path=None, icc_transform=None, calibration_lut=None):
         """
         Predict on entire WSI or ROI region using overlapping patches with weighted blending
 
@@ -178,6 +178,8 @@ class WSISegmentationModel:
             progress_callback: Optional callback(progress_percent) for progress updates
             roi_bounds: Optional (x_min, y_min, x_max, y_max) tuple for ROI region at level 0
                        If None, processes entire WSI
+            icc_transform: ICC color profile transform (slide→sRGB)
+            calibration_lut: Aperio calibration LUT (3, 256) numpy array
 
         Returns:
             prediction_mask: numpy array (H, W) with class IDs at output_mpp resolution
@@ -336,11 +338,26 @@ class WSISegmentationModel:
                     _sl = _seg_thread_local.slide
                 else:
                     _sl = slide
-                arr = np.array(
-                    _sl.read_region((x_abs, y_abs), read_level, (read_size, read_size))
-                    .convert('RGB')
-                    .resize((patch_size, patch_size), Image.BILINEAR)
-                )
+                region = _sl.read_region((x_abs, y_abs), read_level, (read_size, read_size))
+
+                # ICC color profile 적용 (slide → sRGB)
+                if icc_transform:
+                    from PIL import ImageCms
+                    rgb = region.convert('RGB')
+                    ImageCms.applyTransform(rgb, icc_transform, inPlace=True)
+                else:
+                    rgb = region.convert('RGB')
+
+                rgb = rgb.resize((patch_size, patch_size), Image.BILINEAR)
+                arr = np.array(rgb)
+
+                # Aperio calibration (white balance + gamma)
+                if calibration_lut is not None:
+                    arr = arr.copy()
+                    arr[:, :, 0] = calibration_lut[0][arr[:, :, 0]]
+                    arr[:, :, 1] = calibration_lut[1][arr[:, :, 1]]
+                    arr[:, :, 2] = calibration_lut[2][arr[:, :, 2]]
+
                 if np.mean(arr > 220) >= 0.9:
                     return None, None
                 return torch.from_numpy(arr).permute(2, 0, 1).float() / 255.0, (x_rel, y_rel)
@@ -777,13 +794,15 @@ class TumorSegmentationWorker(QThread):
     status = pyqtSignal(str)
     error = pyqtSignal(str)
 
-    def __init__(self, image_path, tissue_type, roi_bounds=None, roi_polygons=None):
+    def __init__(self, image_path, tissue_type, roi_bounds=None, roi_polygons=None, icc_transform=None, calibration_lut=None):
         """
         Args:
             image_path: WSI 파일 경로 (str)
             tissue_type: 'Breast' 또는 'Stomach'
             roi_bounds: (x_min, y_min, x_max, y_max) 또는 None
             roi_polygons: [[좌표, ...], ...] 또는 None
+            icc_transform: ICC color profile transform (slide→sRGB)
+            calibration_lut: Aperio calibration LUT (3, 256) numpy array
         """
         super().__init__()
         self.image_path = image_path
@@ -791,6 +810,8 @@ class TumorSegmentationWorker(QThread):
         self.roi_bounds = roi_bounds
         self.roi_polygons = roi_polygons
         self.is_cancelled = False
+        self.icc_transform = icc_transform
+        self.calibration_lut = calibration_lut
 
     def run(self):
         """백그라운드 Segmentation 실행"""
@@ -837,7 +858,9 @@ class TumorSegmentationWorker(QThread):
                 batch_size=8,
                 progress_callback=progress_callback,
                 status_callback=status_callback,
-                roi_bounds=self.roi_bounds
+                roi_bounds=self.roi_bounds,
+                icc_transform=self.icc_transform,
+                calibration_lut=self.calibration_lut
             )
 
             if self.is_cancelled:

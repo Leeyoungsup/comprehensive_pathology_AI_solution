@@ -68,7 +68,8 @@ class DetectionService:
 
     def start_detection(self, slide: openslide.OpenSlide, roi_polygons: Optional[List] = None,
                         auto_classify_epithelial: bool = True, tissue_type: str = "Stomach",
-                        image_path: Optional[str] = None):
+                        image_path: Optional[str] = None,
+                        icc_transform=None, calibration_lut=None):
         """
         Start detection
 
@@ -78,6 +79,8 @@ class DetectionService:
             auto_classify_epithelial: Whether to auto-reclassify epithelial cells (default: True)
             tissue_type: Tissue type (Breast, Stomach, Other)
             image_path: WSI file path (enables parallel I/O)
+            icc_transform: ICC color profile transform (slide→sRGB)
+            calibration_lut: Aperio calibration LUT (3, 256) numpy array
         """
         detection = self._ensure_detection_module()
 
@@ -87,7 +90,9 @@ class DetectionService:
         detection.run_detection(slide, roi_polygons,
                                 auto_classify_epithelial=auto_classify_epithelial,
                                 tissue_type=tissue_type,
-                                image_path=image_path)
+                                image_path=image_path,
+                                icc_transform=icc_transform,
+                                calibration_lut=calibration_lut)
 
     def cancel_detection(self):
         """Cancel ongoing detection"""

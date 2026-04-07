@@ -547,11 +547,20 @@ class PathologyViewer(QMainWindow):
             # Breast, Stomach: reclassification enabled / Other: reclassification disabled
             auto_classify = (self.current_tissue_type in ["Breast", "Stomach"])
 
+            # Get ICC/Calibration from tile_manager for color-consistent AI input
+            icc_transform = None
+            calibration_lut = None
+            if hasattr(self.wsi_viewer, 'tile_manager') and self.wsi_viewer.tile_manager:
+                icc_transform = self.wsi_viewer.tile_manager.icc_transform
+                calibration_lut = self.wsi_viewer.tile_manager.calibration_lut
+
             # Start detection (via service)
             self.detection_service.start_detection(slide, roi_polygons,
                                                     auto_classify_epithelial=auto_classify,
                                                     tissue_type=self.current_tissue_type,
-                                                    image_path=self.current_image_path)
+                                                    image_path=self.current_image_path,
+                                                    icc_transform=icc_transform,
+                                                    calibration_lut=calibration_lut)
             
         except Exception as e:
             self.statusbar.showMessage("Detection execution failed")
@@ -616,11 +625,21 @@ class PathologyViewer(QMainWindow):
 
         # 워커 생성 및 시그널 연결
         from ai.epithelial_classifier import TumorSegmentationWorker
+
+        # Get ICC/Calibration from tile_manager for color-consistent AI input
+        seg_icc_transform = None
+        seg_calibration_lut = None
+        if hasattr(self.wsi_viewer, 'tile_manager') and self.wsi_viewer.tile_manager:
+            seg_icc_transform = self.wsi_viewer.tile_manager.icc_transform
+            seg_calibration_lut = self.wsi_viewer.tile_manager.calibration_lut
+
         self.tumor_seg_worker = TumorSegmentationWorker(
             image_path=self.current_image_path,
             tissue_type=self.current_tissue_type,
             roi_bounds=roi_bounds,
             roi_polygons=roi_polygons if roi_polygons else None,
+            icc_transform=seg_icc_transform,
+            calibration_lut=seg_calibration_lut,
         )
         self.tumor_seg_worker.finished.connect(self.on_tumor_segmentation_complete)
         self.tumor_seg_worker.progress.connect(self.on_ai_progress)
@@ -730,7 +749,17 @@ class PathologyViewer(QMainWindow):
         try:
             import openslide
             slide = openslide.OpenSlide(self.current_image_path)
-            self.pdl1_detection.run_detection(slide, roi_polygons)
+
+            # Get ICC/Calibration from tile_manager for color-consistent AI input
+            icc_transform = None
+            calibration_lut = None
+            if hasattr(self.wsi_viewer, 'tile_manager') and self.wsi_viewer.tile_manager:
+                icc_transform = self.wsi_viewer.tile_manager.icc_transform
+                calibration_lut = self.wsi_viewer.tile_manager.calibration_lut
+
+            self.pdl1_detection.run_detection(slide, roi_polygons,
+                                              icc_transform=icc_transform,
+                                              calibration_lut=calibration_lut)
         except Exception as e:
             QMessageBox.critical(self, "Error", f"PD-L1 detection failed:\n{str(e)}")
             self.btnPDL1Detection.setText("PD-L1 Detection")
@@ -895,6 +924,14 @@ class PathologyViewer(QMainWindow):
         self.progressLabel.setText("Initializing Virtual Stain...")
 
         from ai.virtual_stain import VirtualStainWorker
+
+        # Get ICC/Calibration from tile_manager for color-consistent AI input
+        vs_icc_transform = None
+        vs_calibration_lut = None
+        if hasattr(self.wsi_viewer, 'tile_manager') and self.wsi_viewer.tile_manager:
+            vs_icc_transform = self.wsi_viewer.tile_manager.icc_transform
+            vs_calibration_lut = self.wsi_viewer.tile_manager.calibration_lut
+
         self.virtual_stain_worker = VirtualStainWorker(
             image_path=self.current_image_path,
             model_path=model_path,
@@ -903,6 +940,8 @@ class PathologyViewer(QMainWindow):
             patch_size=512,
             roi_bounds=roi_bounds,
             roi_polygons=roi_polygons,
+            icc_transform=vs_icc_transform,
+            calibration_lut=vs_calibration_lut,
         )
         self.virtual_stain_worker.finished.connect(self.on_virtual_stain_complete)
         self.virtual_stain_worker.progress.connect(self.on_ai_progress)

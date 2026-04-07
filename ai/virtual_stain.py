@@ -84,16 +84,34 @@ def _make_blend_weight(size, overlap):
     return np.outer(w, w)
 
 
-def _read_patch(slide, x0, y0, best_level, level_read, ps):
+def _read_patch(slide, x0, y0, best_level, level_read, ps, icc_transform=None, calibration_lut=None):
     """Read a single patch from the slide (runs in I/O thread).
-    Out-of-bounds pixels are composited onto a white background."""
+    Out-of-bounds pixels are composited onto a white background.
+    Applies ICC color profile and Aperio calibration if provided."""
     region = slide.read_region((x0, y0), best_level, (level_read, level_read))
     # RGBA → 흰색 배경 합성 (경계 밖 투명 픽셀이 검정이 되는 것 방지)
     white_bg = Image.new('RGB', region.size, (255, 255, 255))
-    white_bg.paste(region, mask=region.split()[3])  # alpha 채널을 마스크로 사용
+    white_bg.paste(region, mask=region.split()[3])
+
+    # ICC color profile 적용 (slide → sRGB)
+    if icc_transform:
+        from PIL import ImageCms
+        ImageCms.applyTransform(white_bg, icc_transform, inPlace=True)
+
     if white_bg.size != (ps, ps):
         white_bg = white_bg.resize((ps, ps), Image.BILINEAR)
-    return np.array(white_bg, dtype=np.float32)
+
+    arr = np.array(white_bg, dtype=np.float32)
+
+    # Aperio calibration (white balance + gamma)
+    if calibration_lut is not None:
+        arr_u8 = arr.astype(np.uint8)
+        arr_u8[:, :, 0] = calibration_lut[0][arr_u8[:, :, 0]]
+        arr_u8[:, :, 1] = calibration_lut[1][arr_u8[:, :, 1]]
+        arr_u8[:, :, 2] = calibration_lut[2][arr_u8[:, :, 2]]
+        arr = arr_u8.astype(np.float32)
+
+    return arr
 
 
 class VirtualStainWorker(QThread):
@@ -112,7 +130,8 @@ class VirtualStainWorker(QThread):
 
     def __init__(self, image_path, model_path, stain_type="ihc_membrane",
                  target_mpp=2.0, patch_size=512, batch_size=4,
-                 roi_bounds=None, roi_polygons=None):
+                 roi_bounds=None, roi_polygons=None,
+                 icc_transform=None, calibration_lut=None):
         super().__init__()
         self.image_path = image_path
         self.model_path = model_path
@@ -123,6 +142,8 @@ class VirtualStainWorker(QThread):
         self.roi_bounds = roi_bounds
         self.roi_polygons = roi_polygons  # [[(x,y), ...], ...] WSI level-0 coords
         self.is_cancelled = False
+        self.icc_transform = icc_transform  # ICC color profile transform (slide→sRGB)
+        self.calibration_lut = calibration_lut  # Aperio calibration LUT (3, 256) numpy array
 
     def cancel(self):
         self.is_cancelled = True
@@ -250,7 +271,8 @@ class VirtualStainWorker(QThread):
                         return
 
                     # Submit I/O to thread pool and get result
-                    future = pool.submit(_read_patch, slide, x0, y0, best_level, level_read, ps)
+                    future = pool.submit(_read_patch, slide, x0, y0, best_level, level_read, ps,
+                                         self.icc_transform, self.calibration_lut)
                     region_np = future.result()
 
                     # Accumulate input
