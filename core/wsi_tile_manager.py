@@ -282,13 +282,17 @@ class WSITileManager(QObject):
         return 0.25  # Default (based on 40x scan)
 
     def _build_icc_transform(self):
-        """Build ICC color profile transform (slide → sRGB)"""
+        """Build ICC color profile transform (slide → sRGB)
+        Uses RELATIVE_COLORIMETRIC intent to preserve in-gamut colors
+        without brightness/saturation shifts (important for IHC stains).
+        """
         try:
             icc_profile = self.slide.color_profile
             if icc_profile:
                 srgb_profile = ImageCms.createProfile("sRGB")
                 self.icc_transform = ImageCms.buildTransform(
-                    icc_profile, srgb_profile, "RGB", "RGB"
+                    icc_profile, srgb_profile, "RGB", "RGB",
+                    renderingIntent=ImageCms.Intent.RELATIVE_COLORIMETRIC,
                 )
         except Exception as e:
             print(f"ICC profile not applied: {e}")
@@ -296,6 +300,10 @@ class WSITileManager(QObject):
 
     def _build_calibration_lut(self):
         """Build Aperio calibration LUT (white balance + gamma correction)
+
+        WB scale = avg/255 (평균값 기준 정규화)
+        - ICC 유무에 관계없이 동일하게 적용
+        - IHC 등 밝은 슬라이드의 과보정 방지
 
         Produces:
           - calibration_lut: (3, 256) NumPy array for thumbnail rendering
@@ -314,11 +322,10 @@ class WSITileManager(QObject):
             avg_r, avg_g, avg_b = float(avg_r), float(avg_g), float(avg_b)
             gamma = float(gamma)
 
-            # White balance: normalize each channel so calibration average → 255
-            # Gamma correction: apply inverse gamma then re-encode
             lut = np.zeros((3, 256), dtype=np.uint8)
+
             for ch, avg in enumerate([avg_r, avg_g, avg_b]):
-                scale = 255.0 / max(avg, 1.0)
+                scale = max(avg, 1.0) / 255.0
                 for i in range(256):
                     linear = (i / 255.0) ** gamma
                     corrected = min(linear * scale, 1.0)
