@@ -220,7 +220,7 @@ class WSITileManager(QObject):
 
     tilesUpdated = pyqtSignal()
 
-    def __init__(self, slide_path, tile_size=512, num_workers=8):
+    def __init__(self, slide_path, tile_size=512, num_workers=None):
         super().__init__()
         self.slide = None
         self.slide_path = slide_path
@@ -253,7 +253,9 @@ class WSITileManager(QObject):
         except Exception as e:
             raise
 
-        # Create worker threads (each worker opens independent OpenSlide)
+        # Create worker threads (CPU 코어 기반, 2~8)
+        if num_workers is None:
+            num_workers = min(max(2, os.cpu_count() or 4), 8)
         self.workers = []
         for _ in range(num_workers):
             worker = TileLoader(slide_path, tile_size, self.icc_transform, self.calibration_flat_lut)

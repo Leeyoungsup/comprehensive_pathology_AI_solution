@@ -111,13 +111,14 @@ class PDL1DetectionWorker(QThread):
     error = pyqtSignal(str)
     status = pyqtSignal(str)
 
-    def __init__(self, slide, model, roi_polygons=None, device='cuda', icc_transform=None, calibration_lut=None):
+    def __init__(self, slide, model, roi_polygons=None, device='cuda', icc_transform=None, calibration_lut=None, image_path=None):
         super().__init__()
         self.slide = slide
         self.model = model
         self.roi_polygons = roi_polygons
         self.device = device
         self.is_cancelled = False
+        self.image_path = image_path  # 병렬 I/O용 슬라이드 경로
         self.icc_transform = icc_transform  # ICC color profile transform (slide→sRGB)
         self.calibration_lut = calibration_lut  # Aperio calibration LUT (3, 256) numpy array
         # Pre-build flat LUT for PIL Image.point() (C-optimized)
@@ -155,15 +156,20 @@ class PDL1DetectionWorker(QThread):
         }
 
     def run(self):
-        """검출 작업 실행"""
+        """검출 작업 실행 (배치 병렬 I/O + GPU 추론 파이프라인)"""
+        import time
+        import threading
+        import queue
+        from concurrent.futures import ThreadPoolExecutor
+
+        _pdl1_thread_local = threading.local()
+
         try:
-            import time
             start_total = time.time()
 
             self.status.emit("Starting PD-L1 detection...")
             self.progress.emit(1)
 
-            all_cells = []
             width, height = self.slide.dimensions
 
             self.status.emit(f"Slide size: {width}x{height}")
@@ -177,71 +183,221 @@ class PDL1DetectionWorker(QThread):
             self.status.emit(f"Tissue mask created ({mask_time:.2f}s)")
             self.progress.emit(5)
 
-            total_patches = (width // self.original_size) * (height // self.original_size)
-            processed_patches = 0
-            detected_cells_count = 0
-            tissue_patches = 0
-            roi_patches = 0
-
-            start_time = time.time()
-            last_update_time = start_time
-
-            self.status.emit(f"Detecting PD-L1 cells... ({total_patches} total patches)")
-
+            # ── Pre-scan: 유효 패치 사전 집계 ──
+            self.status.emit("Counting valid patches...")
+            valid_patch_list = []
             for patch_row in range(width // self.original_size - 1):
-                if self.is_cancelled:
-                    break
                 for patch_col in range(height // self.original_size - 1):
-                    if self.is_cancelled:
-                        break
-
-                    # 마스크 체크 (조직 영역인지)
                     mask_x = (patch_row * self.original_size) // 64
                     mask_y = (patch_col * self.original_size) // 64
                     mask_region = thumb_mask[mask_y:mask_y + self.original_size // 64,
                                             mask_x:mask_x + self.original_size // 64]
-
                     if np.sum(mask_region) == 0:
-                        processed_patches += 1
                         continue
-
-                    tissue_patches += 1
-                    patch_x = patch_row * self.original_size
-                    patch_y = patch_col * self.original_size
-
-                    # ROI 체크
-                    if self.roi_polygons and not self._is_in_roi(patch_x, patch_y):
-                        processed_patches += 1
+                    px = patch_row * self.original_size
+                    py = patch_col * self.original_size
+                    if self.roi_polygons and not self._is_in_roi(px, py):
                         continue
+                    valid_patch_list.append((px, py))
 
-                    roi_patches += 1
-                    cells = self._process_patch(patch_x, patch_y)
-                    all_cells.extend(cells)
-                    detected_cells_count = len(all_cells)
+            n_valid = len(valid_patch_list)
+            total_grid = (width // self.original_size) * (height // self.original_size)
+            self.status.emit(f"Found {n_valid} valid patches (out of {total_grid} total)")
 
-                    processed_patches += 1
-                    progress = int(5 + (processed_patches / total_patches) * 90)
-                    self.progress.emit(progress)
+            # ── 배치 병렬 I/O + GPU 추론 파이프라인 ──
+            BATCH_SIZE = 8
+            IO_WORKERS = min(max(2, os.cpu_count() or 4), 8)
+            PREFETCH_BATCHES = 3
 
-                    # 상태 메시지 업데이트
-                    current_time = time.time()
-                    if processed_patches % 10 == 0 or (current_time - last_update_time) >= 1.0:
-                        elapsed = current_time - start_time
-                        patches_per_sec = processed_patches / elapsed if elapsed > 0 else 0
-                        remaining = total_patches - processed_patches
-                        eta = remaining / patches_per_sec if patches_per_sec > 0 else 0
-                        self.status.emit(
-                            f"Patch {processed_patches}/{total_patches} | "
-                            f"Tissue:{tissue_patches} ROI:{roi_patches} | "
-                            f"Cells:{detected_cells_count} | {patches_per_sec:.1f}it/s | ETA:{eta:.0f}s"
-                        )
-                        last_update_time = current_time
+            _chunks_cells = []
+            detected_cells_count = 0
+            processed_valid = 0
+            start_time = time.time()
+            last_update_time = start_time
+
+            prefetch_queue = queue.Queue(maxsize=PREFETCH_BATCHES)
+            producer_done = threading.Event()
+
+            def _read_patch_tensor(patch_x, patch_y):
+                """I/O 스레드: 패치 읽기 → CPU 텐서 반환"""
+                try:
+                    if self.image_path:
+                        if (not hasattr(_pdl1_thread_local, 'slide') or
+                                _pdl1_thread_local.image_path != self.image_path):
+                            import openslide as _openslide
+                            _pdl1_thread_local.slide = _openslide.OpenSlide(self.image_path)
+                            _pdl1_thread_local.image_path = self.image_path
+                        slide = _pdl1_thread_local.slide
+                    else:
+                        slide = self.slide
+
+                    patch = slide.read_region(
+                        (patch_x, patch_y), 0, (self.original_size, self.original_size)
+                    )
+                    patch_rgb = patch.convert('RGB')
+
+                    if self.icc_transform:
+                        from PIL import ImageCms
+                        ImageCms.applyTransform(patch_rgb, self.icc_transform, inPlace=True)
+                    if self.calibration_flat_lut is not None:
+                        patch_rgb = patch_rgb.point(self.calibration_flat_lut)
+
+                    patch_arr = np.asarray(patch_rgb)
+                    patch_arr = cv2.resize(patch_arr, (self.image_size, self.image_size))
+                    return torch.from_numpy(patch_arr.copy()).permute(2, 0, 1).float() / 255.
+                except Exception as e:
+                    print(f"PD-L1 patch read error ({patch_x}, {patch_y}): {e}")
+                    return None
+
+            def _io_producer():
+                """I/O 스레드: 패치 병렬 읽기 → 배치 구성 → 프리페치 큐"""
+                try:
+                    with ThreadPoolExecutor(max_workers=IO_WORKERS) as io_pool:
+                        pending = []
+
+                        for px, py in valid_patch_list:
+                            if self.is_cancelled:
+                                break
+                            future = io_pool.submit(_read_patch_tensor, px, py)
+                            pending.append((px, py, future))
+
+                            if len(pending) >= BATCH_SIZE:
+                                batch_coords, batch_tensors = [], []
+                                for bx, by, f in pending:
+                                    t = f.result(timeout=60)
+                                    if t is not None:
+                                        batch_coords.append((bx, by))
+                                        batch_tensors.append(t)
+                                if batch_coords:
+                                    while True:
+                                        try:
+                                            prefetch_queue.put(
+                                                (batch_coords, batch_tensors, len(pending)),
+                                                timeout=0.5
+                                            )
+                                            break
+                                        except queue.Full:
+                                            if self.is_cancelled:
+                                                return
+                                pending.clear()
+
+                        if pending and not self.is_cancelled:
+                            batch_coords, batch_tensors = [], []
+                            for bx, by, f in pending:
+                                t = f.result(timeout=60)
+                                if t is not None:
+                                    batch_coords.append((bx, by))
+                                    batch_tensors.append(t)
+                            if batch_coords:
+                                while True:
+                                    try:
+                                        prefetch_queue.put(
+                                            (batch_coords, batch_tensors, len(pending)),
+                                            timeout=0.5
+                                        )
+                                        break
+                                    except queue.Full:
+                                        if self.is_cancelled:
+                                            return
+                except Exception as e:
+                    print(f"PD-L1 I/O producer error: {e}")
+                finally:
+                    producer_done.set()
+                    prefetch_queue.put(None)
+
+            producer_thread = threading.Thread(target=_io_producer, daemon=True)
+            producer_thread.start()
+
+            # GPU 추론 루프
+            self.model.eval()
+            while True:
+                try:
+                    item = prefetch_queue.get(timeout=120)
+                except queue.Empty:
+                    if producer_done.is_set():
+                        break
+                    continue
+
+                if item is None:
+                    break
+
+                if self.is_cancelled:
+                    while True:
+                        try:
+                            prefetch_queue.get_nowait()
+                        except queue.Empty:
+                            break
+                    break
+
+                batch_coords, batch_tensors, patch_count = item
+                batch_tensor = torch.stack(batch_tensors).to(self.device)
+
+                with torch.no_grad():
+                    with torch.amp.autocast('cuda'):
+                        pred = self.model(batch_tensor)
+
+                    results = non_max_suppression(pred, confidence_threshold=0.35,
+                                                  iou_threshold=0.6,
+                                                  class_thresholds=self.class_thresholds)
+
+                for bi, (start_x, start_y) in enumerate(batch_coords):
+                    if len(results[bi]) > 0:
+                        detections = results[bi]
+                        xyxy = detections[:, :4]
+                        confs = detections[:, 4]
+                        cls_ids = detections[:, 5]
+
+                        centers_x = (xyxy[:, 0] + xyxy[:, 2]) / 2
+                        centers_y = (xyxy[:, 1] + xyxy[:, 3]) / 2
+
+                        actual_x = start_x + centers_x * (self.original_size / self.image_size)
+                        actual_y = start_y + centers_y * (self.original_size / self.image_size)
+
+                        for i in range(len(detections)):
+                            cell_x = actual_x[i].item()
+                            cell_y = actual_y[i].item()
+
+                            if self.roi_polygons:
+                                in_roi = any(p.contains_point(cell_x, cell_y) for p in self.roi_polygons)
+                                if not in_roi:
+                                    continue
+
+                            _chunks_cells.append({
+                                'x': cell_x,
+                                'y': cell_y,
+                                'cls_id': int(cls_ids[i].item()),
+                                'confidence': confs[i].item()
+                            })
+
+                detected_cells_count = len(_chunks_cells)
+                processed_valid += patch_count
+                pct = processed_valid / n_valid if n_valid > 0 else 1.0
+                self.progress.emit(int(5 + pct * 90))
+
+                current_time = time.time()
+                if current_time - last_update_time >= 1.0:
+                    elapsed = current_time - start_time
+                    patches_per_sec = processed_valid / elapsed if elapsed > 0 else 0
+                    remaining = n_valid - processed_valid
+                    eta = remaining / patches_per_sec if patches_per_sec > 0 else 0
+                    if eta >= 60:
+                        eta_str = f"{int(eta) // 60}m {int(eta) % 60}s"
+                    else:
+                        eta_str = f"{int(eta)}s"
+                    self.status.emit(
+                        f"Patch {processed_valid}/{n_valid} | Cells: {detected_cells_count} "
+                        f"| {patches_per_sec:.1f}it/s | ~{eta_str} remaining"
+                    )
+                    last_update_time = current_time
+
+            producer_thread.join(timeout=10)
 
             if self.is_cancelled:
                 self.error.emit("Detection cancelled.")
                 return
 
-            self.status.emit(f"Finalizing results... ({detected_cells_count} detected)")
+            all_cells = _chunks_cells
+            self.status.emit(f"Finalizing results... ({len(all_cells)} detected)")
             self.progress.emit(95)
 
             # TPS 계산 (Non-Tumor 포함 전체 세포로 계산)
@@ -459,7 +615,7 @@ class PDL1Detection(QObject):
             traceback.print_exc()
             return False
 
-    def run_detection(self, slide, roi_polygons=None, icc_transform=None, calibration_lut=None):
+    def run_detection(self, slide, roi_polygons=None, icc_transform=None, calibration_lut=None, image_path=None):
         """PD-L1 검출 실행"""
         if self.model is None:
             self.detectionError.emit("Model not loaded.")
@@ -471,7 +627,8 @@ class PDL1Detection(QObject):
 
         self.worker = PDL1DetectionWorker(slide, self.model, roi_polygons, self.device,
                                           icc_transform=icc_transform,
-                                          calibration_lut=calibration_lut)
+                                          calibration_lut=calibration_lut,
+                                          image_path=image_path)
         self.worker.finished.connect(self._on_finished)
         self.worker.progress.connect(self._on_progress)
         self.worker.status.connect(self._on_status)

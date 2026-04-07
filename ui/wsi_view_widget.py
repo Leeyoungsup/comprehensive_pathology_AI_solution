@@ -150,7 +150,7 @@ class WSIViewWidget(QGraphicsView):
             self.tile_items.clear()
             
             # 새로운 타일 매니저 생성
-            self.tile_manager = WSITileManager(wsi_path, tile_size=512, num_workers=4)
+            self.tile_manager = WSITileManager(wsi_path, tile_size=512)
             self.tile_manager.tilesUpdated.connect(self.on_tiles_updated)
             
             # Scene 크기 설정 (레벨 0 기준)

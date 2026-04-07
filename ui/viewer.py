@@ -759,7 +759,8 @@ class PathologyViewer(QMainWindow):
 
             self.pdl1_detection.run_detection(slide, roi_polygons,
                                               icc_transform=icc_transform,
-                                              calibration_lut=calibration_lut)
+                                              calibration_lut=calibration_lut,
+                                              image_path=self.current_image_path)
         except Exception as e:
             QMessageBox.critical(self, "Error", f"PD-L1 detection failed:\n{str(e)}")
             self.btnPDL1Detection.setText("PD-L1 Detection")
