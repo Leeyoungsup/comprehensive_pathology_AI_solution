@@ -285,34 +285,40 @@ class WSISegmentationModel:
                 
                 patch_coords.append((x_abs, y_abs, x_rel, y_rel))  # (abs_x, abs_y, rel_x, rel_y)
 
-        # ── Pre-scan: 가장 낮은 해상도 레벨로 유효(조직) 패치 사전 필터링 ──
-        coarse_level = slide.level_count - 1
-        coarse_downsample = slide.level_downsamples[coarse_level]
-        thumb_w = max(1, int(region_w / coarse_downsample))
-        thumb_h = max(1, int(region_h / coarse_downsample))
+        # ── Pre-scan: tissue mask 기반 유효 패치 필터링 (Detection과 동일 방식) ──
         try:
-            thumbnail_arr = np.array(
-                slide.read_region(
-                    (region_offset_x, region_offset_y),
-                    coarse_level,
-                    (thumb_w, thumb_h)
-                ).convert('RGB')
-            )
-            thumb_patch_size = max(1, int(patch_size_level0 / coarse_downsample))
+            # 축소 썸네일로 tissue mask 생성
+            thumb_downsample = 128
+            thumb_w = max(1, int(region_w / thumb_downsample))
+            thumb_h = max(1, int(region_h / thumb_downsample))
+            thumbnail = np.array(
+                slide.get_thumbnail((max(1, wsi_w // thumb_downsample),
+                                     max(1, wsi_h // thumb_downsample)))
+            )[:, :, :3]
+
+            # Otsu threshold 기반 조직 마스크 (Detection과 동일)
+            gray = cv2.cvtColor(thumbnail, cv2.COLOR_RGB2GRAY)
+            tissue_mask = cv2.threshold(255 - gray, 30, 255, cv2.THRESH_BINARY)[1]
+            tissue_mask = cv2.morphologyEx(tissue_mask, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
+            tissue_mask = cv2.morphologyEx(tissue_mask, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+
+            # 패치 크기를 썸네일 좌표로 변환
+            thumb_patch_w = max(1, int(patch_size_level0 / thumb_downsample))
+            thumb_patch_h = max(1, int(patch_size_level0 / thumb_downsample))
 
             valid_patch_coords = []
             for (x_abs, y_abs, x_rel, y_rel) in patch_coords:
-                tx  = int(x_rel / coarse_downsample)
-                ty  = int(y_rel / coarse_downsample)
-                tx2 = min(tx + thumb_patch_size, thumbnail_arr.shape[1])
-                ty2 = min(ty + thumb_patch_size, thumbnail_arr.shape[0])
-                if tx < thumbnail_arr.shape[1] and ty < thumbnail_arr.shape[0] and tx2 > tx and ty2 > ty:
-                    region_thumb = thumbnail_arr[ty:ty2, tx:tx2]
-                    if np.mean(region_thumb > 220) < 0.9:
+                # region 오프셋 포함한 절대 좌표 → 썸네일 좌표
+                tx = int(x_abs / thumb_downsample)
+                ty = int(y_abs / thumb_downsample)
+                tx2 = min(tx + thumb_patch_w, tissue_mask.shape[1])
+                ty2 = min(ty + thumb_patch_h, tissue_mask.shape[0])
+                if tx < tissue_mask.shape[1] and ty < tissue_mask.shape[0] and tx2 > tx and ty2 > ty:
+                    # 해당 패치 영역에 조직이 있는지 확인 (mask 합 > 0)
+                    if np.sum(tissue_mask[ty:ty2, tx:tx2]) > 0:
                         valid_patch_coords.append((x_abs, y_abs, x_rel, y_rel))
-            del thumbnail_arr
+            del thumbnail, tissue_mask
         except Exception:
-            # 썸네일 읽기 실패 시 전체 패치 그대로 사용
             valid_patch_coords = patch_coords
 
         n_valid = len(valid_patch_coords)
@@ -366,8 +372,6 @@ class WSISegmentationModel:
                 if arr.shape[0] != patch_size or arr.shape[1] != patch_size:
                     arr = cv2.resize(arr, (patch_size, patch_size), interpolation=cv2.INTER_LINEAR)
 
-                if np.mean(arr > 220) >= 0.9:
-                    return None
                 return (torch.from_numpy(arr.copy()).permute(2, 0, 1).float() / 255.0, x_rel, y_rel)
             except Exception:
                 return None
