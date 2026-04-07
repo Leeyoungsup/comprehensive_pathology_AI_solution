@@ -323,11 +323,12 @@ class WSISegmentationModel:
         # level-0 좌표 → output 해상도 변환 비율 (루프 밖에서 1회 계산)
         combined_scale = read_scale * output_scale
 
-        # ── 병렬 I/O: thread-local OpenSlide + GPU 추론 오버랩 ─────────────
+        # ── 병렬 I/O: 연속 submit + 프리페치 큐 + GPU 추론 오버랩 ─────────
         import time
 
         read_size = int(patch_size_level0 / level_downsample)
-        IO_WORKERS = 4 if image_path else 1  # image_path 없으면 단일 스레드(OpenSlide 비thread-safe)
+        IO_WORKERS = 4 if image_path else 1
+        PREFETCH_BATCHES = 3
 
         # Pre-build flat LUT for PIL Image.point() (C-optimized, avoids NumPy roundtrip)
         _calibration_flat_lut = None
@@ -366,42 +367,92 @@ class WSISegmentationModel:
                     arr = cv2.resize(arr, (patch_size, patch_size), interpolation=cv2.INTER_LINEAR)
 
                 if np.mean(arr > 220) >= 0.9:
-                    return None, None
-                return torch.from_numpy(arr.copy()).permute(2, 0, 1).float() / 255.0, (x_rel, y_rel)
+                    return None
+                return (torch.from_numpy(arr.copy()).permute(2, 0, 1).float() / 255.0, x_rel, y_rel)
             except Exception:
-                return None, None
+                return None
 
-        prefetch_q = queue.Queue(maxsize=3)
+        prefetch_q = queue.Queue(maxsize=PREFETCH_BATCHES)
+        producer_done = threading.Event()
 
-        def _producer():
-            with ThreadPoolExecutor(max_workers=IO_WORKERS) as pool:
-                for b_start in range(0, n_valid, batch_size):
-                    batch_coords = valid_patch_coords[b_start:b_start + batch_size]
-                    results = list(pool.map(_read_patch, batch_coords))
-                    imgs, coords = [], []
-                    for t, c in results:
-                        if t is not None:
-                            imgs.append(t)
-                            coords.append(c)
-                    prefetch_q.put((imgs, coords, b_start))
-            prefetch_q.put(None)  # sentinel
+        def _io_producer():
+            """연속 submit 방식: 패치를 개별 제출하고 배치 단위로 큐에 push"""
+            try:
+                with ThreadPoolExecutor(max_workers=IO_WORKERS) as io_pool:
+                    pending = []
 
-        prod_thread = threading.Thread(target=_producer, daemon=True)
+                    for coord in valid_patch_coords:
+                        future = io_pool.submit(_read_patch, coord)
+                        pending.append(future)
+
+                        if len(pending) >= batch_size:
+                            batch_imgs, batch_coords = [], []
+                            for f in pending:
+                                result = f.result(timeout=60)
+                                if result is not None:
+                                    tensor, x_rel, y_rel = result
+                                    batch_imgs.append(tensor)
+                                    batch_coords.append((x_rel, y_rel))
+                            while True:
+                                try:
+                                    prefetch_q.put(
+                                        (batch_imgs, batch_coords, len(pending)),
+                                        timeout=0.5
+                                    )
+                                    break
+                                except queue.Full:
+                                    pass
+                            pending.clear()
+
+                    # 남은 패치 처리
+                    if pending:
+                        batch_imgs, batch_coords = [], []
+                        for f in pending:
+                            result = f.result(timeout=60)
+                            if result is not None:
+                                tensor, x_rel, y_rel = result
+                                batch_imgs.append(tensor)
+                                batch_coords.append((x_rel, y_rel))
+                        while True:
+                            try:
+                                prefetch_q.put(
+                                    (batch_imgs, batch_coords, len(pending)),
+                                    timeout=0.5
+                                )
+                                break
+                            except queue.Full:
+                                pass
+            except Exception as e:
+                print(f"Segmentation I/O producer error: {e}")
+            finally:
+                producer_done.set()
+                prefetch_q.put(None)  # sentinel
+
+        prod_thread = threading.Thread(target=_io_producer, daemon=True)
         prod_thread.start()
 
         processed_valid = 0
         start_time = time.time()
+        last_update_time = start_time
 
         while True:
-            item = prefetch_q.get()
+            try:
+                item = prefetch_q.get(timeout=120)
+            except queue.Empty:
+                if producer_done.is_set():
+                    break
+                continue
+
             if item is None:
                 break
-            batch_images, valid_coords, b_start = item
-            processed_valid += min(batch_size, n_valid - b_start)
+
+            batch_images, valid_coords, patch_count = item
+            processed_valid += patch_count
 
             if not batch_images:
                 if progress_callback:
-                    progress_callback(int(processed_valid / n_valid * 100))
+                    pct = processed_valid / n_valid if n_valid > 0 else 1.0
+                    progress_callback(int(pct * 100))
                 continue
 
             # GPU 추론 (autocast로 FP16 가속)
@@ -433,22 +484,27 @@ class WSISegmentationModel:
                     predictions[i, :, :ph, :pw] * weight_mask[:ph, :pw]
                 weight_sum[y_out:y_end, x_out:x_end] += weight_mask[:ph, :pw]
 
-            # 진행률 + ETA
-            if progress_callback or status_callback:
+            # 진행률 + ETA (1초마다 업데이트)
+            current_time = time.time()
+            if current_time - last_update_time >= 1.0:
                 pct = processed_valid / n_valid if n_valid > 0 else 1.0
-                elapsed = time.time() - start_time
-                if pct > 0.01 and elapsed > 1.0:
-                    remaining = int(elapsed / pct * (1.0 - pct))
-                    eta_str = f"{remaining // 60} min {remaining % 60} sec" if remaining >= 60 else f"{remaining} sec"
-                    msg = f"Segmentation {processed_valid}/{n_valid} patches processed (~{eta_str} remaining)"
-                else:
-                    msg = f"Segmentation {processed_valid}/{n_valid} patches processing..."
-                if status_callback:
-                    status_callback(msg)
+                elapsed = current_time - start_time
                 if progress_callback:
                     progress_callback(int(pct * 100))
+                if status_callback and pct > 0.01 and elapsed > 1.0:
+                    patches_per_sec = processed_valid / elapsed if elapsed > 0 else 0
+                    remaining = (n_valid - processed_valid) / patches_per_sec if patches_per_sec > 0 else 0
+                    if remaining >= 60:
+                        eta_str = f"{int(remaining) // 60}m {int(remaining) % 60}s"
+                    else:
+                        eta_str = f"{int(remaining)}s"
+                    status_callback(
+                        f"Segmentation {processed_valid}/{n_valid} "
+                        f"| {patches_per_sec:.1f}it/s | ~{eta_str} remaining"
+                    )
+                last_update_time = current_time
 
-        prod_thread.join()
+        prod_thread.join(timeout=10)
 
         # Normalize by weights
         weight_sum = np.maximum(weight_sum, 1e-6)  # Avoid division by zero
