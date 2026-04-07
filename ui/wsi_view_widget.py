@@ -71,6 +71,7 @@ class WSIViewWidget(QGraphicsView):
         # WSI 관련 속성
         self.tile_manager = None
         self.tile_items = {}  # (tile_x, tile_y, level) -> QGraphicsPixmapItem
+        self._tile_items_by_level = {}  # {level: set((tx, ty, level), ...)} — O(1) 레벨별 조회
         self.current_level = -1  # 현재 표시 중인 레벨 추적
         
         # 줌 관련 속성
@@ -148,7 +149,8 @@ class WSIViewWidget(QGraphicsView):
             # Scene 초기화
             self.scene.clear()
             self.tile_items.clear()
-            
+            self._tile_items_by_level.clear()
+
             # 새로운 타일 매니저 생성
             self.tile_manager = WSITileManager(wsi_path, tile_size=512)
             self.tile_manager.tilesUpdated.connect(self.on_tiles_updated)
@@ -386,108 +388,125 @@ class WSIViewWidget(QGraphicsView):
         # 즉시 캐시된 타일 렌더링
         self.on_tiles_updated()
     
+    def _add_tile_item(self, cache_key, item):
+        """타일 아이템 추가 (레벨별 인덱스 동기화)"""
+        self.tile_items[cache_key] = item
+        _, _, level = cache_key
+        if level not in self._tile_items_by_level:
+            self._tile_items_by_level[level] = set()
+        self._tile_items_by_level[level].add(cache_key)
+
+    def _remove_tile_item(self, cache_key):
+        """타일 아이템 제거 (레벨별 인덱스 동기화)"""
+        item = self.tile_items.pop(cache_key, None)
+        if item:
+            try:
+                self.scene.removeItem(item)
+            except RuntimeError:
+                pass
+        _, _, level = cache_key
+        level_set = self._tile_items_by_level.get(level)
+        if level_set:
+            level_set.discard(cache_key)
+
     def on_tiles_updated(self):
         """타일 업데이트 시 호출 - 새로 로드된 타일만 추가"""
         if not self.tile_manager:
             return
-        
-        # 현재 보이는 영역 계산
+
         view_rect = self.mapToScene(self.viewport().rect()).boundingRect()
         level = self.tile_manager.get_stage_level(self.get_effective_mpp())
         level_downsample = self.tile_manager.get_level_downsample(level)
-        
-        # 타일 크기
         tile_size = self.tile_manager.tile_size
-        
-        # 보이는 타일 범위 계산
+
+        # 보이는 타일 범위
         start_tile_x = max(0, int(view_rect.left() / tile_size / level_downsample))
         start_tile_y = max(0, int(view_rect.top() / tile_size / level_downsample))
         end_tile_x = int(view_rect.right() / tile_size / level_downsample) + 2
         end_tile_y = int(view_rect.bottom() / tile_size / level_downsample) + 2
-        
-        # 타일 렌더링
+
+        # 새 타일 렌더링
         tiles_rendered = 0
         for ty in range(start_tile_y, end_tile_y):
             for tx in range(start_tile_x, end_tile_x):
                 cache_key = (tx, ty, level)
-                
-                # 이미 렌더링된 타일인지 확인
+
                 if cache_key not in self.tile_items:
                     pixmap = self.tile_manager.get_tile(tx, ty, level)
                     if pixmap:
-                        # 타일 위치 계산
-                        tile_x_pos = tx * tile_size * level_downsample
-                        tile_y_pos = ty * tile_size * level_downsample
-                        
-                        # 타일 아이템 생성 및 추가
                         item = QGraphicsPixmapItem(pixmap)
-                        item.setPos(tile_x_pos, tile_y_pos)
+                        item.setPos(tx * tile_size * level_downsample,
+                                    ty * tile_size * level_downsample)
                         item.setScale(level_downsample)
-                        item.setZValue(10 - level)  # 고해상도가 위에
-                        
+                        item.setZValue(10 - level)
                         self.scene.addItem(item)
-                        self.tile_items[cache_key] = item
+                        self._add_tile_item(cache_key, item)
                         tiles_rendered += 1
-        
-        # 미니맵 캐시 상태 업데이트
+
+        # 미니맵
         if tiles_rendered > 0 and hasattr(self, 'minimap') and self.minimap.isVisible():
             cached_tiles = self.tile_manager.get_cached_tiles_info()
             self.minimap.update_cached_tiles(cached_tiles)
-        
+
         # 타일 정리
-        self._cleanup_tiles(start_tile_x, start_tile_y, end_tile_x, end_tile_y, level, tile_size, level_downsample)
-    
-    def _cleanup_tiles(self, start_tile_x, start_tile_y, end_tile_x, end_tile_y, level, tile_size, level_downsample):
-        """보이지 않는 타일 제거"""
+        self._cleanup_tiles(level, tile_size,
+                            start_tile_x, start_tile_y, end_tile_x, end_tile_y)
+
+    def _cleanup_tiles(self, level, tile_size,
+                        start_tx, start_ty, end_tx, end_ty):
+        """레벨별 인덱스로 빠른 타일 정리"""
         keys_to_remove = []
-        for key in self.tile_items:
-            tx, ty, lv = key
-            
-            # 현재 레벨이면: 보이는 범위 밖만 제거
-            if lv == level:
-                if tx < start_tile_x - 2 or tx > end_tile_x + 2 or \
-                   ty < start_tile_y - 2 or ty > end_tile_y + 2:
-                    item = self.tile_items[key]
-                    try:
-                        self.scene.removeItem(item)
-                    except RuntimeError:
-                        pass
-                    keys_to_remove.append(key)
-            # 다른 레벨이면: 현재 레벨 타일로 덮인 영역만 제거
-            else:
-                if self._is_tile_covered(tx, ty, lv, start_tile_x, start_tile_y, end_tile_x, end_tile_y, level, tile_size, level_downsample):
-                    item = self.tile_items[key]
-                    try:
-                        self.scene.removeItem(item)
-                    except RuntimeError:
-                        pass
-                    keys_to_remove.append(key)
-        
-        for key in keys_to_remove:
-            del self.tile_items[key]
-    
-    def _is_tile_covered(self, tx, ty, old_level, start_tile_x, start_tile_y, end_tile_x, end_tile_y, new_level, tile_size, level_downsample):
-        """이전 레벨 타일이 현재 레벨 타일로 완전히 덮였는지 확인 (O(1) 좌표 계산)"""
-        old_downsample = self.tile_manager.get_level_downsample(old_level)
-        # 이전 레벨 타일의 level0 좌표 범위
-        old_x0 = tx * tile_size * old_downsample
-        old_y0 = ty * tile_size * old_downsample
-        old_x1 = old_x0 + tile_size * old_downsample
-        old_y1 = old_y0 + tile_size * old_downsample
 
-        # 이전 타일을 덮는 데 필요한 새 레벨 타일 인덱스 범위 계산
+        # 1) 현재 레벨: 보이는 범위 밖 타일만 제거
+        cur_level_keys = self._tile_items_by_level.get(level)
+        if cur_level_keys:
+            for key in list(cur_level_keys):
+                tx, ty, _ = key
+                if tx < start_tx - 2 or tx > end_tx + 2 or \
+                   ty < start_ty - 2 or ty > end_ty + 2:
+                    keys_to_remove.append(key)
+
+        # 2) 다른 레벨: 새 레벨 타일로 덮인 영역만 점진적 제거
+        #    실제 렌더링된 현재 레벨 타일 set으로 O(1) covered 체크
+        cur_rendered = self._tile_items_by_level.get(level, set())
+        level_downsample = self.tile_manager.get_level_downsample(level)
         new_tile_size_l0 = tile_size * level_downsample
-        cover_tx0 = int(old_x0 / new_tile_size_l0)
-        cover_ty0 = int(old_y0 / new_tile_size_l0)
-        cover_tx1 = int((old_x1 - 1) / new_tile_size_l0)
-        cover_ty1 = int((old_y1 - 1) / new_tile_size_l0)
 
-        # 필요한 모든 새 레벨 타일이 렌더링되어 있는지 확인
-        for ntx in range(cover_tx0, cover_tx1 + 1):
-            for nty in range(cover_ty0, cover_ty1 + 1):
-                if (ntx, nty, new_level) not in self.tile_items:
-                    return False
-        return True
+        for lv in list(self._tile_items_by_level.keys()):
+            if lv == level:
+                continue
+            lv_keys = self._tile_items_by_level.get(lv)
+            if not lv_keys:
+                continue
+            old_downsample = self.tile_manager.get_level_downsample(lv)
+            for key in list(lv_keys):
+                tx, ty, _ = key
+                # 이전 타일의 level0 영역
+                old_x0 = tx * tile_size * old_downsample
+                old_y0 = ty * tile_size * old_downsample
+                old_x1 = old_x0 + tile_size * old_downsample
+                old_y1 = old_y0 + tile_size * old_downsample
+
+                # 이 영역을 덮는 새 레벨 타일 인덱스
+                cover_tx0 = int(old_x0 / new_tile_size_l0)
+                cover_ty0 = int(old_y0 / new_tile_size_l0)
+                cover_tx1 = int((old_x1 - 1) / new_tile_size_l0)
+                cover_ty1 = int((old_y1 - 1) / new_tile_size_l0)
+
+                # 필요한 새 타일이 모두 렌더링됐는지 O(1) set lookup
+                covered = True
+                for ntx in range(cover_tx0, cover_tx1 + 1):
+                    for nty in range(cover_ty0, cover_ty1 + 1):
+                        if (ntx, nty, level) not in cur_rendered:
+                            covered = False
+                            break
+                    if not covered:
+                        break
+                if covered:
+                    keys_to_remove.append(key)
+
+        for key in keys_to_remove:
+            self._remove_tile_item(key)
     
     # ============== 검출 결과 오버레이 ==============
     
@@ -1172,6 +1191,7 @@ class WSIViewWidget(QGraphicsView):
         
         self.scene.clear()
         self.tile_items.clear()
+        self._tile_items_by_level.clear()
         self.annotation_items.clear()
     
     # ==================== Annotation 기능 ====================
@@ -1491,3 +1511,4 @@ class WSIViewWidget(QGraphicsView):
         
         self.scene.clear()
         self.tile_items.clear()
+        self._tile_items_by_level.clear()

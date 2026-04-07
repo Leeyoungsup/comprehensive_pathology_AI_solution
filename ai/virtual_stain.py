@@ -4,15 +4,19 @@ CycleGAN-based virtual staining: IHC → H&E, Unstained → H&E
 Pipeline: prefetch I/O ↔ FP16 batched GPU inference ↔ blend accumulation.
 """
 
+import os
 import numpy as np
 import cv2
 import torch
 import torch.nn as nn
+import threading
 from PIL import Image
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
 from PyQt5.QtCore import QThread, pyqtSignal
+
+_vs_thread_local = threading.local()
 
 from skimage.morphology import binary_closing, binary_opening, disk
 from scipy.ndimage import binary_fill_holes
@@ -85,10 +89,18 @@ def _make_blend_weight(size, overlap):
     return np.outer(w, w)
 
 
-def _read_patch(slide, x0, y0, best_level, level_read, ps, icc_transform=None, calibration_flat_lut=None):
+def _read_patch(image_path, x0, y0, best_level, level_read, ps, icc_transform=None, calibration_flat_lut=None):
     """Read a single patch from the slide (runs in I/O thread).
+    Uses thread-local OpenSlide for safe parallel I/O.
     Out-of-bounds pixels are composited onto a white background.
     Applies ICC color profile and Aperio calibration if provided."""
+    import openslide as _openslide
+    if (not hasattr(_vs_thread_local, 'slide') or
+            _vs_thread_local.image_path != image_path):
+        _vs_thread_local.slide = _openslide.OpenSlide(image_path)
+        _vs_thread_local.image_path = image_path
+    slide = _vs_thread_local.slide
+
     region = slide.read_region((x0, y0), best_level, (level_read, level_read))
     # RGBA → 흰색 배경 합성 (경계 밖 투명 픽셀이 검정이 되는 것 방지)
     white_bg = Image.new('RGB', region.size, (255, 255, 255))
@@ -261,7 +273,7 @@ class VirtualStainWorker(QThread):
             tissue_count = 0
             total = len(all_patches)
             bs = self.batch_size
-            io_workers = min(4, bs)
+            io_workers = min(max(2, os.cpu_count() or 4), 8)
 
             # Collect tissue patches into sub-batches
             # Process: prefetch I/O → GPU batch → accumulate
@@ -269,14 +281,18 @@ class VirtualStainWorker(QThread):
             processed = 0
 
             with torch.inference_mode(), ThreadPoolExecutor(max_workers=io_workers) as pool:
+                # 전체 패치를 미리 submit하고 future 리스트 구성
+                futures = []
+                for (xi, yi, x0, y0, px, py_c, is_tissue) in all_patches:
+                    f = pool.submit(_read_patch, self.image_path, x0, y0, best_level, level_read, ps,
+                                    self.icc_transform, self.calibration_flat_lut)
+                    futures.append(f)
+
                 for patch_idx, (xi, yi, x0, y0, px, py_c, is_tissue) in enumerate(all_patches):
                     if self.is_cancelled:
                         return
 
-                    # Submit I/O to thread pool and get result
-                    future = pool.submit(_read_patch, slide, x0, y0, best_level, level_read, ps,
-                                         self.icc_transform, self.calibration_flat_lut)
-                    region_np = future.result()
+                    region_np = futures[patch_idx].result()
 
                     # Accumulate input
                     input_acc[py_c:py_c + ps, px:px + ps] += region_np * blend_3ch
