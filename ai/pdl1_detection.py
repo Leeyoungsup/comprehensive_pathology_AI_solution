@@ -324,21 +324,17 @@ class PDL1DetectionWorker(QThread):
             patch = self.slide.read_region((start_x, start_y), 0,
                                            (self.original_size, self.original_size))
 
-            # ICC color profile 적용 (slide → sRGB)
+            # RGBA → RGB + color correction in PIL (C-optimized)
+            patch_rgb = patch.convert('RGB')
+
             if self.icc_transform:
                 from PIL import ImageCms
-                patch_rgb = patch.convert('RGB')
                 ImageCms.applyTransform(patch_rgb, self.icc_transform, inPlace=True)
-                patch = np.array(patch_rgb)
-            else:
-                patch = np.array(patch)[:, :, :3]
 
-            # Aperio calibration (white balance + gamma)
-            if self.calibration_lut is not None:
-                patch = patch.copy()
-                patch[:, :, 0] = self.calibration_lut[0][patch[:, :, 0]]
-                patch[:, :, 1] = self.calibration_lut[1][patch[:, :, 1]]
-                patch[:, :, 2] = self.calibration_lut[2][patch[:, :, 2]]
+            if self.calibration_flat_lut is not None:
+                patch_rgb = patch_rgb.point(self.calibration_flat_lut)
+
+            patch = np.asarray(patch_rgb)
 
             # 리사이즈 (original_size → model input size)
             patch = cv2.resize(patch, (self.image_size, self.image_size))

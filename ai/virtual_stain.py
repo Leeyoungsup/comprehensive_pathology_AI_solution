@@ -5,6 +5,7 @@ Pipeline: prefetch I/O ↔ FP16 batched GPU inference ↔ blend accumulation.
 """
 
 import numpy as np
+import cv2
 import torch
 import torch.nn as nn
 from PIL import Image
@@ -84,7 +85,7 @@ def _make_blend_weight(size, overlap):
     return np.outer(w, w)
 
 
-def _read_patch(slide, x0, y0, best_level, level_read, ps, icc_transform=None, calibration_lut=None):
+def _read_patch(slide, x0, y0, best_level, level_read, ps, icc_transform=None, calibration_flat_lut=None):
     """Read a single patch from the slide (runs in I/O thread).
     Out-of-bounds pixels are composited onto a white background.
     Applies ICC color profile and Aperio calibration if provided."""
@@ -93,25 +94,21 @@ def _read_patch(slide, x0, y0, best_level, level_read, ps, icc_transform=None, c
     white_bg = Image.new('RGB', region.size, (255, 255, 255))
     white_bg.paste(region, mask=region.split()[3])
 
-    # ICC color profile 적용 (slide → sRGB)
+    # ICC color profile 적용 (slide → sRGB) — C-optimized via Little CMS
     if icc_transform:
         from PIL import ImageCms
         ImageCms.applyTransform(white_bg, icc_transform, inPlace=True)
 
-    if white_bg.size != (ps, ps):
-        white_bg = white_bg.resize((ps, ps), Image.BILINEAR)
+    # Aperio calibration via PIL.point() — C-optimized, no NumPy roundtrip
+    if calibration_flat_lut is not None:
+        white_bg = white_bg.point(calibration_flat_lut)
 
-    arr = np.array(white_bg, dtype=np.float32)
+    # cv2.resize (C++/AVX) instead of PIL.resize
+    arr = np.asarray(white_bg)
+    if arr.shape[0] != ps or arr.shape[1] != ps:
+        arr = cv2.resize(arr, (ps, ps), interpolation=cv2.INTER_LINEAR)
 
-    # Aperio calibration (white balance + gamma)
-    if calibration_lut is not None:
-        arr_u8 = arr.astype(np.uint8)
-        arr_u8[:, :, 0] = calibration_lut[0][arr_u8[:, :, 0]]
-        arr_u8[:, :, 1] = calibration_lut[1][arr_u8[:, :, 1]]
-        arr_u8[:, :, 2] = calibration_lut[2][arr_u8[:, :, 2]]
-        arr = arr_u8.astype(np.float32)
-
-    return arr
+    return arr.astype(np.float32)
 
 
 class VirtualStainWorker(QThread):
@@ -144,6 +141,12 @@ class VirtualStainWorker(QThread):
         self.is_cancelled = False
         self.icc_transform = icc_transform  # ICC color profile transform (slide→sRGB)
         self.calibration_lut = calibration_lut  # Aperio calibration LUT (3, 256) numpy array
+        # Pre-build flat LUT for PIL Image.point() (C-optimized)
+        self.calibration_flat_lut = None
+        if calibration_lut is not None:
+            self.calibration_flat_lut = (
+                calibration_lut[0].tolist() + calibration_lut[1].tolist() + calibration_lut[2].tolist()
+            )
 
     def cancel(self):
         self.is_cancelled = True
@@ -272,7 +275,7 @@ class VirtualStainWorker(QThread):
 
                     # Submit I/O to thread pool and get result
                     future = pool.submit(_read_patch, slide, x0, y0, best_level, level_read, ps,
-                                         self.icc_transform, self.calibration_lut)
+                                         self.icc_transform, self.calibration_flat_lut)
                     region_np = future.result()
 
                     # Accumulate input
