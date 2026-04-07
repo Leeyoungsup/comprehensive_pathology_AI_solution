@@ -333,7 +333,7 @@ class WSISegmentationModel:
         import time
 
         read_size = int(patch_size_level0 / level_downsample)
-        IO_WORKERS = 4 if image_path else 1
+        IO_WORKERS = min(max(2, os.cpu_count() or 4), 8) if image_path else 1  # CPU 코어 기반 (2~8)
         PREFETCH_BATCHES = 3
 
         # Pre-build flat LUT for PIL Image.point() (C-optimized, avoids NumPy roundtrip)
@@ -432,63 +432,110 @@ class WSISegmentationModel:
                 producer_done.set()
                 prefetch_q.put(None)  # sentinel
 
+        # ── 3-스레드 파이프라인: I/O → GPU 추론 → CPU 누산 ──
+        infer_q = queue.Queue(maxsize=PREFETCH_BATCHES)   # I/O → GPU
+        accum_q = queue.Queue(maxsize=PREFETCH_BATCHES)   # GPU → 누산
+        infer_done = threading.Event()
+        accum_done = threading.Event()
+
         prod_thread = threading.Thread(target=_io_producer, daemon=True)
         prod_thread.start()
+
+        def _gpu_inference():
+            """GPU 추론 스레드: prefetch_q → 추론 → accum_q"""
+            try:
+                while True:
+                    try:
+                        item = prefetch_q.get(timeout=120)
+                    except queue.Empty:
+                        if producer_done.is_set():
+                            break
+                        continue
+
+                    if item is None:
+                        break
+
+                    batch_images, valid_coords, patch_count = item
+
+                    if not batch_images:
+                        accum_q.put((None, valid_coords, patch_count))
+                        continue
+
+                    batch_tensor = torch.stack(batch_images).to(self.device)
+                    with torch.no_grad():
+                        with torch.amp.autocast('cuda', enabled=_autocast_enabled):
+                            predictions = self.model(batch_tensor)
+                        predictions = F.softmax(predictions.float(), dim=1)
+                        if output_scale > 1.0:
+                            predictions = F.interpolate(
+                                predictions,
+                                size=(patch_output_size, patch_output_size),
+                                mode='bilinear',
+                                align_corners=False,
+                            )
+                        predictions = predictions.cpu().numpy()
+
+                    while True:
+                        try:
+                            accum_q.put((predictions, valid_coords, patch_count), timeout=0.5)
+                            break
+                        except queue.Full:
+                            pass
+            except Exception as e:
+                print(f"GPU inference thread error: {e}")
+            finally:
+                infer_done.set()
+                accum_q.put(None)
+
+        infer_thread = threading.Thread(target=_gpu_inference, daemon=True)
+        infer_thread.start()
+
+        def _accumulator():
+            """CPU 누산 스레드: accum_q → prediction_sum/weight_sum에 누산"""
+            nonlocal processed_valid
+            try:
+                while True:
+                    try:
+                        item = accum_q.get(timeout=120)
+                    except queue.Empty:
+                        if infer_done.is_set():
+                            break
+                        continue
+
+                    if item is None:
+                        break
+
+                    predictions, valid_coords, patch_count = item
+                    processed_valid += patch_count
+
+                    if predictions is not None:
+                        for i, (x_rel, y_rel) in enumerate(valid_coords):
+                            x_out = int(x_rel / combined_scale)
+                            y_out = int(y_rel / combined_scale)
+                            x_end = min(x_out + patch_output_size, output_w)
+                            y_end = min(y_out + patch_output_size, output_h)
+                            ph = y_end - y_out
+                            pw = x_end - x_out
+                            if ph <= 0 or pw <= 0:
+                                continue
+                            prediction_sum[:, y_out:y_end, x_out:x_end] += \
+                                predictions[i, :, :ph, :pw] * weight_mask[:ph, :pw]
+                            weight_sum[y_out:y_end, x_out:x_end] += weight_mask[:ph, :pw]
+            except Exception as e:
+                print(f"Accumulator thread error: {e}")
+            finally:
+                accum_done.set()
 
         processed_valid = 0
         start_time = time.time()
         last_update_time = start_time
 
-        while True:
-            try:
-                item = prefetch_q.get(timeout=120)
-            except queue.Empty:
-                if producer_done.is_set():
-                    break
-                continue
+        accum_thread = threading.Thread(target=_accumulator, daemon=True)
+        accum_thread.start()
 
-            if item is None:
-                break
-
-            batch_images, valid_coords, patch_count = item
-            processed_valid += patch_count
-
-            if not batch_images:
-                if progress_callback:
-                    pct = processed_valid / n_valid if n_valid > 0 else 1.0
-                    progress_callback(int(pct * 100))
-                continue
-
-            # GPU 추론 (autocast로 FP16 가속)
-            batch_tensor = torch.stack(batch_images).to(self.device)
-            with torch.no_grad():
-                with torch.amp.autocast('cuda', enabled=_autocast_enabled):
-                    predictions = self.model(batch_tensor)
-                predictions = F.softmax(predictions.float(), dim=1)
-                if output_scale > 1.0:
-                    predictions = F.interpolate(
-                        predictions,
-                        size=(patch_output_size, patch_output_size),
-                        mode='bilinear',
-                        align_corners=False,
-                    )
-                predictions = predictions.cpu().numpy()
-
-            # 벡터화 누산 (클래스 루프 제거)
-            for i, (x_rel, y_rel) in enumerate(valid_coords):
-                x_out = int(x_rel / combined_scale)
-                y_out = int(y_rel / combined_scale)
-                x_end = min(x_out + patch_output_size, output_w)
-                y_end = min(y_out + patch_output_size, output_h)
-                ph = y_end - y_out
-                pw = x_end - x_out
-                if ph <= 0 or pw <= 0:
-                    continue
-                prediction_sum[:, y_out:y_end, x_out:x_end] += \
-                    predictions[i, :, :ph, :pw] * weight_mask[:ph, :pw]
-                weight_sum[y_out:y_end, x_out:x_end] += weight_mask[:ph, :pw]
-
-            # 진행률 + ETA (1초마다 업데이트)
+        # 메인 스레드: 진행률 보고만 담당
+        while not accum_done.is_set():
+            accum_done.wait(timeout=1.0)
             current_time = time.time()
             if current_time - last_update_time >= 1.0:
                 pct = processed_valid / n_valid if n_valid > 0 else 1.0
@@ -509,6 +556,8 @@ class WSISegmentationModel:
                 last_update_time = current_time
 
         prod_thread.join(timeout=10)
+        infer_thread.join(timeout=10)
+        accum_thread.join(timeout=10)
 
         # Normalize by weights
         weight_sum = np.maximum(weight_sum, 1e-6)  # Avoid division by zero
@@ -550,12 +599,15 @@ class EpithelialClassificationWorker(QThread):
     status = pyqtSignal(str)
     error = pyqtSignal(str)
 
-    def __init__(self, slide, segmentation_model, detection_cells, device='cuda'):
+    def __init__(self, slide, segmentation_model, detection_cells, device='cuda', image_path=None, icc_transform=None, calibration_lut=None):
         super().__init__()
         self.slide = slide
         self.segmentation_model = segmentation_model
         self.detection_cells = detection_cells  # Raw detection results
         self.device = device
+        self.image_path = image_path
+        self.icc_transform = icc_transform
+        self.calibration_lut = calibration_lut
         self.is_cancelled = False
 
     def run(self):
@@ -570,7 +622,10 @@ class EpithelialClassificationWorker(QThread):
 
             prediction_mask, seg_metadata = self.segmentation_model.predict_wsi(
                 self.slide,
-                progress_callback=seg_progress_callback
+                progress_callback=seg_progress_callback,
+                image_path=self.image_path,
+                icc_transform=self.icc_transform,
+                calibration_lut=self.calibration_lut,
             )
 
             if self.is_cancelled:
@@ -785,13 +840,16 @@ class EpithelialClassifier(QObject):
             self.classificationError.emit(f"Segmentation model load failed: {str(e)}")
             return False
 
-    def run_classification(self, slide, detection_cells):
+    def run_classification(self, slide, detection_cells, image_path=None, icc_transform=None, calibration_lut=None):
         """
         Run epithelial cell reclassification
 
         Args:
             slide: OpenSlide object
             detection_cells: List of detected cells from YOLOv11
+            image_path: WSI file path for multi-thread I/O
+            icc_transform: ICC color profile transform
+            calibration_lut: Aperio calibration LUT
         """
         if self.segmentation_model is None:
             self.classificationError.emit("Segmentation model not loaded.")
@@ -805,7 +863,10 @@ class EpithelialClassifier(QObject):
             slide,
             self.segmentation_model,
             detection_cells,
-            self.device
+            self.device,
+            image_path=image_path,
+            icc_transform=icc_transform,
+            calibration_lut=calibration_lut,
         )
 
         # Connect signals
@@ -926,8 +987,9 @@ class TumorSegmentationWorker(QThread):
                 progress_callback=progress_callback,
                 status_callback=status_callback,
                 roi_bounds=self.roi_bounds,
+                image_path=self.image_path,
                 icc_transform=self.icc_transform,
-                calibration_lut=self.calibration_lut
+                calibration_lut=self.calibration_lut,
             )
 
             if self.is_cancelled:

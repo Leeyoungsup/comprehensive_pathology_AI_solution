@@ -53,13 +53,16 @@ class EpithelialClassificationService:
         """Check if segmentation model is loaded"""
         return self._model_loaded
 
-    def run_classification(self, slide, detection_cells):
+    def run_classification(self, slide, detection_cells, image_path=None, icc_transform=None, calibration_lut=None):
         """
         Run epithelial cell reclassification
 
         Args:
             slide: OpenSlide object
             detection_cells: List of detected cells from YOLOv11
+            image_path: WSI file path for multi-thread I/O
+            icc_transform: ICC color profile transform
+            calibration_lut: Aperio calibration LUT
 
         Raises:
             RuntimeError: If model is not loaded
@@ -69,7 +72,7 @@ class EpithelialClassificationService:
         if not self.is_model_loaded():
             raise RuntimeError("Segmentation model is not loaded.")
 
-        classifier.run_classification(slide, detection_cells)
+        classifier.run_classification(slide, detection_cells, image_path=image_path, icc_transform=icc_transform, calibration_lut=calibration_lut)
 
     def get_classifier(self):
         """

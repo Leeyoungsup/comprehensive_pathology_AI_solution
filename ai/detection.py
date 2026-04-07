@@ -259,7 +259,7 @@ class DetectionWorker(QThread):
 
             # ── 배치 병렬처리: I/O 프리페치(멀티스레드) + 배치 GPU 추론 ──
             BATCH_SIZE = 8        # GPU 한 번에 처리할 패치 수
-            IO_WORKERS = 4        # 동시 슬라이드 I/O 스레드 수
+            IO_WORKERS = min(max(2, os.cpu_count() or 4), 8)  # CPU 코어 기반 I/O 스레드 수 (2~8)
             PREFETCH_BATCHES = 3  # 큐에 미리 쌓아둘 배치 수 (메모리 상한)
 
             from concurrent.futures import ThreadPoolExecutor
@@ -890,8 +890,9 @@ class DetectionWorker(QThread):
                 progress_callback=progress_callback,
                 status_callback=seg_status_callback,
                 roi_bounds=roi_bounds,
+                image_path=self.image_path,
                 icc_transform=self.icc_transform,
-                calibration_lut=self.calibration_lut
+                calibration_lut=self.calibration_lut,
             )
 
             self.last_prediction_mask = prediction_mask

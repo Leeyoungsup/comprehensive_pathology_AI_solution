@@ -2076,8 +2076,20 @@ class PathologyViewer(QMainWindow):
         # Setup signals
         self.setup_classification_signals()
 
+        # Get ICC/Calibration from tile_manager for color-consistent AI input
+        icc_transform = None
+        calibration_lut = None
+        if hasattr(self.wsi_viewer, 'tile_manager') and self.wsi_viewer.tile_manager:
+            icc_transform = self.wsi_viewer.tile_manager.icc_transform
+            calibration_lut = self.wsi_viewer.tile_manager.calibration_lut
+
         # Run classification
-        self.epithelial_classification_service.run_classification(slide, detection_cells)
+        self.epithelial_classification_service.run_classification(
+            slide, detection_cells,
+            image_path=self.current_image_path,
+            icc_transform=icc_transform,
+            calibration_lut=calibration_lut,
+        )
         self.statusbar.showMessage(f"Starting Epithelial reclassification... ({epithelial_count} cells)")
         self.progressBar.setValue(0)
         self.progressLabel.setText("Epithelial reclassification in progress...")
