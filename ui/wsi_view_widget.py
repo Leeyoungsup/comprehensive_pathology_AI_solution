@@ -10,12 +10,15 @@ from pathlib import Path
 
 import numpy as np
 
-from PyQt5.QtWidgets import QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QMainWindow
+from PyQt5.QtWidgets import (
+    QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QMainWindow,
+    QGraphicsEllipseItem, QMenu, QAction, QActionGroup, QLabel,
+)
 from PyQt5.QtCore import Qt, QPoint, QPointF, QRectF, pyqtSignal, QEvent, QTimer
 from PyQt5.QtGui import (
     QWheelEvent, QMouseEvent, QKeyEvent,
     QPainter, QBrush, QColor,
-    QImage, QPixmap, QTransform,
+    QImage, QPixmap, QTransform, QIcon, QPen,
 )
 
 project_root = Path(__file__).parent.parent
@@ -36,6 +39,7 @@ class AnnotationMode:
     DRAWING_POINT = 3
     EDITING = 4
     SELECTING = 5
+    CELL_EDIT = 6  # 검출 셀 편집 모드
 
 
 class WSIViewWidget(QGraphicsView):
@@ -47,6 +51,8 @@ class WSIViewWidget(QGraphicsView):
     annotationSelected = pyqtSignal(Annotation)
     annotationDeleted = pyqtSignal(Annotation)  # 어노테이션 삭제 시그널
     drawingCancelled = pyqtSignal()  # 그리기 취소 시그널
+    cellEdited = pyqtSignal()  # 셀 편집(삭제/클래스변경) 완료 시그널
+    cellEditRequested = pyqtSignal(int, float, float, int, int)  # (cell_idx, cell_x, cell_y, global_x, global_y)
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -107,6 +113,22 @@ class WSIViewWidget(QGraphicsView):
         self.minimap = MiniMap(self)
         self.minimap.hide()  # 초기에는 숨김
         self.minimap.positionClicked.connect(self.on_minimap_clicked)
+
+        # 줌 정보 라벨 (미니맵 아래)
+        self._zoom_info_label = QLabel(self)
+        self._zoom_info_label.setStyleSheet("""
+            QLabel {
+                background-color: rgba(180, 180, 180, 160);
+                color: #222;
+                font-size: 11px;
+                font-weight: bold;
+                padding: 3px 8px;
+                border-radius: 4px;
+                border: none;
+            }
+        """)
+        self._zoom_info_label.setAlignment(Qt.AlignCenter)
+        self._zoom_info_label.hide()
         
         # 검출 결과 오버레이
         self.detection_overlay_item = None  # QGraphicsPixmapItem
@@ -127,6 +149,12 @@ class WSIViewWidget(QGraphicsView):
         self.virtual_stain_metadata = None       # dict with roi_origin, target_mpp, canvas_l0_w/h
         self.virtual_stain_visible = True
         
+        # 셀 편집 모드 (검출 결과 수정)
+        self._cell_edit_mode = False
+        self._cell_edit_class_names = {}  # {cls_id: name}
+        self._cell_edit_color_map = {}    # {cls_id: (r,g,b)}
+        self._cell_highlight_item = None  # 선택된 셀 하이라이트 원
+
         # 오버레이 업데이트 디바운싱 타이머
         self.overlay_update_timer = QTimer(self)
         self.overlay_update_timer.setSingleShot(True)
@@ -165,6 +193,10 @@ class WSIViewWidget(QGraphicsView):
             # min_zoom 동적 계산 (이미지가 뷰포트보다 작아지지 않도록)
             self._update_min_zoom()
 
+            # max_zoom: 80x 배율 제한 (MPP 기반)
+            base_mag = 0.25 / self.tile_manager.mpp * 40.0
+            self.max_zoom = 80.0 / base_mag if base_mag > 0 else 40.0
+
             # 초기 뷰 설정 (위젯 크기가 확정된 후 재실행)
             self._pending_fit = True
             self.fit_to_window()
@@ -178,11 +210,13 @@ class WSIViewWidget(QGraphicsView):
                 self.minimap.set_thumbnail(thumbnail)
                 self.minimap.set_image_dimensions(width, height)
                 self.minimap.show()
-                # 위치 조정
+                # 위치 조정 (줌 정보 라벨 공간 확보)
                 minimap_x = 10
-                minimap_y = self.height() - self.minimap.height() - 10
+                label_h = self._zoom_info_label.sizeHint().height() + 8
+                minimap_y = self.height() - self.minimap.height() - label_h - 6
                 self.minimap.move(minimap_x, minimap_y)
             
+            self._update_zoom_info()
             return True
             
         except Exception as e:
@@ -257,8 +291,9 @@ class WSIViewWidget(QGraphicsView):
         self.centerOn(img_w / 2.0, img_h / 2.0)
 
         self.zoom_level = self.transform().m11()
+        self._update_zoom_info()
         self.update_field_of_view()
-    
+
     def get_effective_mpp(self):
         """현재 화면의 effective MPP (μm/px) = wsi_mpp / zoom_level.
         슬라이드 크기와 무관한 물리적 해상도 기준값을 반환한다.
@@ -266,6 +301,51 @@ class WSIViewWidget(QGraphicsView):
         if not self.tile_manager or self.zoom_level <= 0:
             return float('inf')
         return self.tile_manager.mpp / self.zoom_level
+
+    def get_magnification(self):
+        """현재 배율 계산 (MPP 기준). 40x scan 기준 0.25 μm/px = 40x"""
+        if not self.tile_manager or self.zoom_level <= 0:
+            return 0.0
+        # 기준: 0.25 μm/px = 40x
+        base_mag = 0.25 / self.tile_manager.mpp * 40.0  # 슬라이드 고유 최대 배율
+        return base_mag * self.zoom_level
+
+    def _update_zoom_info(self):
+        """미니맵 아래 줌 정보 라벨 업데이트"""
+        if not self.tile_manager:
+            return
+        mag = self.get_magnification()
+        eff_mpp = self.get_effective_mpp()
+        slide_mpp = self.tile_manager.mpp
+
+        if eff_mpp == float('inf'):
+            self._zoom_info_label.hide()
+            return
+
+        self._zoom_info_label.setText(
+            f"  {mag:.1f}x  |  MPP: {eff_mpp:.3f} μm/px  "
+        )
+        self._zoom_info_label.adjustSize()
+        self._zoom_info_label.show()
+        self._position_zoom_info()
+
+    def _position_zoom_info(self):
+        """줌 정보 라벨을 미니맵 아래에 배치"""
+        if not hasattr(self, '_zoom_info_label'):
+            return
+        if not self._zoom_info_label.isVisible():
+            return
+        minimap_x = 10
+        if self.minimap.isVisible():
+            # 미니맵 아래 왼쪽 정렬 (미니맵 x 기준)
+            label_x = self.minimap.x()
+            label_y = self.minimap.y() + self.minimap.height() + 4
+        else:
+            label_x = 10
+            label_y = self.height() - self._zoom_info_label.height() - 10
+        # 위젯 밖으로 나가지 않도록 클램핑
+        label_x = max(4, label_x)
+        self._zoom_info_label.move(label_x, label_y)
 
     def _clamp_view_to_image(self):
         """뷰 가장자리가 이미지 밖으로 벗어나지 않도록 클램핑.
@@ -333,6 +413,7 @@ class WSIViewWidget(QGraphicsView):
 
         self.zoom_level = zoom_level
         self.zoomChanged.emit(zoom_level)
+        self._update_zoom_info()
         self.update_field_of_view()
 
     def zoom_in(self, anchor_pos=None):
@@ -865,8 +946,253 @@ class WSIViewWidget(QGraphicsView):
         if self.detection_overlay_item:
             self.detection_overlay_item.setOpacity(opacity)
     
+    # ============== 검출 셀 편집 ==============
+
+    def enter_cell_edit_mode(self, class_names=None, color_map=None):
+        """셀 편집 모드 진입 (레거시 호환)"""
+        self._cell_edit_class_names = class_names or {}
+        self._cell_edit_color_map = color_map or {}
+
+    def exit_cell_edit_mode(self):
+        """셀 편집 모드 종료 (레거시 호환)"""
+        self._remove_cell_highlight()
+
+    def _show_cell_highlight(self, cell):
+        """선택된 셀 주위에 하이라이트 원 표시"""
+        self._remove_cell_highlight()
+        from ai.detection import CLASS_COLORS_RGB
+        color_map = self._cell_edit_color_map or CLASS_COLORS_RGB
+        color = color_map.get(cell['cls_id'], (255, 255, 0))
+
+        # 셀 크기 기반 하이라이트 반경 (bbox가 있으면 사용, 없으면 기본값)
+        w = cell.get('w', 30)
+        h = cell.get('h', 30)
+        radius = max(w, h) * 0.8
+
+        cx, cy = cell['x'], cell['y']
+        highlight = QGraphicsEllipseItem(
+            cx - radius, cy - radius, radius * 2, radius * 2
+        )
+        pen = QPen(QColor(color[0], color[1], color[2], 220), 3.0)
+        pen.setCosmetic(True)  # 줌 레벨에 관계없이 일정한 두께
+        highlight.setPen(pen)
+        highlight.setBrush(QBrush(QColor(color[0], color[1], color[2], 50)))
+        highlight.setZValue(9999)
+        self.scene.addItem(highlight)
+        self._cell_highlight_item = highlight
+        # 즉시 화면에 반영
+        from PyQt5.QtWidgets import QApplication
+        QApplication.processEvents()
+
+    def _remove_cell_highlight(self):
+        """하이라이트 원 제거"""
+        if self._cell_highlight_item is not None:
+            self.scene.removeItem(self._cell_highlight_item)
+            self._cell_highlight_item = None
+
+    def _find_nearest_cell(self, scene_x, scene_y, max_distance_px=30):
+        """클릭 위치에서 가장 가까운 셀 찾기.
+        max_distance_px는 화면 픽셀 기준 (줌 보정).
+        Returns: (index, cell_dict) or (None, None)
+        """
+        if not self.detection_cells:
+            return None, None
+
+        # 화면 픽셀 거리를 WSI 좌표 거리로 변환
+        max_dist_wsi = max_distance_px / self.zoom_level if self.zoom_level > 0 else max_distance_px
+
+        best_idx = None
+        best_dist = float('inf')
+        for i, cell in enumerate(self.detection_cells):
+            dx = cell['x'] - scene_x
+            dy = cell['y'] - scene_y
+            dist = (dx * dx + dy * dy) ** 0.5
+            if dist < best_dist:
+                best_dist = dist
+                best_idx = i
+
+        if best_idx is not None and best_dist <= max_dist_wsi:
+            return best_idx, self.detection_cells[best_idx]
+        return None, None
+
+    def show_cell_edit_popup(self, cell_idx, class_names, color_map, screen_pos):
+        """셀 편집 팝업 다이얼로그 표시"""
+        if cell_idx < 0 or cell_idx >= len(self.detection_cells):
+            self._remove_cell_highlight()
+            return
+
+        cell = self.detection_cells[cell_idx]
+        self._cell_edit_class_names = class_names
+        self._cell_edit_color_map = color_map
+
+        from PyQt5.QtWidgets import (
+            QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+            QFrame, QSizePolicy, QApplication, QShortcut,
+        )
+        from PyQt5.QtGui import QKeySequence
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Cell Edit")
+        dlg.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint)
+        dlg.setAttribute(Qt.WA_DeleteOnClose)
+
+        dlg.setStyleSheet("""
+            QDialog {
+                background-color: #ffffff;
+                border: 1px solid #ccc;
+                border-radius: 8px;
+            }
+            QLabel {
+                color: #222222;
+                font-size: 12px;
+            }
+            QPushButton {
+                background-color: #f0f0f0;
+                color: #222222;
+                border: 1px solid #ccc;
+                border-radius: 4px;
+                padding: 6px 14px;
+                font-size: 12px;
+                min-width: 80px;
+            }
+            QPushButton:hover {
+                background-color: #4a90d9;
+                color: #ffffff;
+                border-color: #4a90d9;
+            }
+            QPushButton#deleteBtn {
+                background-color: #fdecea;
+                color: #c0392b;
+                border-color: #e74c3c;
+            }
+            QPushButton#deleteBtn:hover {
+                background-color: #e74c3c;
+                color: #ffffff;
+            }
+        """)
+
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(8)
+
+        # 현재 셀 정보
+        cur_cls = cell['cls_id']
+        cur_name = class_names.get(cur_cls, f"Class {cur_cls}")
+        cur_conf = cell.get('confidence', 0)
+        cur_color = color_map.get(cur_cls, (200, 200, 200))
+
+        header_layout = QHBoxLayout()
+        color_label = QLabel()
+        color_label.setFixedSize(14, 14)
+        color_label.setStyleSheet(
+            f"background-color: rgb({cur_color[0]},{cur_color[1]},{cur_color[2]}); "
+            f"border-radius: 3px; border: 1px solid #888;"
+        )
+        header_layout.addWidget(color_label)
+        header_layout.addWidget(QLabel(f"<b>{cur_name}</b>  (conf: {cur_conf:.2f})"))
+        header_layout.addStretch()
+        layout.addLayout(header_layout)
+
+        # 구분선
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setStyleSheet("background-color: #ddd;")
+        sep.setFixedHeight(1)
+        layout.addWidget(sep)
+
+        # Change Class 라벨
+        layout.addWidget(QLabel("Change Class:"))
+
+        # 클래스 버튼들 (숫자키 단축키 매핑)
+        num_key_map = [Qt.Key_1, Qt.Key_2, Qt.Key_3, Qt.Key_4, Qt.Key_5,
+                       Qt.Key_6, Qt.Key_7, Qt.Key_8, Qt.Key_9, Qt.Key_0]
+        key_idx = 0
+        for cls_id, name in sorted(class_names.items()):
+            if cls_id == cur_cls:
+                continue
+            color = color_map.get(cls_id, (200, 200, 200))
+            key_label = str((key_idx + 1) % 10) if key_idx < len(num_key_map) else ""
+            btn_text = f"  [{key_label}] {name}" if key_label else f"  {name}"
+            btn = QPushButton(btn_text)
+            # 색상 아이콘
+            pixmap = QPixmap(14, 14)
+            pixmap.fill(QColor(color[0], color[1], color[2]))
+            btn.setIcon(QIcon(pixmap))
+            btn.clicked.connect(lambda checked, ci=cell_idx, cid=cls_id, d=dlg: (
+                self._change_cell_class(ci, cid),
+                self._remove_cell_highlight(),
+                d.close(),
+            ))
+            layout.addWidget(btn)
+            # 숫자키 단축키
+            if key_idx < len(num_key_map):
+                sc = QShortcut(QKeySequence(num_key_map[key_idx]), dlg)
+                sc.activated.connect(btn.click)
+            key_idx += 1
+
+        # 구분선
+        sep2 = QFrame()
+        sep2.setFrameShape(QFrame.HLine)
+        sep2.setStyleSheet("background-color: #ddd;")
+        sep2.setFixedHeight(1)
+        layout.addWidget(sep2)
+
+        # 삭제 버튼
+        del_btn = QPushButton("Delete Cell  (Del / D)")
+        del_btn.setObjectName("deleteBtn")
+        del_btn.clicked.connect(lambda checked, ci=cell_idx, d=dlg: (
+            self._delete_cell(ci),
+            self._remove_cell_highlight(),
+            d.close(),
+        ))
+        layout.addWidget(del_btn)
+
+        # Delete / D 키 단축키
+        shortcut_del = QShortcut(QKeySequence(Qt.Key_Delete), dlg)
+        shortcut_del.activated.connect(del_btn.click)
+        shortcut_d = QShortcut(QKeySequence(Qt.Key_D), dlg)
+        shortcut_d.activated.connect(del_btn.click)
+
+        # 팝업 위치 조정 (화면 밖으로 나가지 않도록)
+        dlg.adjustSize()
+        desktop = QApplication.desktop()
+        if desktop:
+            screen_rect = desktop.availableGeometry(screen_pos)
+            popup_x = screen_pos.x()
+            popup_y = screen_pos.y()
+            if popup_x + dlg.width() > screen_rect.right():
+                popup_x = screen_rect.right() - dlg.width()
+            if popup_y + dlg.height() > screen_rect.bottom():
+                popup_y = screen_rect.bottom() - dlg.height()
+            dlg.move(popup_x, popup_y)
+        else:
+            dlg.move(screen_pos)
+
+        dlg.finished.connect(lambda: self._remove_cell_highlight())
+        dlg.show()
+
+    def _delete_cell(self, cell_idx):
+        """셀 삭제"""
+        if 0 <= cell_idx < len(self.detection_cells):
+            self.detection_cells.pop(cell_idx)
+            self._refresh_after_cell_edit()
+
+    def _change_cell_class(self, cell_idx, new_cls_id):
+        """셀 클래스 변경"""
+        if 0 <= cell_idx < len(self.detection_cells):
+            self.detection_cells[cell_idx]['cls_id'] = new_cls_id
+            self._refresh_after_cell_edit()
+
+    def _refresh_after_cell_edit(self):
+        """셀 편집 후 오버레이 갱신 + 시그널"""
+        if self.detection_overlay:
+            color_map = self._cell_edit_color_map or None
+            self.detection_overlay.set_cells(self.detection_cells, color_map=color_map)
+        self.schedule_overlay_update()
+        self.cellEdited.emit()
+
     # ============================================
-    
+
     def wheelEvent(self, event: QWheelEvent):
         """마우스 휠로 줌 인/아웃"""
         if not self.tile_manager:
@@ -901,6 +1227,18 @@ class WSIViewWidget(QGraphicsView):
             event.accept()
             return
         
+        # Alt+Click: 셀 편집 팝업 (검출 결과가 있을 때)
+        if (event.modifiers() & Qt.AltModifier) and event.button() == Qt.LeftButton:
+            if self.detection_cells:
+                scene_pos = self.mapToScene(event.pos())
+                cell_idx, cell = self._find_nearest_cell(scene_pos.x(), scene_pos.y())
+                if cell is not None:
+                    self._show_cell_highlight(cell)
+                    gp = event.globalPos()
+                    self.cellEditRequested.emit(cell_idx, cell['x'], cell['y'], gp.x(), gp.y())
+                event.accept()
+                return
+
         # Annotation 그리기 모드
         if self.annotation_mode == AnnotationMode.DRAWING_POLYGON:
             if event.button() == Qt.LeftButton:
@@ -1175,12 +1513,14 @@ class WSIViewWidget(QGraphicsView):
             self._pending_fit = False
             QTimer.singleShot(0, self.fit_to_window)
 
-        # 미니맵 위치 조정
+        # 미니맵 위치 조정 (줌 정보 라벨 공간 확보)
         if hasattr(self, 'minimap'):
             minimap_x = 10
-            minimap_y = self.height() - self.minimap.height() - 10
+            label_h = self._zoom_info_label.sizeHint().height() + 8 if hasattr(self, '_zoom_info_label') else 0
+            minimap_y = self.height() - self.minimap.height() - label_h - 6
             self.minimap.move(minimap_x, minimap_y)
 
+        self._position_zoom_info()
         self.update_field_of_view()
     
     def close(self):

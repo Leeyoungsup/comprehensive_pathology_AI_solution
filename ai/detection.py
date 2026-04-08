@@ -134,9 +134,8 @@ def non_max_suppression(outputs, confidence_threshold=0.01, iou_threshold=0.35, 
         # confidence로 정렬하고 상위 max_nms개만 유지
         x = x[x[:, 4].argsort(descending=True)]
         
-        # 빠른 NMS - PyTorch 내장 함수 사용
-        c = x[:, 5:6] * max_wh  # 클래스별 offset
-        boxes = x[:, :4] + c
+        # 빠른 NMS - PyTorch 내장 함수 사용 (agnostic: 클래스 무관 중복 제거)
+        boxes = x[:, :4]
         scores = x[:, 4]
         
         # NMS 적용

@@ -19,7 +19,7 @@ from PyQt5.QtWidgets import (
     QApplication, QListWidgetItem, QWidget,
     QHBoxLayout, QLabel, QSlider, QCheckBox,
 )
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QPoint
 from PyQt5.QtGui import QIcon, QPixmap, QColor
 
 project_root = Path(__file__).parent.parent
@@ -124,6 +124,7 @@ class PathologyViewer(QMainWindow):
         self.wsi_viewer.annotationSelected.connect(self.on_annotation_selected)
         self.wsi_viewer.annotationDeleted.connect(self.on_annotation_deleted)
         self.wsi_viewer.drawingCancelled.connect(self.on_drawing_cancelled)
+        self.wsi_viewer.cellEdited.connect(self.on_cell_edited)
         
         # Annotation 패널 시그널 연결
         self.annotation_panel.annotationSelected.connect(self.on_panel_annotation_selected)
@@ -150,6 +151,9 @@ class PathologyViewer(QMainWindow):
         chk_layout.addWidget(self.chkAutoVisualize)
         self.groupBox.layout().addWidget(chk_row)
         chk_row.hide()  # 자동저장/자동시각화 체크박스 임시 숨김
+
+        # Cell Edit: Alt+Click으로 셀 편집 팝업 (버튼 없음)
+        self.wsi_viewer.cellEditRequested.connect(self._on_cell_edit_requested)
 
         # PD-Score, CLDN-Target 탭 비활성화
         for i in range(self.aiTabWidget.count()):
@@ -1879,6 +1883,7 @@ class PathologyViewer(QMainWindow):
     def _toggle_draw_mode(self, checked, draw_fn, status_msg, other_actions):
         """그리기 모드 토글 공통 로직"""
         if checked:
+
             for action in other_actions:
                 if hasattr(self, action) and getattr(self, action).isChecked():
                     getattr(self, action).setChecked(False)
@@ -1916,6 +1921,64 @@ class PathologyViewer(QMainWindow):
             ['actionDrawPolygon', 'actionDrawRectangle'],
         )
     
+    def _on_cell_edit_requested(self, cell_idx, cell_x, cell_y, global_x, global_y):
+        """Alt+Click으로 셀 편집 팝업 요청 시 호출"""
+        if not self.wsi_viewer.detection_cells:
+            return
+        # 현재 모드에 맞는 클래스 정보
+        if getattr(self, 'is_pdl1_mode', False):
+            from ai.pdl1_detection import PDL1_CLASS_NAMES, PDL1_CLASS_COLORS_RGB
+            class_names = PDL1_CLASS_NAMES
+            color_map = PDL1_CLASS_COLORS_RGB
+        else:
+            from ai.detection import CLASS_NAMES, CLASS_COLORS_RGB
+            class_names = CLASS_NAMES
+            color_map = getattr(self, 'current_color_map', None) or CLASS_COLORS_RGB
+
+        self.wsi_viewer.show_cell_edit_popup(cell_idx, class_names, color_map, QPoint(global_x, global_y))
+
+    def on_cell_edited(self):
+        """셀 편집 완료 시 호출 — 결과 동기화"""
+        # detection_cells가 wsi_viewer에서 직접 수정되었으므로 동기화
+        edited_cells = self.wsi_viewer.detection_cells
+        if self.current_detection_result:
+            self.current_detection_result['cells'] = edited_cells
+            self.current_detection_result['num_cells'] = len(edited_cells)
+
+        # raw cells도 동기화 (슬라이더 필터링용)
+        if hasattr(self, 'all_raw_cells'):
+            self.all_raw_cells = edited_cells
+
+        # 결과 리스트 업데이트
+        if getattr(self, 'is_pdl1_mode', False):
+            from ai.pdl1_detection import PDL1_CLASS_NAMES, PDL1_CLASS_COLORS_RGB
+            self._update_result_list_with_sliders(
+                class_names=PDL1_CLASS_NAMES,
+                class_colors=PDL1_CLASS_COLORS_RGB,
+                is_pdl1=True
+            )
+        else:
+            from ai.detection import CLASS_NAMES, CLASS_COLORS_RGB
+            color_map = getattr(self, 'current_color_map', None) or CLASS_COLORS_RGB
+            self._update_result_list_with_sliders(
+                class_names=CLASS_NAMES,
+                class_colors=color_map,
+            )
+
+        # plot_arrays 셀 관련 캐시만 무효화 (thumbnail 등은 보존)
+        if self._plot_arrays is not None:
+            # thumbnail, thumb_roi_bounds 등은 유지, 셀 count 관련만 제거
+            for key in ('counts_by_id', 'xs_by_class', 'ys_by_class',
+                        'confs_by_class', 'all_x', 'all_y'):
+                self._plot_arrays.pop(key, None)
+
+        # 시각화 다이얼로그가 열려 있으면 Class Distribution / Tumor Analysis만 갱신
+        if hasattr(self, '_visualization_dialog') and self._visualization_dialog and self._visualization_dialog.isVisible():
+            self._visualization_dialog.update_cells(edited_cells)
+
+        n = len(edited_cells)
+        self.statusbar.showMessage(f"Cell edited — {n} cells remaining")
+
     def start_draw_roi(self):
         """ROI 그리기 시작 (레거시 지원)"""
         self.actionDrawPolygon.setChecked(True)

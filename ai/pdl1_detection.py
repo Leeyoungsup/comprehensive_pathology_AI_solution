@@ -71,8 +71,7 @@ def non_max_suppression(outputs, confidence_threshold=0.201, iou_threshold=0.6, 
             continue
 
         x = x[x[:, 4].argsort(descending=True)]
-        c = x[:, 5:6] * max_wh
-        boxes = x[:, :4] + c
+        boxes = x[:, :4]  # agnostic NMS: 클래스 무관 중복 제거
         scores = x[:, 4]
         keep = torchvision.ops.nms(boxes, scores, iou_threshold)
         output[xi] = x[keep]

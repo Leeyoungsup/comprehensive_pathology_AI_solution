@@ -92,10 +92,15 @@ class DetectionVisualizationDialog(QDialog):
         self.setStyleSheet("background-color: white; color: #222222;")
 
         # Initialize plot arrays: use pre-computed from worker if available, otherwise compute here
-        if plot_arrays is not None:
+        if plot_arrays is not None and 'counts_by_id' in plot_arrays:
             self._pa = plot_arrays
         else:
             self._pa = self._compute_plot_arrays(cells)
+            # thumbnail 등 기존 캐시 보존
+            if plot_arrays is not None:
+                for k, v in plot_arrays.items():
+                    if k not in self._pa:
+                        self._pa[k] = v
 
         # Pre-resize seg_prob_map to thumbnail size and release original large array
         # (saves hundreds of MB: only thumbnail-sized reduced version is kept in instance)
@@ -125,8 +130,10 @@ class DetectionVisualizationDialog(QDialog):
         """)
         layout.addWidget(self.tab_widget)
 
-        self.tab_widget.addTab(self._create_class_distribution_tab(), "Class Distribution")
-        self.tab_widget.addTab(self._create_tumor_analysis_tab(), "Tumor Analysis")
+        self._class_dist_tab = self._create_class_distribution_tab()
+        self._tumor_tab = self._create_tumor_analysis_tab()
+        self.tab_widget.addTab(self._class_dist_tab, "Class Distribution")
+        self.tab_widget.addTab(self._tumor_tab, "Tumor Analysis")
         if self._has_prob_map:
             self.tab_widget.addTab(self._create_spatial_heatmap_tab(), "Spatial Heatmap")
         self.tab_widget.addTab(self._create_confidence_tab(), "Confidence Distribution")
@@ -175,6 +182,33 @@ class DetectionVisualizationDialog(QDialog):
         return {'all_x': all_x, 'all_y': all_y,
                 'xs_by_class': xs_by_class, 'ys_by_class': ys_by_class,
                 'confs_by_class': confs_by_class, 'counts_by_id': counts_by_id}
+
+    def update_cells(self, cells):
+        """셀 편집 후 Class Distribution / Tumor Analysis 탭 내용만 갱신 (다른 탭 영향 없음)"""
+        self.cells = cells
+        self._pa = self._compute_plot_arrays(cells)
+
+        # 기존 탭 위젯 내부 레이아웃을 비우고 새로 채움
+        for tab_widget, creator in [
+            (self._class_dist_tab, self._create_class_distribution_tab),
+            (self._tumor_tab, self._create_tumor_analysis_tab),
+        ]:
+            # 기존 레이아웃의 위젯 모두 제거
+            layout = tab_widget.layout()
+            while layout.count():
+                item = layout.takeAt(0)
+                w = item.widget()
+                if w:
+                    w.deleteLater()
+
+            # 새 탭 생성 후 위젯만 옮겨옴
+            new_tab = creator()
+            new_layout = new_tab.layout()
+            while new_layout.count():
+                item = new_layout.takeAt(0)
+                w = item.widget()
+                if w:
+                    layout.addWidget(w)
 
     def _get_class_counts(self):
         """Return cell count per class (pre-computed, O(1))"""
