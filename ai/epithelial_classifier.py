@@ -346,6 +346,10 @@ class WSISegmentationModel:
         def _read_patch(coord):
             x_abs, y_abs, x_rel, y_rel = coord
             try:
+                # 뷰어 타일 로딩 우선 양보
+                from core.wsi_tile_manager import viewer_io_priority
+                viewer_io_priority.ai_yield_if_needed()
+
                 if image_path:
                     if getattr(_seg_thread_local, 'path', None) != image_path:
                         _seg_thread_local.slide = openslide.OpenSlide(image_path)

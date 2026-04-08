@@ -221,6 +221,10 @@ class PDL1DetectionWorker(QThread):
             def _read_patch_tensor(patch_x, patch_y):
                 """I/O 스레드: 패치 읽기 → CPU 텐서 반환"""
                 try:
+                    # 뷰어 타일 로딩 우선 양보
+                    from core.wsi_tile_manager import viewer_io_priority
+                    viewer_io_priority.ai_yield_if_needed()
+
                     if self.image_path:
                         if (not hasattr(_pdl1_thread_local, 'slide') or
                                 _pdl1_thread_local.image_path != self.image_path):

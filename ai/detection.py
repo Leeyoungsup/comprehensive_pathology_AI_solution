@@ -519,6 +519,9 @@ class DetectionWorker(QThread):
             CPU tensor (C, H, W) float32 [0,1]  또는  None (읽기 실패)
         """
         try:
+            # 뷰어 타일 로딩 우선 양보
+            from core.wsi_tile_manager import viewer_io_priority
+            viewer_io_priority.ai_yield_if_needed()
             if self.image_path:
                 # 스레드별 독립 OpenSlide (thread-safe)
                 if (not hasattr(_patch_thread_local, 'slide') or

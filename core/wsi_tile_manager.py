@@ -10,7 +10,85 @@ from PyQt5.QtGui import QImage, QPixmap
 from PIL import ImageCms
 from collections import OrderedDict
 import threading
+import time
 import os
+
+
+# ── 글로벌 I/O 우선순위 조율 ──
+# 뷰어 타일 로딩이 활발할 때 AI I/O가 양보하도록 하는 매커니즘
+class _ViewerIOPriority:
+    """뷰어 타일 로딩 우선순위 관리 (싱글톤)"""
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._active_until = 0.0  # timestamp
+            cls._instance._lock = threading.Lock()
+        return cls._instance
+
+    def notify_viewer_active(self, duration=0.3):
+        """뷰어가 타일 로딩 중임을 알림 (duration초 동안 AI I/O 양보)"""
+        with self._lock:
+            self._active_until = time.monotonic() + duration
+
+    def should_ai_yield(self):
+        """AI I/O 스레드가 호출: 뷰어가 활발하면 True → 잠시 대기"""
+        return time.monotonic() < self._active_until
+
+    def ai_yield_if_needed(self, sleep_sec=0.05):
+        """AI I/O 스레드에서 호출: 뷰어 활발하면 sleep으로 양보"""
+        if self.should_ai_yield():
+            time.sleep(sleep_sec)
+
+
+viewer_io_priority = _ViewerIOPriority()
+
+
+def _calculate_tile_cache_limits(tile_size=512):
+    """시스템 가용 메모리 기반으로 타일 캐시 한도 계산.
+
+    메모리 배분:
+      - GPU 모델 예약: ~2GB (Detection YOLO + Segmentation DeepLabV3+)
+      - 앱 기본 오버헤드: ~512MB
+      - 타일 캐시에 사용할 수 있는 메모리: 가용 메모리의 50% (나머지는 OS/기타)
+      - 타일 1장 ≈ tile_size × tile_size × 4 bytes (QPixmap RGBA)
+
+    레벨별 비율: level0(고해상도) 11% / level1 17% / level2 28% / level3 44%
+    """
+    try:
+        import psutil
+        available_mb = psutil.virtual_memory().available / (1024 * 1024)
+    except ImportError:
+        # psutil 없으면 보수적으로 4GB 가정
+        available_mb = 4096
+
+    # 모델/앱 오버헤드 제외 후 캐시용 메모리 (가용의 50%, 최소 512MB)
+    reserved_mb = 2560  # GPU 모델 ~2GB + 앱 오버헤드 ~512MB
+    cache_mb = max(512, (available_mb - reserved_mb) * 0.5)
+
+    # 타일 1장 메모리 (bytes → MB)
+    tile_bytes = tile_size * tile_size * 4  # RGBA
+    tile_mb = tile_bytes / (1024 * 1024)
+
+    total_tiles = int(cache_mb / tile_mb)
+    # 최소 200, 최대 8000
+    total_tiles = max(200, min(total_tiles, 8000))
+
+    limits = {
+        0: max(50, int(total_tiles * 0.11)),
+        1: max(80, int(total_tiles * 0.17)),
+        2: max(120, int(total_tiles * 0.28)),
+        3: max(200, int(total_tiles * 0.44)),
+    }
+
+    print(f"[TileCache] Available: {available_mb:.0f}MB → "
+          f"Cache budget: {cache_mb:.0f}MB → "
+          f"Total tiles: {total_tiles} "
+          f"(L0:{limits[0]} L1:{limits[1]} L2:{limits[2]} L3:{limits[3]})")
+
+    return limits
+
 
 class TileCache:
     """Tile cache management (inspired by ASAP's WSITileGraphicsItemCache)
@@ -18,17 +96,12 @@ class TileCache:
     Uses per-level OrderedDict for O(1) eviction.
     """
 
-    def __init__(self, max_tiles_per_level=None):
+    def __init__(self, max_tiles_per_level=None, tile_size=512):
         # Per-level LRU caches — O(1) eviction per level
         self._level_caches = {}  # {level: OrderedDict{(tx, ty): pixmap}}
 
         if max_tiles_per_level is None:
-            self.max_tiles_per_level = {
-                0: 500,
-                1: 800,
-                2: 1200,
-                3: 2000,
-            }
+            self.max_tiles_per_level = _calculate_tile_cache_limits(tile_size)
         else:
             self.max_tiles_per_level = max_tiles_per_level
 
@@ -225,7 +298,7 @@ class WSITileManager(QObject):
         self.slide = None
         self.slide_path = slide_path
         self.tile_size = tile_size
-        self.cache = TileCache()  # Automatic per-level size management
+        self.cache = TileCache(tile_size=tile_size)  # 시스템 메모리 기반 캐시 한도
 
         # Track tiles being loaded (prevent duplicate loading)
         self.loading_tiles = set()
@@ -432,6 +505,9 @@ class WSITileManager(QObject):
         """Load tiles needed for the view area (prioritize visible area tiles)"""
         if not self.slide:
             return
+
+        # AI I/O에게 뷰어가 활발함을 알림 → AI I/O가 양보
+        viewer_io_priority.notify_viewer_active(duration=0.3)
 
         downsample = self.get_level_downsample(level)
         tile_size_at_level = self.tile_size

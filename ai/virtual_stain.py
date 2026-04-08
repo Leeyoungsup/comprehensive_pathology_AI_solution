@@ -94,6 +94,10 @@ def _read_patch(image_path, x0, y0, best_level, level_read, ps, icc_transform=No
     Uses thread-local OpenSlide for safe parallel I/O.
     Out-of-bounds pixels are composited onto a white background.
     Applies ICC color profile and Aperio calibration if provided."""
+    # 뷰어 타일 로딩 우선 양보
+    from core.wsi_tile_manager import viewer_io_priority
+    viewer_io_priority.ai_yield_if_needed()
+
     import openslide as _openslide
     if (not hasattr(_vs_thread_local, 'slide') or
             _vs_thread_local.image_path != image_path):
