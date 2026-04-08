@@ -68,7 +68,7 @@ for dll_path in dll_paths:
         except (AttributeError, OSError):
             pass
 
-from PyQt5.QtWidgets import QApplication, QMessageBox, QSplashScreen
+from PyQt5.QtWidgets import QApplication, QMessageBox, QSplashScreen, QProgressBar
 from PyQt5.QtGui import QPixmap, QIcon
 from PyQt5.QtCore import Qt
 import traceback
@@ -110,33 +110,55 @@ def main():
             splash.show()
             app.processEvents()
 
-        def splash_msg(text):
+            # 프로그레스바 추가
+            progress = QProgressBar(splash)
+            bar_h = 6
+            progress.setGeometry(0, splash_pixmap.height() - bar_h, splash_pixmap.width(), bar_h)
+            progress.setTextVisible(False)
+            progress.setRange(0, 100)
+            progress.setValue(0)
+            progress.setStyleSheet("""
+                QProgressBar {
+                    background-color: rgba(200, 200, 200, 100);
+                    border: none;
+                }
+                QProgressBar::chunk {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                        stop:0 #4FC3F7, stop:1 #9C27B0);
+                }
+            """)
+            progress.show()
+            app.processEvents()
+
+        def splash_msg(text, pct=0):
             if splash:
                 splash.showMessage(
                     f"{text}  ",
                     Qt.AlignBottom | Qt.AlignRight,
                     Qt.black,
                 )
+                if progress:
+                    progress.setValue(pct)
                 app.processEvents()
 
-        splash_msg("Loading libraries...")
+        splash_msg("Loading libraries...", 10)
         import numpy  # noqa: preload
         import cv2  # noqa: preload
         app.processEvents()
 
-        splash_msg("Loading AI frameworks...")
+        splash_msg("Loading AI frameworks...", 35)
         import torch  # noqa: preload
         import torchvision  # noqa: preload
         app.processEvents()
 
-        splash_msg("Loading slide engine...")
+        splash_msg("Loading slide engine...", 60)
         import openslide  # noqa: preload
         app.processEvents()
 
-        splash_msg("Initializing UI...")
+        splash_msg("Initializing UI...", 80)
         from ui.viewer import PathologyViewer
 
-        splash_msg("Starting application...")
+        splash_msg("Starting application...", 100)
         viewer = PathologyViewer()
         if icon_path.exists():
             try:
