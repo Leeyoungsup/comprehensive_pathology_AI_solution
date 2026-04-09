@@ -4,74 +4,93 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MeDICus Studio</title>
+    <link rel="icon" href="assets/app_icon.ico">
     <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
-    <!-- 헤더 -->
-    <header id="app-header">
-        <div class="header-left">
-            <h1 class="logo">MeDICus Studio</h1>
+    <!-- ═══ 메뉴바 ═══ -->
+    <header id="menubar">
+        <div class="menu-left">
+            <img src="assets/logo.png" alt="MeDICus Studio" class="header-logo">
         </div>
-        <div class="header-center">
-            <span id="slide-name" class="slide-name">슬라이드를 열어주세요</span>
+        <div class="menu-center">
+            <span id="slide-name" class="slide-name">MeDICus Studio</span>
         </div>
-        <div class="header-right">
-            <span id="zoom-info" class="zoom-info"></span>
+        <div class="menu-right">
+            <span id="status-text" class="status-text">Ready</span>
         </div>
     </header>
 
-    <!-- 메인 컨텐츠 -->
+    <!-- ═══ 툴바 ═══ -->
+    <nav id="toolbar">
+        <div class="toolbar-group">
+            <button id="btn-open" class="toolbar-btn" title="Open WSI">
+                <img src="assets/Open.png" alt="Open">
+            </button>
+            <button id="btn-save" class="toolbar-btn" title="Save Results" disabled>
+                <img src="assets/save.png" alt="Save">
+            </button>
+            <button id="btn-info" class="toolbar-btn" title="Slide Info" disabled>
+                <img src="assets/Info.png" alt="Info">
+            </button>
+        </div>
+        <div class="toolbar-separator"></div>
+        <div class="toolbar-group">
+            <button id="btn-fit" class="toolbar-btn" title="Fit to Window">
+                <img src="assets/ScreenFill.png" alt="Fit">
+            </button>
+            <button id="btn-zoom-in" class="toolbar-btn" title="Zoom In">+</button>
+            <button id="btn-zoom-out" class="toolbar-btn" title="Zoom Out">&minus;</button>
+        </div>
+        <div class="toolbar-separator"></div>
+        <div class="toolbar-group">
+            <button id="btn-draw-polygon" class="toolbar-btn toggle-btn" title="Draw Polygon" disabled>
+                <img src="assets/Polygon.png" alt="Polygon">
+            </button>
+            <button id="btn-draw-rect" class="toolbar-btn toggle-btn" title="Draw Rectangle" disabled>
+                <img src="assets/Rectangular_ROI_measurement.png" alt="Rectangle">
+            </button>
+            <button id="btn-draw-point" class="toolbar-btn toggle-btn" title="Draw Point" disabled>
+                <img src="assets/Point.png" alt="Point">
+            </button>
+        </div>
+        <div class="toolbar-spacer"></div>
+        <div class="toolbar-group">
+            <span id="zoom-info" class="zoom-info-text"></span>
+        </div>
+    </nav>
+
+    <!-- ═══ 메인 레이아웃 (뷰어 + 우측 패널) ═══ -->
     <div id="app-body">
-        <!-- 좌측 사이드바 -->
-        <aside id="sidebar">
-            <!-- 파일 열기 -->
-            <div class="panel">
-                <h3 class="panel-title">파일</h3>
-                <button id="btn-upload" class="btn btn-primary full-width">
-                    WSI 업로드
-                </button>
-                <input type="file" id="file-input" accept=".svs,.ndpi,.tif,.tiff,.mrxs,.vms,.vmu,.scn" hidden>
-                <div id="upload-progress" class="progress-bar" hidden>
-                    <div class="progress-fill"></div>
-                    <span class="progress-text">0%</span>
+        <!-- 좌측: 슬라이드 리스트 -->
+        <aside id="left-panel">
+            <div class="panel-header">
+                <span>Slides</span>
+                <div class="panel-header-actions">
+                    <button id="btn-new-folder" class="view-toggle-btn" title="New Folder">+📁</button>
+                    <button id="btn-view-list" class="view-toggle-btn active" title="List view">☰</button>
+                    <button id="btn-view-grid" class="view-toggle-btn" title="Grid view">⊞</button>
                 </div>
             </div>
-
-            <!-- AI 분석 -->
-            <div class="panel">
-                <h3 class="panel-title">AI 분석</h3>
-                <button id="btn-detect" class="btn btn-accent full-width" disabled>
-                    Cell Detection
-                </button>
-                <div id="detection-progress" class="progress-bar" hidden>
-                    <div class="progress-fill"></div>
-                    <span class="progress-text">0%</span>
-                </div>
-                <div id="detection-info" class="info-text" hidden></div>
+            <!-- 경로 표시 -->
+            <div id="folder-breadcrumb" class="folder-breadcrumb">
+                <span class="breadcrumb-item" data-path="">Root</span>
             </div>
-
-            <!-- 검출 클래스 필터 -->
-            <div class="panel" id="class-filter-panel" hidden>
-                <h3 class="panel-title">클래스 필터</h3>
-                <div id="class-filters"></div>
-                <div class="slider-group">
-                    <label>Confidence: <span id="conf-value">0.30</span></label>
-                    <input type="range" id="conf-slider" min="0" max="1" step="0.01" value="0.30">
-                </div>
-            </div>
+            <div id="slide-list" class="slide-list"></div>
         </aside>
+        <div id="left-panel-resizer" class="panel-resizer"></div>
 
-        <!-- WSI 뷰어 -->
+        <!-- 중앙: WSI 뷰어 -->
         <main id="viewer-container">
             <!-- 드래그앤드롭 오버레이 -->
             <div id="drop-overlay">
-                <div class="drop-message">WSI 파일을 여기에 드롭하세요</div>
+                <div class="drop-message">
+                    <img src="assets/Open.png" class="drop-icon" alt="">
+                    <p>WSI 파일을 여기에 드롭하거나<br>Open 버튼을 클릭하세요</p>
+                </div>
             </div>
 
-            <!-- 타일 캔버스 -->
             <canvas id="wsi-canvas"></canvas>
-
-            <!-- 검출 오버레이 캔버스 -->
             <canvas id="overlay-canvas"></canvas>
 
             <!-- 미니맵 -->
@@ -79,15 +98,94 @@
                 <canvas id="minimap-canvas"></canvas>
                 <div id="minimap-viewport"></div>
             </div>
-
-            <!-- 줌 컨트롤 -->
-            <div id="zoom-controls">
-                <button id="btn-zoom-in" class="btn-icon" title="줌 인">+</button>
-                <button id="btn-fit" class="btn-icon" title="화면 맞춤">&#9634;</button>
-                <button id="btn-zoom-out" class="btn-icon" title="줌 아웃">&minus;</button>
-            </div>
         </main>
+
+        <!-- 우측: AI 패널 -->
+        <aside id="right-panel">
+            <!-- AI Analysis 그룹 -->
+            <div class="panel-group">
+                <div class="panel-header">AI Analysis</div>
+
+                <!-- 탭 바 -->
+                <div class="tab-bar">
+                    <button class="tab-btn active" data-tab="hne-tab">HE-Fit</button>
+                    <button class="tab-btn" data-tab="vs-tab">VS-IHC</button>
+                    <button class="tab-btn" data-tab="pd-tab" disabled>PD-Score</button>
+                </div>
+
+                <!-- HE-Fit 탭 -->
+                <div id="hne-tab" class="tab-content active">
+                    <div class="sub-group">
+                        <div class="sub-header">Tissue Type</div>
+                        <label class="radio-item"><input type="radio" name="tissue-type" value="Breast"> Breast</label>
+                        <label class="radio-item"><input type="radio" name="tissue-type" value="Stomach" checked> Stomach</label>
+                        <label class="radio-item"><input type="radio" name="tissue-type" value="Other"> Other</label>
+                    </div>
+                    <button id="btn-detect" class="action-btn primary" disabled>Cell Detection</button>
+                    <button id="btn-tumor-seg" class="action-btn" disabled>Tumor Segmentation</button>
+                </div>
+
+                <!-- VS-IHC 탭 -->
+                <div id="vs-tab" class="tab-content">
+                    <button class="action-btn" disabled>IHC → H&E (Membrane)</button>
+                    <button class="action-btn" disabled>IHC → H&E (Nucleus)</button>
+                </div>
+
+                <!-- PD-Score 탭 -->
+                <div id="pd-tab" class="tab-content">
+                    <button class="action-btn" disabled>PD-L1 Detection</button>
+                </div>
+            </div>
+
+            <!-- Annotation 패널 -->
+            <div class="panel-group annotation-group">
+                <div class="panel-header">Annotations</div>
+                <div id="annotation-list" class="annotation-list"></div>
+                <div class="btn-row compact">
+                    <button id="btn-ann-clear" class="small-btn">Clear All</button>
+                    <button id="btn-ann-save" class="small-btn">Save</button>
+                    <button id="btn-ann-load" class="small-btn">Load</button>
+                </div>
+            </div>
+
+            <!-- 프로그레스 -->
+            <div class="panel-section">
+                <label id="progress-label" class="progress-label">AI Progress</label>
+                <div id="progress-bar" class="progress-bar">
+                    <div class="progress-fill"></div>
+                    <span class="progress-text" id="progress-text"></span>
+                </div>
+            </div>
+
+            <!-- Detection Results 그룹 -->
+            <div class="panel-group results-group">
+                <div class="panel-header">Detection Results</div>
+                <div id="result-list" class="result-list"></div>
+
+
+                <div class="btn-row">
+                    <button id="btn-visualize" class="action-btn" disabled>Visualize</button>
+                </div>
+                <div class="btn-row compact">
+                    <button id="btn-clear-results" class="small-btn" disabled>Clear</button>
+                    <button id="btn-save-results" class="small-btn" disabled>Save</button>
+                    <button id="btn-load-results" class="small-btn">Load</button>
+                </div>
+            </div>
+        </aside>
     </div>
+
+    <!-- 숨겨진 파일 입력 -->
+    <input type="file" id="file-input" accept=".svs,.ndpi,.tif,.tiff,.mrxs,.vms,.vmu,.scn" hidden>
+
+    <!-- 슬라이드 정보 다이얼로그 -->
+    <dialog id="slide-info-dialog">
+        <div class="dialog-header">
+            <span>Slide Information</span>
+            <button class="dialog-close" id="close-slide-info">&times;</button>
+        </div>
+        <div id="slide-info-content" class="dialog-body"></div>
+    </dialog>
 
     <script type="module" src="js/app.js"></script>
 </body>
