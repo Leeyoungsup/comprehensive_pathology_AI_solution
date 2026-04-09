@@ -633,18 +633,25 @@ export class TileViewer {
 
     // ── 검출 오버레이 ──
 
-    setDetectionResults(cells) {
-        this.detectionCells = cells || [];
+    setDetectionResults(cells, roiPolygons = null) {
+        let filtered = cells || [];
+
+        // ROI 폴리곤이 있으면 폴리곤 내부 셀만 필터링
+        if (roiPolygons && roiPolygons.length > 0) {
+            filtered = filtered.filter(c =>
+                roiPolygons.some(poly => this._pointInPolygon(c.x, c.y, poly))
+            );
+        }
+
+        this.detectionCells = filtered;
         this.classVisibility = {};
-        // 클래스별 confidence threshold (기본값 0.01)
         this.classConfidence = {};
-        const classIds = new Set(cells.map(c => c.class_id));
+        const classIds = new Set(filtered.map(c => c.class_id));
         classIds.forEach(id => {
             this.classVisibility[id] = true;
             this.classConfidence[id] = 0.01;
         });
 
-        // 히트맵 사전 계산 (기존 _build_heatmap_cache와 동일)
         this._heatmapDirty = true;
         this._buildHeatmapCache();
         this.requestRender();

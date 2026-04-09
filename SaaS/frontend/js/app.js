@@ -411,9 +411,17 @@ async function startDetection() {
     setProgress(0);
     setStatus('검출 시작...');
 
+    // AI 시작 → 그리기 모드 해제
+    viewer.setDrawMode(null);
+
     try {
         const tissueType = document.querySelector('input[name="tissue-type"]:checked')?.value || 'Stomach';
-        const { task_id } = await api.startDetection(currentSlideId, null, tissueType);
+
+        // point 제외한 polygon/rectangle annotation → ROI로 전달
+        const roiAnnotations = viewer.annotations.filter(a => a.visible && a.type !== 'point' && a.coordinates.length >= 3);
+        const roiPolygons = roiAnnotations.length > 0 ? roiAnnotations.map(a => a.coordinates) : null;
+
+        const { task_id } = await api.startDetection(currentSlideId, roiPolygons, tissueType);
 
         // 폴링
         while (true) {
@@ -424,7 +432,7 @@ async function startDetection() {
             setStatus(msg);
 
             if (st.status === 'completed') {
-                onDetectionComplete(st.result);
+                onDetectionComplete(st.result, roiPolygons);
                 return;
             } else if (st.status === 'error') {
                 throw new Error(st.error);
@@ -438,11 +446,17 @@ async function startDetection() {
     }
 }
 
-function onDetectionComplete(result) {
-    setProgress(100);
-    setStatus(`검출 완료: ${result.total_cells.toLocaleString()}개 세포`);
+function onDetectionComplete(result, roiPolygons = null) {
+    // AI 완료 → 기존 annotation 제거 (ROI 저장 후)
+    viewer.clearAnnotations();
+    renderAnnotationPanel();
 
-    viewer.setDetectionResults(result.cells);
+    // ROI 폴리곤 내부 셀만 필터링하여 표시
+    viewer.setDetectionResults(result.cells, roiPolygons);
+
+    const displayCount = viewer.detectionCells.length;
+    setProgress(100);
+    setStatus(`검출 완료: ${displayCount.toLocaleString()}개 세포`);
     buildResultList(result);
 
     $btnVisualize.disabled = false;
