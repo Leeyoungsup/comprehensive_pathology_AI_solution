@@ -34,7 +34,6 @@ const $btnFit = $('#btn-fit');
 const $btnZoomIn = $('#btn-zoom-in');
 const $btnZoomOut = $('#btn-zoom-out');
 const $btnDetect = $('#btn-detect');
-const $btnTumorSeg = $('#btn-tumor-seg');
 const $btnVisualize = $('#btn-visualize');
 const $btnClearResults = $('#btn-clear-results');
 const $btnSaveResults = $('#btn-save-results');
@@ -130,7 +129,6 @@ function onSlideLoaded(slideId, slideInfo, filename) {
 
     // 버튼 활성화
     $btnDetect.disabled = false;
-    $btnTumorSeg.disabled = false;
     $btnInfo.disabled = false;
     $btnSave.disabled = false;
     document.querySelectorAll('.toggle-btn').forEach(b => b.disabled = false);
@@ -977,7 +975,10 @@ $btnVisualize.addEventListener('click', () => {
         setStatus('No cells pass current confidence thresholds');
         return;
     }
-    showVisualization(filtered, lastSegData);
+    const thumbUrl = currentSlideId ? api.thumbnailUrl(currentSlideId, 1024) : null;
+    const slideName = ($slideName.textContent || '').replace(/\.[^.]+$/, '') || 'slide';
+    const tissue = _lastDetectionTissue || 'Stomach';
+    showVisualization(filtered, lastSegData, thumbUrl, { slideName, tissue });
 });
 
 // Detection Result 내부 저장 (서버 AI 결과 폴더로) — 다운로드 X

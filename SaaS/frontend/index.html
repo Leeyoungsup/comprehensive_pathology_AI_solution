@@ -122,7 +122,6 @@
                         <label class="radio-item"><input type="radio" name="tissue-type" value="Other"> Other</label>
                     </div>
                     <button id="btn-detect" class="action-btn primary" disabled>Cell Detection</button>
-                    <button id="btn-tumor-seg" class="action-btn" disabled>Tumor Segmentation</button>
                 </div>
 
                 <!-- VS-IHC 탭 -->
@@ -190,7 +189,10 @@
     <dialog id="viz-dialog">
         <div class="dialog-header">
             <span>AI Detection Result Visualization</span>
-            <button class="dialog-close" id="close-viz">&times;</button>
+            <div style="display:flex; gap:8px; align-items:center; margin-left:auto;">
+                <button id="btn-export-pdf" class="small-btn" style="padding:6px 14px; font-weight:600;">Export PDF</button>
+                <button class="dialog-close" id="close-viz">&times;</button>
+            </div>
         </div>
         <div class="viz-tabs">
             <button class="viz-tab active" data-tab="viz-class-dist">Class Distribution</button>

@@ -728,6 +728,7 @@ export class TileViewer {
         this._spatialGrid.build(filtered);
 
         this._heatmapDirty = true;
+        this._heatmapImage = null;
         this._buildHeatmapCache();
         this.requestRender();
     }
@@ -815,6 +816,7 @@ export class TileViewer {
         this._spatialGrid = new SpatialGrid(2048);
         this._spatialGrid.build(this.detectionCells);
         this._heatmapDirty = true;
+        this._heatmapImage = null;
         this._buildHeatmapCache();
         this.requestRender();
 
@@ -1102,114 +1104,112 @@ export class TileViewer {
         const cache = this._heatmapCache;
         if (!cache) return;
 
+        // 가시 클래스 키 — 변경 감지용
+        const visKey = Object.keys(cache.clsDensities)
+            .filter(k => this.classVisibility[parseInt(k)] !== false)
+            .sort()
+            .join(',');
+
+        // 캐시된 이미지가 유효하면 그대로 drawImage
+        if (!this._heatmapImage || this._heatmapImage.visKey !== visKey) {
+            this._heatmapImage = this._buildHeatmapImage(visKey);
+        }
+        const img = this._heatmapImage;
+        if (!img) return;
+
+        const [canvasX, canvasY] = this.sceneToCanvas(img.sceneLeft, img.sceneTop);
+        const canvasW = img.sceneW * this.zoom;
+        const canvasH = img.sceneH * this.zoom;
+
+        octx.imageSmoothingEnabled = true;
+        octx.drawImage(img.canvas, canvasX, canvasY, canvasW, canvasH);
+    }
+
+    /**
+     * 전체 데이터 범위에 대한 히트맵 이미지를 1회 빌드.
+     * 줌/팬 시 재계산 없이 drawImage로 재사용.
+     */
+    _buildHeatmapImage(visKey) {
+        const cache = this._heatmapCache;
+        if (!cache) return null;
         const { clsDensities, xMin, yMin, gw, gh, sx, sy } = cache;
 
-        // 뷰 영역
-        const halfVW = this.canvas.width / this.zoom / 2;
-        const halfVH = this.canvas.height / this.zoom / 2;
-        const viewLeft = this.viewCenterX - halfVW;
-        const viewTop = this.viewCenterY - halfVH;
-        const viewRight = this.viewCenterX + halfVW;
-        const viewBottom = this.viewCenterY + halfVH;
-
-        // 그리드 인덱스로 변환 (crop 범위)
-        const gx0 = Math.max(0, Math.floor((viewLeft - xMin) * sx));
-        const gy0 = Math.max(0, Math.floor((viewTop - yMin) * sy));
-        const gx1 = Math.min(gw, Math.ceil((viewRight - xMin) * sx) + 1);
-        const gy1 = Math.min(gh, Math.ceil((viewBottom - yMin) * sy) + 1);
-
-        const cropW = gx1 - gx0;
-        const cropH = gy1 - gy0;
-        if (cropW <= 0 || cropH <= 0) return;
-
-        // 가시 클래스 합산 (crop 영역만)
-        const combined = new Float32Array(cropH * cropW);
+        // 가시 클래스 합산 (전체 그리드)
+        const total = gw * gh;
+        const combined = new Float32Array(total);
         let hasData = false;
         for (const [clsStr, density] of Object.entries(clsDensities)) {
             const cls = parseInt(clsStr);
             if (this.classVisibility[cls] === false) continue;
-            for (let y = 0; y < cropH; y++) {
-                for (let x = 0; x < cropW; x++) {
-                    const val = density[(y + gy0) * gw + (x + gx0)];
-                    if (val > 0) {
-                        combined[y * cropW + x] += val;
-                        hasData = true;
-                    }
+            for (let i = 0; i < total; i++) {
+                const v = density[i];
+                if (v > 0) {
+                    combined[i] += v;
+                    hasData = true;
                 }
             }
         }
-        if (!hasData) return;
+        if (!hasData) return null;
 
-        // 출력 해상도 (캔버스에 맞게, 최대 512px)
+        // 출력 해상도 (최대 512px)
         const maxDim = 512;
         let outW, outH;
-        if (cropW >= cropH) {
-            outW = Math.min(maxDim, cropW);
-            outH = Math.max(1, Math.round(outW * cropH / cropW));
+        if (gw >= gh) {
+            outW = Math.min(maxDim, gw);
+            outH = Math.max(1, Math.round(outW * gh / gw));
         } else {
-            outH = Math.min(maxDim, cropH);
-            outW = Math.max(1, Math.round(outH * cropW / cropH));
+            outH = Math.min(maxDim, gh);
+            outW = Math.max(1, Math.round(outH * gw / gh));
         }
 
-        // 리사이즈 (nearest → bilinear 근사: 작은 크기라 nearest로 충분)
+        // 리사이즈 (nearest)
         const resized = new Float32Array(outH * outW);
-        const rxScale = cropW / outW;
-        const ryScale = cropH / outH;
+        const rxScale = gw / outW;
+        const ryScale = gh / outH;
         for (let y = 0; y < outH; y++) {
             for (let x = 0; x < outW; x++) {
-                const srcX = Math.min(Math.floor(x * rxScale), cropW - 1);
-                const srcY = Math.min(Math.floor(y * ryScale), cropH - 1);
-                resized[y * outW + x] = combined[srcY * cropW + srcX];
+                const srcX = Math.min(Math.floor(x * rxScale), gw - 1);
+                const srcY = Math.min(Math.floor(y * ryScale), gh - 1);
+                resized[y * outW + x] = combined[srcY * gw + srcX];
             }
         }
 
-        // 가우시안 블러: 데스크톱 sigma = max(3.0, outW/60) ≈ 8.5
-        // 5x5 box blur 1 pass ≈ sigma 1.0 → 18 passes ≈ sigma 6, 32 passes ≈ sigma 8
+        // 가우시안 블러
         const blurPasses = Math.max(8, Math.round(outW / 20));
         const blurred = this._blurGrid(resized, outW, outH, blurPasses);
 
-        // 최대값
         let maxVal = 0;
         for (let i = 0; i < blurred.length; i++) {
             if (blurred[i] > maxVal) maxVal = blurred[i];
         }
-        if (maxVal === 0) return;
+        if (maxVal === 0) return null;
 
-        // ImageData 생성 (jet 컬러맵 + 밀도 비례 알파)
-        const imgData = octx.createImageData(outW, outH);
+        // ImageData → 오프스크린 캔버스
+        const offscreen = new OffscreenCanvas(outW, outH);
+        const offCtx = offscreen.getContext('2d');
+        const imgData = offCtx.createImageData(outW, outH);
         const data = imgData.data;
-        const ALPHA_MAX = 180;  // 기존 self.alpha = 180
+        const ALPHA_MAX = 180;
 
         for (let i = 0; i < blurred.length; i++) {
             const norm = blurred[i] / maxVal;
-            if (norm < 0.01) {
-                data[i * 4 + 3] = 0;  // 투명
-                continue;
-            }
+            if (norm < 0.01) { data[i * 4 + 3] = 0; continue; }
             const [r, g, b] = this._jetColor(norm);
             data[i * 4 + 0] = r;
             data[i * 4 + 1] = g;
             data[i * 4 + 2] = b;
             data[i * 4 + 3] = Math.round(norm * ALPHA_MAX);
         }
-
-        // 오프스크린 캔버스에 ImageData → 메인 캔버스에 스케일해서 그리기
-        const offscreen = new OffscreenCanvas(outW, outH);
-        const offCtx = offscreen.getContext('2d');
         offCtx.putImageData(imgData, 0, 0);
 
-        // crop 영역의 scene 좌표
-        const sceneLeft = xMin + gx0 / sx;
-        const sceneTop = yMin + gy0 / sy;
-        const sceneW = cropW / sx;
-        const sceneH = cropH / sy;
-
-        const [canvasX, canvasY] = this.sceneToCanvas(sceneLeft, sceneTop);
-        const canvasW = sceneW * this.zoom;
-        const canvasH = sceneH * this.zoom;
-
-        octx.imageSmoothingEnabled = true;
-        octx.drawImage(offscreen, canvasX, canvasY, canvasW, canvasH);
+        return {
+            canvas: offscreen,
+            sceneLeft: xMin,
+            sceneTop: yMin,
+            sceneW: gw / sx,
+            sceneH: gh / sy,
+            visKey,
+        };
     }
 
     _renderCells(octx) {
