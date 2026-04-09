@@ -29,3 +29,5 @@ ui/__pycache__/
 Claude.md
 log_claude.md``
 *.ndpi
+SaaS/backend/uploads/
+SaaS/backend/tiles/
