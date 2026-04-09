@@ -56,11 +56,14 @@ def _run_detection(task_id: str, slide_id: str, roi_polygons: Optional[list], ti
             _update_task(task_id, status="error", error="슬라이드를 찾을 수 없습니다")
             return
 
-        _update_task(task_id, status="running", progress=1)
+        _update_task(task_id, status="running", progress=1,
+                     status_msg="Starting detection...")
 
         # ── 모델 로드 ──
         from ai.detection import non_max_suppression, CLASS_NAMES, CLASS_COLORS
         from ai.nets import nn as yolo_nn
+
+        _update_task(task_id, progress=1, status_msg="Loading detection model...")
 
         model_path = Path(settings.MODEL_DIR) / "HnE_detection.pt"
         if not model_path.exists():
@@ -74,7 +77,7 @@ def _run_detection(task_id: str, slide_id: str, roi_polygons: Optional[list], ti
         model.load_state_dict(checkpoint['model_state_dict'])
         model.eval()
 
-        _update_task(task_id, progress=3)
+        _update_task(task_id, progress=3, status_msg="Detection model loaded")
 
         # ── 설정 (기존 DetectionWorker와 동일) ──
         slide = info.slide
@@ -265,9 +268,9 @@ def _run_detection(task_id: str, slide_id: str, roi_polygons: Optional[list], ti
                 detected_count += k
 
             processed_valid += patch_count
-            pct = int(5 + (processed_valid / n_valid) * 90)
-            _update_task(task_id, progress=min(pct, 95),
-                         status_msg=f"Patch {processed_valid}/{n_valid} | Cells: {detected_count}")
+            pct = int(5 + (processed_valid / n_valid) * 45)  # 5~50%
+            _update_task(task_id, progress=min(pct, 50),
+                         status_msg=f"Detection: Patch {processed_valid}/{n_valid} | Cells: {detected_count}")
 
         producer_thread.join(timeout=10)
 
@@ -280,6 +283,27 @@ def _run_detection(task_id: str, slide_id: str, roi_polygons: Optional[list], ti
         else:
             all_x = all_y = all_conf = np.empty(0, dtype=np.float32)
             all_cls = np.empty(0, dtype=np.int32)
+
+        _update_task(task_id, progress=50,
+                     status_msg=f"Detection complete: {detected_count} cells")
+
+        # ── Epithelial 재분류 (Breast/Stomach만) ──
+        auto_classify = tissue_type in ("Breast", "Stomach")
+        if auto_classify and len(all_cls) > 0:
+            epithelial_count = int(np.sum(all_cls == 1))
+            if epithelial_count > 0:
+                _update_task(task_id, progress=52,
+                             status_msg=f"Epithelial reclassification starting... ({epithelial_count} cells)")
+                _run_epithelial_classification(
+                    task_id, slide, slide_path, info, all_x, all_y, all_cls,
+                    tissue_type, roi_polygons, device,
+                )
+            else:
+                _update_task(task_id, progress=98,
+                             status_msg="No Epithelial cells found, skipping reclassification")
+        elif not auto_classify:
+            _update_task(task_id, progress=98,
+                         status_msg="Tissue type 'Other' — skipping reclassification")
 
         n_cells = len(all_x)
         all_cells = [
@@ -336,6 +360,131 @@ def _create_tissue_mask(slide):
     except Exception:
         w, h = slide.dimensions
         return np.ones((h // 64, w // 64), dtype=np.uint8) * 255
+
+
+def _run_epithelial_classification(task_id, slide, slide_path, info, all_x, all_y, all_cls,
+                                    tissue_type, roi_polygons, device):
+    """
+    Epithelial 재분류: WSI Segmentation → Epithelial(1) → Tumor(6) / Benign(7)
+    데스크톱 DetectionWorker._run_epithelial_classification과 동일 로직
+    all_cls를 in-place로 수정한다.
+    """
+    import numpy as np
+    import torch
+
+    try:
+        from ai.epithelial_classifier import WSISegmentationModel
+
+        # Segmentation 모델 경로
+        if tissue_type == "Breast":
+            seg_model_path = Path(settings.MODEL_DIR) / "HnE_BR_segmentation.pt"
+        elif tissue_type == "Stomach":
+            seg_model_path = Path(settings.MODEL_DIR) / "HnE_ST_segmentation.pt"
+        else:
+            return
+
+        if not seg_model_path.exists():
+            _update_task(task_id, status_msg=f"Segmentation model not found: {seg_model_path}")
+            return
+
+        _update_task(task_id, progress=52,
+                     status_msg="Loading segmentation model...")
+
+        seg_model = WSISegmentationModel(
+            model_path=str(seg_model_path),
+            model_mpp=1.0,
+            output_mpp=4.0,
+            device=device,
+        )
+
+        # ROI bounds 계산
+        roi_bounds = None
+        if roi_polygons:
+            min_x = min(p[0] for poly in roi_polygons for p in poly)
+            min_y = min(p[1] for poly in roi_polygons for p in poly)
+            max_x = max(p[0] for poly in roi_polygons for p in poly)
+            max_y = max(p[1] for poly in roi_polygons for p in poly)
+            roi_bounds = (int(min_x), int(min_y), int(max_x), int(max_y))
+
+        _update_task(task_id, progress=55,
+                     status_msg="Running WSI Segmentation...")
+
+        def progress_cb(pct):
+            # 55~90% 구간
+            _update_task(task_id, progress=55 + int(pct * 0.35),
+                         status_msg=f"WSI Segmentation... {int(pct)}%")
+
+        prediction_mask, metadata = seg_model.predict_wsi(
+            slide,
+            patch_size=512,
+            overlap_ratio=0.4,
+            batch_size=8,
+            progress_callback=progress_cb,
+            roi_bounds=roi_bounds,
+            image_path=slide_path,
+        )
+
+        _update_task(task_id, progress=92,
+                     status_msg="Reclassifying Epithelial cells...")
+
+        # ── Epithelial 인덱스 및 mask 좌표 변환 ──
+        wsi_mpp = info.mpp
+        output_mpp = seg_model.output_mpp
+        scale_factor = wsi_mpp / output_mpp
+        region_offset_x = metadata.get('region_offset', (0, 0))[0]
+        region_offset_y = metadata.get('region_offset', (0, 0))[1]
+
+        epi_indices = np.where(all_cls == 1)[0]
+        if len(epi_indices) == 0:
+            return
+
+        epi_xs = all_x[epi_indices]
+        epi_ys = all_y[epi_indices]
+        mxs = ((epi_xs - region_offset_x) * scale_factor).astype(np.int32)
+        mys = ((epi_ys - region_offset_y) * scale_factor).astype(np.int32)
+        h, w = prediction_mask.shape
+        valid = (mxs >= 0) & (mxs < w) & (mys >= 0) & (mys < h)
+        seg_vals = np.zeros(len(epi_indices), dtype=np.int32)
+        seg_vals[valid] = prediction_mask[mys[valid], mxs[valid]]
+
+        # ── Connected component 클러스터링 ──
+        from scipy import ndimage as ndi
+        TUMOR_RATIO_THRESHOLD = 0.1
+        epi_region = np.isin(prediction_mask, [2, 3]).astype(np.uint8)
+        labeled_mask, num_components = ndi.label(epi_region, structure=np.ones((3, 3), dtype=np.int8))
+
+        flat_label = labeled_mask.ravel()
+        flat_mask = prediction_mask.ravel().astype(np.int32)
+        n_bins = num_components + 1
+        tumor_counts = np.bincount(flat_label, weights=(flat_mask == 3), minlength=n_bins)
+        total_counts = np.bincount(flat_label, weights=np.isin(flat_mask, [2, 3]).astype(float), minlength=n_bins)
+        with np.errstate(invalid='ignore', divide='ignore'):
+            tumor_ratio = np.where(total_counts > 0, tumor_counts / total_counts, 0.0)
+        comp_class_arr = np.where(tumor_ratio >= TUMOR_RATIO_THRESHOLD, 3, 2).astype(np.int32)
+        comp_class_arr[0] = 0  # background
+
+        lh, lw = labeled_mask.shape
+        lvalid = (mxs >= 0) & (mxs < lw) & (mys >= 0) & (mys < lh)
+        comp_ids = np.zeros(len(epi_indices), dtype=np.int32)
+        comp_ids[lvalid] = labeled_mask[mys[lvalid], mxs[lvalid]]
+        update_mask = comp_ids > 0
+        seg_vals[update_mask] = comp_class_arr[comp_ids[update_mask]]
+
+        # cls_arr in-place 업데이트: Benign(2)→7, Tumor(3)→6
+        all_cls[epi_indices] = np.where(seg_vals == 2, 7, 6).astype(np.int32)
+
+        _update_task(task_id, progress=98,
+                     status_msg=f"Epithelial reclassification complete ({len(epi_indices)} cells)")
+
+        del seg_model
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    except Exception as e:
+        import traceback
+        print(f"Epithelial reclassification failed: {e}\n{traceback.format_exc()}")
+        _update_task(task_id, progress=98,
+                     status_msg=f"Reclassification failed, using original results: {e}")
 
 
 # ═══ API 엔드포인트 ═══

@@ -431,6 +431,15 @@ async function startDetection() {
             setProgress(st.progress, msg);
             setStatus(msg);
 
+            // 진행 단계에 따라 라벨 업데이트
+            if (st.progress <= 50) {
+                $progressLabel.textContent = 'Cell Detection';
+            } else if (st.progress < 92) {
+                $progressLabel.textContent = 'WSI Segmentation';
+            } else if (st.progress < 100) {
+                $progressLabel.textContent = 'Epithelial Reclassification';
+            }
+
             if (st.status === 'completed') {
                 onDetectionComplete(st.result, roiPolygons);
                 return;
@@ -447,6 +456,8 @@ async function startDetection() {
 }
 
 function onDetectionComplete(result, roiPolygons = null) {
+    $progressLabel.textContent = 'Detection Complete';
+
     // AI 완료 → 기존 annotation 제거 (ROI 저장 후)
     viewer.clearAnnotations();
     renderAnnotationPanel();
@@ -456,7 +467,7 @@ function onDetectionComplete(result, roiPolygons = null) {
 
     const displayCount = viewer.detectionCells.length;
     setProgress(100);
-    setStatus(`검출 완료: ${displayCount.toLocaleString()}개 세포`);
+    setStatus(`Detection complete: ${displayCount.toLocaleString()} cells`);
     buildResultList(result);
 
     $btnVisualize.disabled = false;
