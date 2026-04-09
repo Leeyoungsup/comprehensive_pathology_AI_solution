@@ -49,6 +49,7 @@ const $slideList = $('#slide-list');
 let currentSlideId = null;
 let currentSlideInfo = null;
 let minimapImage = null;
+let lastSegData = null;  // segmentation overlay data from epithelial classification
 
 // ── 뷰어 초기화 ──
 const viewer = new TileViewer($canvas, $overlay);
@@ -463,6 +464,9 @@ function onDetectionComplete(result, roiPolygons = null) {
     viewer.clearAnnotations();
     renderAnnotationPanel();
 
+    // segmentation 데이터 저장
+    lastSegData = result.seg_data || null;
+
     // ROI 폴리곤 내부 셀만 필터링하여 표시
     viewer.setDetectionResults(result.cells, roiPolygons);
 
@@ -569,13 +573,14 @@ function clearResults() {
     $btnClearResults.disabled = true;
     $btnSaveResults.disabled = true;
     viewer.setDetectionResults([]);
+    lastSegData = null;
 }
 
 $btnClearResults.addEventListener('click', clearResults);
 
 $btnVisualize.addEventListener('click', () => {
     if (viewer.detectionCells.length === 0) return;
-    showVisualization(viewer.detectionCells);
+    showVisualization(viewer.detectionCells, lastSegData);
 });
 
 // ═══════════════════════════

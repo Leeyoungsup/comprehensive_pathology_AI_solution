@@ -288,13 +288,14 @@ def _run_detection(task_id: str, slide_id: str, roi_polygons: Optional[list], ti
                      status_msg=f"Detection complete: {detected_count} cells")
 
         # ── Epithelial 재분류 (Breast/Stomach만) ──
+        seg_data = None
         auto_classify = tissue_type in ("Breast", "Stomach")
         if auto_classify and len(all_cls) > 0:
             epithelial_count = int(np.sum(all_cls == 1))
             if epithelial_count > 0:
                 _update_task(task_id, progress=52,
                              status_msg=f"Epithelial reclassification starting... ({epithelial_count} cells)")
-                _run_epithelial_classification(
+                seg_data = _run_epithelial_classification(
                     task_id, slide, slide_path, info, all_x, all_y, all_cls,
                     tissue_type, roi_polygons, device,
                 )
@@ -322,6 +323,7 @@ def _run_detection(task_id: str, slide_id: str, roi_polygons: Optional[list], ti
             "cells": all_cells,
             "class_names": {str(k): v for k, v in CLASS_NAMES.items()},
             "class_colors": {str(k): v for k, v in CLASS_COLORS.items()},
+            "seg_data": seg_data,
         }
 
         _update_task(task_id, status="completed", progress=100, result=result)
@@ -368,6 +370,7 @@ def _run_epithelial_classification(task_id, slide, slide_path, info, all_x, all_
     Epithelial 재분류: WSI Segmentation → Epithelial(1) → Tumor(6) / Benign(7)
     데스크톱 DetectionWorker._run_epithelial_classification과 동일 로직
     all_cls를 in-place로 수정한다.
+    Returns: seg_data dict (seg_class_names, overlays as base64, thumbnail) or None
     """
     import numpy as np
     import torch
@@ -476,15 +479,108 @@ def _run_epithelial_classification(task_id, slide, slide_path, info, all_x, all_
         _update_task(task_id, progress=98,
                      status_msg=f"Epithelial reclassification complete ({len(epi_indices)} cells)")
 
+        # ── 썸네일 + 세그멘테이션 오버레이 생성 (프론트엔드 시각화용) ──
+        seg_data = _build_seg_overlays(slide, prediction_mask, metadata,
+                                       seg_model.class_names, roi_bounds)
+
         del seg_model
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+        return seg_data
 
     except Exception as e:
         import traceback
         print(f"Epithelial reclassification failed: {e}\n{traceback.format_exc()}")
         _update_task(task_id, progress=98,
                      status_msg=f"Reclassification failed, using original results: {e}")
+        return None
+
+
+def _build_seg_overlays(slide, prediction_mask, metadata, class_names, roi_bounds):
+    """
+    세그멘테이션 마스크를 썸네일 크기로 리사이즈하여 클래스별 오버레이 base64 생성.
+    데스크톱의 _create_spatial_heatmap_tab과 동일한 시각화 데이터.
+    """
+    import numpy as np
+    import cv2
+    import base64
+    import io
+
+    try:
+        # 썸네일 생성 (ROI 영역이면 해당 영역만)
+        THUMB_SIZE = 300
+        sw, sh = slide.dimensions
+        if roi_bounds:
+            x0, y0, x1, y1 = roi_bounds
+        else:
+            x0, y0, x1, y1 = 0, 0, sw, sh
+        rw, rh = x1 - x0, y1 - y0
+
+        # 썸네일 비율 유지
+        if rw >= rh:
+            tw = THUMB_SIZE
+            th = max(1, int(THUMB_SIZE * rh / rw))
+        else:
+            th = THUMB_SIZE
+            tw = max(1, int(THUMB_SIZE * rw / rh))
+
+        # OpenSlide 썸네일 (ROI 영역)
+        thumb = slide.get_thumbnail((sw // max(1, sw // THUMB_SIZE), sh // max(1, sh // THUMB_SIZE)))
+        thumb_np = np.array(thumb.convert('RGB'))
+        # ROI crop
+        if roi_bounds:
+            crop_x0 = int(x0 / sw * thumb_np.shape[1])
+            crop_y0 = int(y0 / sh * thumb_np.shape[0])
+            crop_x1 = int(x1 / sw * thumb_np.shape[1])
+            crop_y1 = int(y1 / sh * thumb_np.shape[0])
+            thumb_np = thumb_np[crop_y0:crop_y1, crop_x0:crop_x1]
+        thumb_resized = cv2.resize(thumb_np, (tw, th))
+
+        # 썸네일 → base64 JPEG
+        _, thumb_buf = cv2.imencode('.jpeg', cv2.cvtColor(thumb_resized, cv2.COLOR_RGB2BGR),
+                                     [cv2.IMWRITE_JPEG_QUALITY, 85])
+        thumb_b64 = base64.b64encode(thumb_buf.tobytes()).decode('ascii')
+
+        # 마스크를 썸네일 크기로 리사이즈
+        mask_resized = cv2.resize(prediction_mask.astype(np.uint8), (tw, th),
+                                   interpolation=cv2.INTER_NEAREST)
+
+        # 클래스별 오버레이 (Background=0 제외)
+        # class_names: ['Background', 'Stroma', 'Non_Tumor', 'Tumor']
+        overlays = {}
+        num_classes = len(class_names) if class_names else int(prediction_mask.max()) + 1
+        for cls_id in range(1, num_classes):  # 0=Background 제외
+            cls_name = class_names[cls_id] if class_names and cls_id < len(class_names) else f'Class_{cls_id}'
+            # 클래스 확률 근사 (argmax mask이므로 이진)
+            cls_mask = (mask_resized == cls_id).astype(np.float32)
+            # 가우시안 블러로 부드럽게
+            cls_smooth = cv2.GaussianBlur(cls_mask, (7, 7), 2.0)
+            # jet colormap 적용
+            cls_norm = (cls_smooth * 255).astype(np.uint8)
+            cls_jet = cv2.applyColorMap(cls_norm, cv2.COLORMAP_JET)
+            # alpha 채널: 값이 있는 곳만
+            alpha = (cls_smooth * 0.75 * 255).astype(np.uint8)
+            cls_rgba = np.dstack([cv2.cvtColor(cls_jet, cv2.COLOR_BGR2RGB), alpha])
+
+            # PNG base64 (알파 포함)
+            from PIL import Image
+            img = Image.fromarray(cls_rgba, 'RGBA')
+            buf = io.BytesIO()
+            img.save(buf, format='PNG')
+            overlays[cls_name] = base64.b64encode(buf.getvalue()).decode('ascii')
+
+        return {
+            'thumbnail': thumb_b64,
+            'overlays': overlays,
+            'class_names': class_names[1:] if class_names else [],  # Background 제외
+            'width': tw,
+            'height': th,
+        }
+    except Exception as e:
+        import traceback
+        print(f"Seg overlay generation failed: {e}\n{traceback.format_exc()}")
+        return None
 
 
 # ═══ API 엔드포인트 ═══

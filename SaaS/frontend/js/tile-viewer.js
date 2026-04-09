@@ -50,6 +50,10 @@ export class TileViewer {
         this.classVisibility = {};   // {class_id: bool}
         this.classConfidence = {};   // {class_id: float} 클래스별 threshold (기본 0.01)
 
+        // Segmentation 오버레이
+        this._segOverlay = null;     // {image, sceneX, sceneY, sceneW, sceneH}
+        this.segClassVisibility = {}; // {cls_id: bool}
+
         // ── Annotation ──
         this.annotations = [];        // [{id, name, type, coordinates, color, visible, selected, group}]
         this.drawMode = null;         // 'polygon' | 'rectangle' | 'point' | null
@@ -574,6 +578,7 @@ export class TileViewer {
         this._processLoadQueue();
 
         // 오버레이 렌더링
+        this._renderSegmentationOverlay();
         this._renderDetectionOverlay();
         this._renderAnnotations(this.overlayCtx);
     }
@@ -750,6 +755,92 @@ export class TileViewer {
         else if (t < 0.75) { r = (t - 0.5) * 4; g = 1; b = 0; }
         else { r = 1; g = 1 - (t - 0.75) * 4; b = 0; }
         return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+    }
+
+    // ── Segmentation 오버레이 (데스크톱 wsi_view_widget.py 동일) ──
+    // 색상: Stroma=빨강, Non_Tumor=초록, Tumor=파랑, alpha=128
+
+    /**
+     * Segmentation 마스크 설정
+     * @param {Uint8Array} maskData - 클래스 인덱스 배열 (0=BG, 1=Stroma, 2=Non_Tumor, 3=Tumor)
+     * @param {number} maskW - 마스크 너비
+     * @param {number} maskH - 마스크 높이
+     * @param {number} sceneX - WSI level-0 offset X
+     * @param {number} sceneY - WSI level-0 offset Y
+     * @param {number} sceneW - WSI level-0 영역 너비
+     * @param {number} sceneH - WSI level-0 영역 높이
+     * @param {string[]} classNames - ['Stroma', 'Non_Tumor', 'Tumor']
+     */
+    setSegmentationOverlay(maskData, maskW, maskH, sceneX, sceneY, sceneW, sceneH, classNames) {
+        // 데스크톱과 동일한 색상: Stroma=빨강, Non_Tumor=초록, Tumor=파랑
+        const SEG_COLORS = {
+            1: [255, 0, 0, 128],    // Stroma
+            2: [0, 255, 0, 128],    // Non_Tumor
+            3: [0, 0, 255, 128],    // Tumor
+        };
+
+        // RGBA ImageData 생성
+        const offscreen = new OffscreenCanvas(maskW, maskH);
+        const offCtx = offscreen.getContext('2d');
+        const imgData = offCtx.createImageData(maskW, maskH);
+        const d = imgData.data;
+
+        for (let i = 0; i < maskData.length; i++) {
+            const cls = maskData[i];
+            const c = SEG_COLORS[cls];
+            if (c) {
+                d[i * 4] = c[0]; d[i * 4 + 1] = c[1]; d[i * 4 + 2] = c[2]; d[i * 4 + 3] = c[3];
+            }
+        }
+        offCtx.putImageData(imgData, 0, 0);
+
+        this._segOverlay = { canvas: offscreen, sceneX, sceneY, sceneW, sceneH };
+        this.segClassVisibility = {};
+        (classNames || []).forEach((name, i) => { this.segClassVisibility[i + 1] = true; });
+        this.requestRender();
+    }
+
+    /**
+     * base64 인코딩된 seg overlay 이미지 설정 (백엔드에서 받은 데이터)
+     */
+    setSegmentationOverlayFromData(segData) {
+        if (!segData || !segData.mask_b64) {
+            this._segOverlay = null;
+            this.requestRender();
+            return;
+        }
+
+        const img = new Image();
+        img.onload = () => {
+            const offscreen = new OffscreenCanvas(img.width, img.height);
+            offscreen.getContext('2d').drawImage(img, 0, 0);
+            this._segOverlay = {
+                canvas: offscreen,
+                sceneX: segData.scene_x,
+                sceneY: segData.scene_y,
+                sceneW: segData.scene_w,
+                sceneH: segData.scene_h,
+            };
+            this.requestRender();
+        };
+        img.src = `data:image/png;base64,${segData.mask_b64}`;
+    }
+
+    clearSegmentationOverlay() {
+        this._segOverlay = null;
+        this.segClassVisibility = {};
+        this.requestRender();
+    }
+
+    _renderSegmentationOverlay() {
+        if (!this._segOverlay) return;
+        const { canvas, sceneX, sceneY, sceneW, sceneH } = this._segOverlay;
+        const [cx, cy] = this.sceneToCanvas(sceneX, sceneY);
+        const cw = sceneW * this.zoom;
+        const ch = sceneH * this.zoom;
+        const octx = this.overlayCtx;
+        octx.imageSmoothingEnabled = true;
+        octx.drawImage(canvas, cx, cy, cw, ch);
     }
 
     _renderDetectionOverlay() {

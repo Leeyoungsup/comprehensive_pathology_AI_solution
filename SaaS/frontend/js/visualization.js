@@ -30,8 +30,9 @@ $closeViz?.addEventListener('click', () => $vizDialog.close());
 /**
  * 시각화 다이얼로그 열기
  * @param {Array} cells - [{x, y, class_id, confidence}, ...]
+ * @param {Object|null} segData - {thumbnail, overlays, class_names, width, height}
  */
-export function showVisualization(cells) {
+export function showVisualization(cells, segData = null) {
     if (!$vizDialog || !cells || cells.length === 0) return;
 
     // 클래스별 데이터 수집
@@ -46,7 +47,7 @@ export function showVisualization(cells) {
 
     _renderClassDistribution(cells, countsByClass);
     _renderTumorAnalysis(countsByClass);
-    _renderSpatialHeatmap(cells, countsByClass);
+    _renderSpatialHeatmap(cells, countsByClass, segData);
     _renderConfidenceDistribution(confsByClass);
 
     // 첫 번째 탭 활성화
@@ -284,13 +285,19 @@ function _renderTumorAnalysis(countsByClass) {
 }
 
 // ── Spatial Heatmap 탭 ──
-function _renderSpatialHeatmap(cells, countsByClass) {
+function _renderSpatialHeatmap(cells, countsByClass, segData) {
     const panel = document.getElementById('viz-heatmap');
     panel.innerHTML = '';
 
+    // segmentation 데이터가 있으면 썸네일 + seg overlay 표시 (데스크톱과 동일)
+    if (segData && segData.overlays && segData.thumbnail) {
+        _renderSegHeatmap(panel, segData);
+        return;
+    }
+
+    // fallback: cell density heatmap
     if (cells.length === 0) { panel.innerHTML = '<p>No cell data</p>'; return; }
 
-    // Cell bounds
     let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
     for (const c of cells) {
         if (c.x < xMin) xMin = c.x; if (c.x > xMax) xMax = c.x;
@@ -301,7 +308,6 @@ function _renderSpatialHeatmap(cells, countsByClass) {
     const scroll = document.createElement('div');
     scroll.className = 'viz-heatmap-scroll';
 
-    // All cells + per-class
     const activeClasses = Object.entries(countsByClass).filter(([, v]) => v > 0);
     const panels = [{ label: 'All Cells', classId: null }, ...activeClasses.map(([id]) => ({
         label: CLASS_NAMES[parseInt(id)] || `Class ${id}`,
@@ -325,6 +331,53 @@ function _renderSpatialHeatmap(cells, countsByClass) {
 
         _drawHeatmap(canvas, subset, xMin, yMin, rangeW, rangeH, binsX, binsY,
             classId === null ? null : CLASS_COLORS[classId]);
+    }
+
+    panel.appendChild(scroll);
+}
+
+/** Segmentation 히트맵: 썸네일 위에 클래스별 오버레이 (데스크톱 동일) */
+function _renderSegHeatmap(panel, segData) {
+    const scroll = document.createElement('div');
+    scroll.className = 'viz-heatmap-scroll';
+
+    const modeLabel = document.createElement('div');
+    modeLabel.style.cssText = 'font-size:11px; color:#666; padding:4px 0 8px;';
+    modeLabel.textContent = 'Mode: Segmentation probability heatmap';
+    scroll.appendChild(modeLabel);
+
+    const thumbSrc = `data:image/jpeg;base64,${segData.thumbnail}`;
+    const dispW = Math.min(760, segData.width * 2.5);
+    const dispH = Math.round(dispW * segData.height / segData.width);
+
+    for (const clsName of Object.keys(segData.overlays)) {
+        const titleEl = document.createElement('div');
+        titleEl.style.cssText = 'font-weight:600; font-size:12px; padding:6px 0 2px; color:#333;';
+        titleEl.textContent = clsName;
+        scroll.appendChild(titleEl);
+
+        const canvas = document.createElement('canvas');
+        canvas.width = dispW;
+        canvas.height = dispH;
+        canvas.style.cssText = 'border-radius:4px; border:1px solid #ddd; display:block; margin-bottom:8px;';
+        scroll.appendChild(canvas);
+
+        const ctx = canvas.getContext('2d');
+        const overlaySrc = `data:image/png;base64,${segData.overlays[clsName]}`;
+
+        // 썸네일 먼저, 그 위에 오버레이
+        const thumbImg = new Image();
+        const overlayImg = new Image();
+        let loaded = 0;
+        const onBothLoaded = () => {
+            if (++loaded < 2) return;
+            ctx.drawImage(thumbImg, 0, 0, dispW, dispH);
+            ctx.drawImage(overlayImg, 0, 0, dispW, dispH);
+        };
+        thumbImg.onload = onBothLoaded;
+        overlayImg.onload = onBothLoaded;
+        thumbImg.src = thumbSrc;
+        overlayImg.src = overlaySrc;
     }
 
     panel.appendChild(scroll);
