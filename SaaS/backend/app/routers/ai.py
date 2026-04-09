@@ -39,6 +39,21 @@ def _update_task(task_id, **kwargs):
         _tasks[task_id].update(kwargs)
 
 
+def _get_ai_cache_path(slide_path: str, tissue_type: str) -> Path:
+    """
+    AI 결과 캐시 파일 경로.
+    settings.AI_RESULTS_DIR (uploads 와는 별개) 에 저장한다.
+    파일명: {slide_stem}_HE-Fit_{tissue_type}.json
+    """
+    p = Path(slide_path)
+    cache_dir = Path(settings.AI_RESULTS_DIR)
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    return cache_dir / f"{p.stem}_HE-Fit_{tissue_type}.json"
+
+
 def _run_detection(task_id: str, slide_id: str, roi_polygons: Optional[list], tissue_type: str):
     """
     백그라운드 검출 — 기존 DetectionWorker.run()과 동일한 파이프라인:
@@ -55,6 +70,22 @@ def _run_detection(task_id: str, slide_id: str, roi_polygons: Optional[list], ti
         if not info:
             _update_task(task_id, status="error", error="슬라이드를 찾을 수 없습니다")
             return
+
+        # ── 캐시된 AI 결과 확인 (전체/ROI 무관 — 있으면 가져와서 표시) ──
+        cache_path = _get_ai_cache_path(info.file_path, tissue_type)
+        if cache_path.exists():
+            try:
+                _update_task(task_id, status="running", progress=10,
+                             status_msg=f"Loading cached AI result: {cache_path.name}")
+                with open(cache_path, 'r', encoding='utf-8') as f:
+                    cached = json.load(f)
+                _update_task(task_id, status="completed", progress=100,
+                             status_msg=f"Loaded cached result ({cached.get('total_cells', 0)} cells)",
+                             result=cached)
+                return
+            except Exception as e:
+                import traceback
+                print(f"Cache load failed, running fresh inference: {e}\n{traceback.format_exc()}")
 
         _update_task(task_id, status="running", progress=1,
                      status_msg="Starting detection...")
@@ -325,6 +356,16 @@ def _run_detection(task_id: str, slide_id: str, roi_polygons: Optional[list], ti
             "class_colors": {str(k): v for k, v in CLASS_COLORS.items()},
             "seg_data": seg_data,
         }
+
+        # ── 전체 추론(폴리곤 없음)인 경우만 캐시 저장 ──
+        if roi_polygons is None:
+            try:
+                with open(cache_path, 'w', encoding='utf-8') as f:
+                    json.dump(result, f)
+                print(f"AI result cached: {cache_path}")
+            except Exception as e:
+                import traceback
+                print(f"Cache save failed: {e}\n{traceback.format_exc()}")
 
         _update_task(task_id, status="completed", progress=100, result=result)
 

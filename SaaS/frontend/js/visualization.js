@@ -57,6 +57,40 @@ export function showVisualization(cells, segData = null) {
     $vizDialog.showModal();
 }
 
+// ── 애니메이션 유틸리티 ──
+function _easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+function _easeOutElastic(t) {
+    if (t === 0 || t === 1) return t;
+    return Math.pow(2, -10 * t) * Math.sin((t - 0.075) * (2 * Math.PI) / 0.3) + 1;
+}
+
+function _animate(duration, drawFn, onDone) {
+    const start = performance.now();
+    function step(now) {
+        const t = Math.min((now - start) / duration, 1);
+        drawFn(t);
+        if (t < 1) requestAnimationFrame(step);
+        else if (onDone) onDone();
+    }
+    requestAnimationFrame(step);
+}
+
+/** HiDPI 캔버스 생성: CSS 크기와 실제 픽셀 분리하여 선명하게 렌더링 */
+function _createHiDPICanvas(cssW, cssH) {
+    const dpr = window.devicePixelRatio || 1;
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(cssW * dpr);
+    canvas.height = Math.round(cssH * dpr);
+    canvas.style.width = cssW + 'px';
+    canvas.style.height = cssH + 'px';
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+    // 논리 크기 저장 (draw 시 참조)
+    canvas._cssW = cssW;
+    canvas._cssH = cssH;
+    return canvas;
+}
+
 // ── Class Distribution 탭 ──
 function _renderClassDistribution(cells, countsByClass) {
     const panel = document.getElementById('viz-class-dist');
@@ -67,98 +101,140 @@ function _renderClassDistribution(cells, countsByClass) {
 
     const row = document.createElement('div');
     row.className = 'viz-chart-row';
-
-    // Bar chart
-    const barCanvas = document.createElement('canvas');
-    barCanvas.width = 400; barCanvas.height = 300;
-    row.appendChild(barCanvas);
-
-    // Pie chart
-    const pieCanvas = document.createElement('canvas');
-    pieCanvas.width = 360; pieCanvas.height = 300;
-    row.appendChild(pieCanvas);
-
     panel.appendChild(row);
 
-    // Draw bar chart
-    const ctx = barCanvas.getContext('2d');
-    const maxVal = Math.max(...active.map(([, v]) => v));
-    const barH = Math.min(28, (280 / active.length) - 4);
-    const leftPad = 130, rightPad = 60, topPad = 30;
+    // 패널 실제 폭 기반 동적 크기
+    const panelW = panel.clientWidth || 780;
+    const gap = 16;
+    const barW_canvas = Math.floor((panelW - gap) * 0.52);
+    const pieW_canvas = Math.floor((panelW - gap) * 0.48);
 
-    ctx.fillStyle = '#222';
-    ctx.font = 'bold 13px sans-serif';
-    ctx.fillText('Cell Count by Class', leftPad, 18);
+    const barH_each = Math.min(28, (280 / active.length) - 4);
+    const barH_canvas = Math.max(280, active.length * (barH_each + 4) + 40);
+    const barCanvas = _createHiDPICanvas(barW_canvas, barH_canvas);
+    row.appendChild(barCanvas);
 
-    for (let i = 0; i < active.length; i++) {
-        const [idStr, count] = active[i];
-        const id = parseInt(idStr);
-        const y = topPad + i * (barH + 4);
-        const barW = (count / maxVal) * (barCanvas.width - leftPad - rightPad);
+    const legendH = active.length * 16 + 16;
+    const pieRadius = Math.min(pieW_canvas / 2 - 20, 110);
+    const pieH_canvas = pieRadius * 2 + 60 + legendH;
+    const pieCanvas = _createHiDPICanvas(pieW_canvas, pieH_canvas);
+    row.appendChild(pieCanvas);
 
-        ctx.fillStyle = CLASS_COLORS[id] || '#888';
-        ctx.fillRect(leftPad, y, barW, barH);
-
-        ctx.fillStyle = '#333';
-        ctx.font = '11px sans-serif';
-        ctx.textAlign = 'right';
-        ctx.fillText(CLASS_NAMES[id] || `Class ${id}`, leftPad - 6, y + barH / 2 + 4);
-
-        ctx.textAlign = 'left';
-        ctx.fillText(count.toLocaleString(), leftPad + barW + 4, y + barH / 2 + 4);
-    }
-
-    // Draw pie chart
-    const pctx = pieCanvas.getContext('2d');
     const total = cells.length;
-    const cx = 160, cy = 140, radius = 100;
-    let startAngle = -Math.PI / 2;
+    const maxVal = Math.max(...active.map(([, v]) => v));
+    const leftPad = Math.min(130, barW_canvas * 0.32);
+    const rightPad = 50;
+    const topPad = 30;
 
-    pctx.fillStyle = '#222';
-    pctx.font = 'bold 13px sans-serif';
-    pctx.textAlign = 'center';
-    pctx.fillText(`Proportion (Total ${total.toLocaleString()})`, 180, 18);
+    _animate(800, (t) => {
+        const ease = _easeOutCubic(t);
 
-    for (const [idStr, count] of active) {
-        const id = parseInt(idStr);
-        const sliceAngle = (count / total) * Math.PI * 2;
-        pctx.beginPath();
-        pctx.moveTo(cx, cy);
-        pctx.arc(cx, cy, radius, startAngle, startAngle + sliceAngle);
-        pctx.closePath();
-        pctx.fillStyle = CLASS_COLORS[id] || '#888';
-        pctx.fill();
-        pctx.strokeStyle = '#fff';
-        pctx.lineWidth = 1.5;
-        pctx.stroke();
+        // ── Bar chart ──
+        const ctx = barCanvas.getContext('2d');
+        ctx.clearRect(0, 0, barW_canvas, barH_canvas);
 
-        // Label
-        const pct = (count / total * 100);
-        if (pct > 3) {
-            const midAngle = startAngle + sliceAngle / 2;
-            const lx = cx + Math.cos(midAngle) * radius * 0.65;
-            const ly = cy + Math.sin(midAngle) * radius * 0.65;
-            pctx.fillStyle = '#fff';
-            pctx.font = 'bold 10px sans-serif';
-            pctx.textAlign = 'center';
-            pctx.fillText(`${pct.toFixed(1)}%`, lx, ly + 4);
+        ctx.fillStyle = '#000';
+        ctx.font = 'bold 15px sans-serif';
+        ctx.textAlign = 'left';
+        ctx.fillText('Cell Count by Class', leftPad, 20);
+
+        for (let i = 0; i < active.length; i++) {
+            const [idStr, count] = active[i];
+            const id = parseInt(idStr);
+            const y = topPad + i * (barH_each + 4);
+            const fullW = (count / maxVal) * (barW_canvas - leftPad - rightPad);
+            const bw = fullW * ease;
+
+            ctx.fillStyle = 'rgba(0,0,0,0.08)';
+            _roundRect(ctx, leftPad + 1, y + 1, bw, barH_each, 3);
+            ctx.fill();
+
+            const grad = ctx.createLinearGradient(leftPad, y, leftPad + bw, y);
+            const baseColor = CLASS_COLORS[id] || '#888';
+            grad.addColorStop(0, baseColor);
+            grad.addColorStop(1, _lightenColor(baseColor, 0.2));
+            ctx.fillStyle = grad;
+            _roundRect(ctx, leftPad, y, Math.max(0, bw), barH_each, 3);
+            ctx.fill();
+
+            ctx.fillStyle = '#000';
+            ctx.font = 'bold 13px sans-serif';
+            ctx.textAlign = 'right';
+            ctx.fillText(CLASS_NAMES[id] || `Class ${id}`, leftPad - 6, y + barH_each / 2 + 5);
+
+            if (ease > 0.3) {
+                ctx.textAlign = 'left';
+                ctx.fillText(Math.round(count * ease).toLocaleString(), leftPad + bw + 6, y + barH_each / 2 + 5);
+            }
         }
-        startAngle += sliceAngle;
-    }
 
-    // Legend
-    let ly = 260;
-    pctx.font = '10px sans-serif';
-    pctx.textAlign = 'left';
-    for (const [idStr, count] of active) {
-        const id = parseInt(idStr);
-        const lx = (ly > 280) ? 180 : 10;
-        pctx.fillStyle = CLASS_COLORS[id] || '#888';
-        pctx.fillRect(lx, ly - 6, 8, 8);
-        pctx.fillStyle = '#333';
-        pctx.fillText(`${CLASS_NAMES[id]}  (${count.toLocaleString()})`, lx + 12, ly);
-        ly += 14;
-    }
+        // ── Pie chart ──
+        const pctx = pieCanvas.getContext('2d');
+        pctx.clearRect(0, 0, pieW_canvas, pieH_canvas);
+
+        const cx = pieW_canvas / 2, cy = pieRadius + 30;
+        const sweepTotal = Math.PI * 2 * ease;
+        let startAngle = -Math.PI / 2;
+
+        pctx.fillStyle = '#000';
+        pctx.font = 'bold 15px sans-serif';
+        pctx.textAlign = 'center';
+        pctx.fillText(`Proportion (Total ${total.toLocaleString()})`, cx, 20);
+
+        pctx.beginPath();
+        pctx.arc(cx + 2, cy + 2, pieRadius, 0, Math.PI * 2);
+        pctx.fillStyle = 'rgba(0,0,0,0.1)';
+        pctx.fill();
+
+        for (const [idStr, count] of active) {
+            const id = parseInt(idStr);
+            const sliceAngle = (count / total) * sweepTotal;
+            pctx.beginPath();
+            pctx.moveTo(cx, cy);
+            pctx.arc(cx, cy, pieRadius, startAngle, startAngle + sliceAngle);
+            pctx.closePath();
+            pctx.fillStyle = CLASS_COLORS[id] || '#888';
+            pctx.fill();
+            pctx.strokeStyle = '#fff';
+            pctx.lineWidth = 1.5;
+            pctx.stroke();
+
+            if (t > 0.7) {
+                const pct = (count / total * 100);
+                if (pct > 3) {
+                    const labelAlpha = Math.min(1, (t - 0.7) / 0.3);
+                    const midAngle = startAngle + sliceAngle / 2;
+                    const lx = cx + Math.cos(midAngle) * pieRadius * 0.65;
+                    const ly = cy + Math.sin(midAngle) * pieRadius * 0.65;
+                    pctx.globalAlpha = labelAlpha;
+                    pctx.fillStyle = '#fff';
+                    pctx.font = 'bold 12px sans-serif';
+                    pctx.textAlign = 'center';
+                    pctx.fillText(`${pct.toFixed(1)}%`, lx, ly + 4);
+                    pctx.globalAlpha = 1;
+                }
+            }
+            startAngle += sliceAngle;
+        }
+
+        // 레전드 — 파이 아래
+        if (t > 0.5) {
+            const la = Math.min(1, (t - 0.5) / 0.3);
+            pctx.globalAlpha = la;
+            let ly = cy + pieRadius + 24;
+            pctx.font = 'bold 12px sans-serif';
+            pctx.textAlign = 'left';
+            for (const [idStr, count] of active) {
+                const id = parseInt(idStr);
+                pctx.fillStyle = CLASS_COLORS[id] || '#888';
+                pctx.fillRect(14, ly - 7, 10, 10);
+                pctx.fillStyle = '#000';
+                pctx.fillText(`${CLASS_NAMES[id]}  (${count.toLocaleString()})`, 30, ly);
+                ly += 18;
+            }
+            pctx.globalAlpha = 1;
+        }
+    });
 }
 
 // ── Tumor Analysis 탭 ──
@@ -173,115 +249,193 @@ function _renderTumorAnalysis(countsByClass) {
 
     const row = document.createElement('div');
     row.className = 'viz-chart-row';
-
-    // Pie: Tumor vs Benign
-    const pieCanvas = document.createElement('canvas');
-    pieCanvas.width = 350; pieCanvas.height = 280;
-    row.appendChild(pieCanvas);
-
-    // Gauge bar
-    const gaugeCanvas = document.createElement('canvas');
-    gaugeCanvas.width = 400; gaugeCanvas.height = 280;
-    row.appendChild(gaugeCanvas);
-
     panel.appendChild(row);
 
-    // Pie
-    const pctx = pieCanvas.getContext('2d');
-    pctx.fillStyle = '#222';
-    pctx.font = 'bold 13px sans-serif';
-    pctx.textAlign = 'center';
-    pctx.fillText('Tumor vs Benign Epithelial', 175, 22);
-
-    if (totalEpi > 0) {
-        const cx = 175, cy = 150, r = 90;
-        const data = [
-            { val: tumor, color: '#E84040', label: `Tumor Epithelial (${tumor.toLocaleString()})` },
-            { val: benign, color: '#2196F3', label: `Benign Epithelial (${benign.toLocaleString()})` },
-        ];
-        let start = -Math.PI / 2;
-        for (const d of data) {
-            const angle = (d.val / totalEpi) * Math.PI * 2;
-            pctx.beginPath();
-            pctx.moveTo(cx, cy);
-            pctx.arc(cx, cy, r, start, start + angle);
-            pctx.closePath();
-            pctx.fillStyle = d.color;
-            pctx.fill();
-            pctx.strokeStyle = '#fff';
-            pctx.lineWidth = 2;
-            pctx.stroke();
-
-            const pct = (d.val / totalEpi * 100);
-            if (pct > 3) {
-                const mid = start + angle / 2;
-                pctx.fillStyle = '#fff';
-                pctx.font = 'bold 13px sans-serif';
-                pctx.fillText(`${pct.toFixed(1)}%`, cx + Math.cos(mid) * r * 0.6, cy + Math.sin(mid) * r * 0.6 + 5);
-            }
-            start += angle;
-        }
-        // Legend
-        let ly = 255;
-        pctx.font = '11px sans-serif';
-        pctx.textAlign = 'left';
-        for (const d of data) {
-            pctx.fillStyle = d.color;
-            pctx.fillRect(60, ly - 8, 10, 10);
-            pctx.fillStyle = '#333';
-            pctx.fillText(d.label, 76, ly);
-            ly += 18;
-        }
-    } else {
-        pctx.fillStyle = '#999';
-        pctx.font = '14px sans-serif';
-        pctx.fillText('No Epithelial cells', 175, 150);
-    }
-
-    // Gauge
-    const gctx = gaugeCanvas.getContext('2d');
-    gctx.fillStyle = '#222';
-    gctx.font = 'bold 13px sans-serif';
-    gctx.textAlign = 'center';
-    gctx.fillText(`Tumor / (Tumor + Benign)  [${totalEpi.toLocaleString()} total]`, 200, 22);
-
-    gctx.fillStyle = '#666';
-    gctx.font = '12px sans-serif';
-    gctx.fillText('Tumor Ratio', 200, 70);
-
-    const barColor = tumorRatio >= 50 ? '#E84040' : tumorRatio >= 20 ? '#FF8C00' : '#FFB347';
-    // Background bar
-    const barX = 30, barY = 120, barW = 340, barH = 30;
-    gctx.fillStyle = '#e0e0e0';
-    _roundRect(gctx, barX, barY, barW, barH, 4);
-    gctx.fill();
-    // Value bar
-    if (tumorRatio > 0) {
-        gctx.fillStyle = barColor;
-        _roundRect(gctx, barX, barY, barW * tumorRatio / 100, barH, 4);
-        gctx.fill();
-    }
-
-    // Ratio text
-    gctx.fillStyle = barColor;
-    gctx.font = 'bold 36px sans-serif';
-    gctx.fillText(`${tumorRatio.toFixed(1)}%`, 200, 110);
-
-    // Tick labels
-    gctx.fillStyle = '#888';
-    gctx.font = '10px sans-serif';
-    for (const pct of [0, 25, 50, 75, 100]) {
-        const x = barX + barW * pct / 100;
-        gctx.fillText(`${pct}%`, x, barY + barH + 16);
-    }
-
-    // Summary
     const summary = document.createElement('div');
     summary.className = 'viz-summary';
-    summary.innerHTML = `<strong>Tumor Epithelial:</strong> ${tumor.toLocaleString()} &nbsp;|&nbsp; ` +
-        `<strong>Benign Epithelial:</strong> ${benign.toLocaleString()} &nbsp;|&nbsp; ` +
-        `<strong>Tumor Ratio:</strong> <span style="color:${barColor};font-weight:700">${tumorRatio.toFixed(1)}%</span>`;
     panel.appendChild(summary);
+
+    // 패널 폭 기반 동적 크기
+    const panelW = panel.clientWidth || 780;
+    const gap = 16;
+    const pieW = Math.floor((panelW - gap) * 0.45);
+    const gaugeW = Math.floor((panelW - gap) * 0.55);
+    const chartH = 290;
+
+    const pieCanvas = _createHiDPICanvas(pieW, chartH);
+    row.appendChild(pieCanvas);
+
+    const gaugeCanvas = _createHiDPICanvas(gaugeW, chartH);
+    row.appendChild(gaugeCanvas);
+
+    const barColor = tumorRatio >= 50 ? '#E84040' : tumorRatio >= 20 ? '#FF8C00' : '#FFB347';
+    const data = [
+        { val: tumor, color: '#E84040', label: `Tumor Epithelial (${tumor.toLocaleString()})` },
+        { val: benign, color: '#2196F3', label: `Benign Epithelial (${benign.toLocaleString()})` },
+    ];
+
+    _animate(900, (t) => {
+        const ease = _easeOutCubic(t);
+        const easeElastic = t < 0.5 ? _easeOutCubic(t * 2) : _easeOutElastic((t - 0.5) * 2) * 0.5 + 0.5;
+
+        // ── Donut Pie ──
+        const pctx = pieCanvas.getContext('2d');
+        pctx.clearRect(0, 0, pieW, chartH);
+
+        const pieCx = pieW / 2, pieCy = chartH / 2;
+        const outerR = Math.min(pieCx, pieCy) - 30;
+        const innerR = Math.max(20, outerR * 0.55);
+
+        pctx.fillStyle = '#000';
+        pctx.font = 'bold 15px sans-serif';
+        pctx.textAlign = 'center';
+        pctx.fillText('Tumor vs Benign Epithelial', pieCx, 20);
+
+        if (totalEpi > 0) {
+            const sweepTotal = Math.PI * 2 * ease;
+
+            pctx.beginPath();
+            pctx.arc(pieCx + 2, pieCy + 2, outerR, 0, Math.PI * 2);
+            pctx.fillStyle = 'rgba(0,0,0,0.08)';
+            pctx.fill();
+
+            let start = -Math.PI / 2;
+            for (const d of data) {
+                const angle = (d.val / totalEpi) * sweepTotal;
+                pctx.beginPath();
+                pctx.arc(pieCx, pieCy, outerR, start, start + angle);
+                pctx.arc(pieCx, pieCy, innerR, start + angle, start, true);
+                pctx.closePath();
+                pctx.fillStyle = d.color;
+                pctx.fill();
+                pctx.strokeStyle = '#fff';
+                pctx.lineWidth = 2;
+                pctx.stroke();
+
+                if (t > 0.6) {
+                    const pct = (d.val / totalEpi * 100);
+                    if (pct > 3) {
+                        const la = Math.min(1, (t - 0.6) / 0.3);
+                        const mid = start + angle / 2;
+                        const lr = (outerR + innerR) / 2;
+                        pctx.globalAlpha = la;
+                        pctx.fillStyle = '#fff';
+                        pctx.font = 'bold 14px sans-serif';
+                        pctx.fillText(`${pct.toFixed(1)}%`, pieCx + Math.cos(mid) * lr, pieCy + Math.sin(mid) * lr + 5);
+                        pctx.globalAlpha = 1;
+                    }
+                }
+                start += angle;
+            }
+
+            if (t > 0.4) {
+                const ca = Math.min(1, (t - 0.4) / 0.3);
+                pctx.globalAlpha = ca;
+                pctx.fillStyle = '#000';
+                pctx.font = 'bold 20px sans-serif';
+                pctx.textAlign = 'center';
+                pctx.fillText(Math.round(totalEpi * ease).toLocaleString(), pieCx, pieCy - 2);
+                pctx.font = 'bold 12px sans-serif';
+                pctx.fillStyle = '#000';
+                pctx.fillText('cells', pieCx, pieCy + 16);
+                pctx.globalAlpha = 1;
+            }
+
+            if (t > 0.5) {
+                const la = Math.min(1, (t - 0.5) / 0.3);
+                pctx.globalAlpha = la;
+                let ly = chartH - 40;
+                pctx.font = 'bold 13px sans-serif';
+                pctx.textAlign = 'left';
+                for (const d of data) {
+                    pctx.fillStyle = d.color;
+                    _roundRect(pctx, 14, ly - 9, 12, 12, 2); pctx.fill();
+                    pctx.fillStyle = '#000';
+                    pctx.fillText(d.label, 32, ly);
+                    ly += 20;
+                }
+                pctx.globalAlpha = 1;
+            }
+        } else {
+            pctx.fillStyle = '#000';
+            pctx.font = 'bold 16px sans-serif';
+            pctx.fillText('No Epithelial cells', pieCx, pieCy);
+        }
+
+        // ── Gauge ──
+        const gctx = gaugeCanvas.getContext('2d');
+        gctx.clearRect(0, 0, gaugeW, chartH);
+
+        const gaugeCx = gaugeW / 2;
+
+        gctx.fillStyle = '#000';
+        gctx.font = 'bold 15px sans-serif';
+        gctx.textAlign = 'center';
+        gctx.fillText(`Tumor / (Tumor + Benign)  [${totalEpi.toLocaleString()} total]`, gaugeCx, 22);
+
+        const animRatio = tumorRatio * easeElastic;
+        gctx.fillStyle = barColor;
+        gctx.font = 'bold 46px sans-serif';
+        gctx.fillText(`${animRatio.toFixed(1)}%`, gaugeCx, 100);
+
+        gctx.fillStyle = '#000';
+        gctx.font = 'bold 13px sans-serif';
+        gctx.fillText('Tumor Ratio', gaugeCx, 118);
+
+        const barX = 20, barY = 140, barW = gaugeW - 40, barH = 28;
+        gctx.fillStyle = '#e8e8e8';
+        _roundRect(gctx, barX, barY, barW, barH, 6);
+        gctx.fill();
+
+        const fillW = barW * animRatio / 100;
+        if (fillW > 0) {
+            const grad = gctx.createLinearGradient(barX, barY, barX + fillW, barY);
+            grad.addColorStop(0, _lightenColor(barColor, 0.15));
+            grad.addColorStop(1, barColor);
+            gctx.fillStyle = grad;
+            _roundRect(gctx, barX, barY, fillW, barH, 6);
+            gctx.fill();
+
+            if (fillW > 10) {
+                gctx.fillStyle = 'rgba(255,255,255,0.25)';
+                _roundRect(gctx, barX, barY, fillW, barH / 2, 6);
+                gctx.fill();
+            }
+        }
+
+        gctx.fillStyle = '#000';
+        gctx.font = 'bold 11px sans-serif';
+        gctx.textAlign = 'center';
+        for (const pct of [0, 25, 50, 75, 100]) {
+            const x = barX + barW * pct / 100;
+            gctx.fillText(`${pct}%`, x, barY + barH + 16);
+            gctx.fillStyle = '#999';
+            gctx.fillRect(x, barY + barH, 1, 4);
+            gctx.fillStyle = '#000';
+        }
+
+        if (t > 0.7) {
+            const za = Math.min(1, (t - 0.7) / 0.3);
+            gctx.globalAlpha = za;
+            const zones = [
+                { x0: 0, x1: 20, label: 'Low', color: '#2E7D32' },
+                { x0: 20, x1: 50, label: 'Moderate', color: '#E65100' },
+                { x0: 50, x1: 100, label: 'High', color: '#C62828' },
+            ];
+            gctx.font = 'bold 11px sans-serif';
+            for (const z of zones) {
+                const zx = barX + barW * (z.x0 + z.x1) / 200;
+                gctx.fillStyle = z.color;
+                gctx.fillText(z.label, zx, barY + barH + 32);
+            }
+            gctx.globalAlpha = 1;
+        }
+    }, () => {
+        summary.innerHTML = `<strong>Tumor Epithelial:</strong> ${tumor.toLocaleString()} &nbsp;|&nbsp; ` +
+            `<strong>Benign Epithelial:</strong> ${benign.toLocaleString()} &nbsp;|&nbsp; ` +
+            `<strong>Tumor Ratio:</strong> <span style="color:${barColor};font-weight:700">${tumorRatio.toFixed(1)}%</span>`;
+        summary.style.animation = 'fadeIn 0.3s ease';
+    });
 }
 
 // ── Spatial Heatmap 탭 ──
@@ -319,7 +473,7 @@ function _renderSpatialHeatmap(cells, countsByClass, segData) {
 
     for (const { label, classId } of panels) {
         const titleEl = document.createElement('div');
-        titleEl.style.cssText = 'font-weight:600; font-size:12px; padding:4px 0; color:#333;';
+        titleEl.style.cssText = 'font-weight:700; font-size:14px; padding:4px 0; color:#000;';
         const subset = classId === null ? cells : cells.filter(c => c.class_id === classId);
         titleEl.textContent = `${label}  (n=${subset.length.toLocaleString()})`;
         scroll.appendChild(titleEl);
@@ -342,7 +496,7 @@ function _renderSegHeatmap(panel, segData) {
     scroll.className = 'viz-heatmap-scroll';
 
     const modeLabel = document.createElement('div');
-    modeLabel.style.cssText = 'font-size:11px; color:#666; padding:4px 0 8px;';
+    modeLabel.style.cssText = 'font-size:13px; color:#000; font-weight:600; padding:4px 0 8px;';
     modeLabel.textContent = 'Mode: Segmentation probability heatmap';
     scroll.appendChild(modeLabel);
 
@@ -352,20 +506,17 @@ function _renderSegHeatmap(panel, segData) {
 
     for (const clsName of Object.keys(segData.overlays)) {
         const titleEl = document.createElement('div');
-        titleEl.style.cssText = 'font-weight:600; font-size:12px; padding:6px 0 2px; color:#333;';
+        titleEl.style.cssText = 'font-weight:700; font-size:14px; padding:6px 0 2px; color:#000;';
         titleEl.textContent = clsName;
         scroll.appendChild(titleEl);
 
-        const canvas = document.createElement('canvas');
-        canvas.width = dispW;
-        canvas.height = dispH;
-        canvas.style.cssText = 'border-radius:4px; border:1px solid #ddd; display:block; margin-bottom:8px;';
+        const canvas = _createHiDPICanvas(dispW, dispH);
+        canvas.style.cssText += '; border-radius:4px; border:1px solid #ddd; display:block; margin-bottom:8px;';
         scroll.appendChild(canvas);
 
         const ctx = canvas.getContext('2d');
         const overlaySrc = `data:image/png;base64,${segData.overlays[clsName]}`;
 
-        // 썸네일 먼저, 그 위에 오버레이
         const thumbImg = new Image();
         const overlayImg = new Image();
         let loaded = 0;
@@ -449,8 +600,7 @@ function _renderConfidenceDistribution(confsByClass) {
 
     for (const [idStr, confs] of activeClasses) {
         const id = parseInt(idStr);
-        const canvas = document.createElement('canvas');
-        canvas.width = chartW; canvas.height = chartH;
+        const canvas = _createHiDPICanvas(chartW, chartH);
         container.appendChild(canvas);
 
         const ctx = canvas.getContext('2d');
@@ -458,10 +608,10 @@ function _renderConfidenceDistribution(confsByClass) {
         ctx.fillRect(0, 0, chartW, chartH);
 
         // Title
-        ctx.fillStyle = '#333';
-        ctx.font = 'bold 11px sans-serif';
+        ctx.fillStyle = '#000';
+        ctx.font = 'bold 13px sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillText(`${CLASS_NAMES[id]} (n=${confs.length.toLocaleString()})`, chartW / 2, 14);
+        ctx.fillText(`${CLASS_NAMES[id]} (n=${confs.length.toLocaleString()})`, chartW / 2, 16);
 
         // Histogram (20 bins, 0~1)
         const nBins = 20;
@@ -472,14 +622,14 @@ function _renderConfidenceDistribution(confsByClass) {
         }
         const maxBin = Math.max(...bins, 1);
         const color = CLASS_COLORS[id] || '#4488CC';
-        const plotLeft = 35, plotRight = chartW - 10, plotTop = 24, plotBottom = chartH - 24;
+        const plotLeft = 38, plotRight = chartW - 10, plotTop = 26, plotBottom = chartH - 28;
         const plotW = plotRight - plotLeft, plotH = plotBottom - plotTop;
         const binW = plotW / nBins;
 
         for (let i = 0; i < nBins; i++) {
             const barH = (bins[i] / maxBin) * plotH;
             ctx.fillStyle = color;
-            ctx.globalAlpha = 0.8;
+            ctx.globalAlpha = 0.85;
             ctx.fillRect(plotLeft + i * binW, plotBottom - barH, binW - 1, barH);
         }
         ctx.globalAlpha = 1;
@@ -487,7 +637,8 @@ function _renderConfidenceDistribution(confsByClass) {
         // Mean line
         const mean = confs.reduce((a, b) => a + b, 0) / confs.length;
         const meanX = plotLeft + mean * plotW;
-        ctx.strokeStyle = '#555';
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 1.5;
         ctx.setLineDash([4, 2]);
         ctx.beginPath();
         ctx.moveTo(meanX, plotTop);
@@ -495,13 +646,13 @@ function _renderConfidenceDistribution(confsByClass) {
         ctx.stroke();
         ctx.setLineDash([]);
 
-        ctx.fillStyle = '#555';
-        ctx.font = '9px sans-serif';
+        ctx.fillStyle = '#000';
+        ctx.font = 'bold 11px sans-serif';
         ctx.textAlign = 'left';
-        ctx.fillText(`avg ${mean.toFixed(2)}`, meanX + 2, plotTop + 10);
+        ctx.fillText(`avg ${mean.toFixed(2)}`, meanX + 3, plotTop + 12);
 
         // Axes
-        ctx.strokeStyle = '#ccc';
+        ctx.strokeStyle = '#666';
         ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.moveTo(plotLeft, plotTop);
@@ -509,13 +660,12 @@ function _renderConfidenceDistribution(confsByClass) {
         ctx.lineTo(plotRight, plotBottom);
         ctx.stroke();
 
-        ctx.fillStyle = '#888';
-        ctx.font = '8px sans-serif';
+        ctx.fillStyle = '#000';
+        ctx.font = 'bold 10px sans-serif';
         ctx.textAlign = 'center';
         for (const v of [0, 0.5, 1]) {
-            ctx.fillText(v.toFixed(1), plotLeft + v * plotW, plotBottom + 12);
+            ctx.fillText(v.toFixed(1), plotLeft + v * plotW, plotBottom + 14);
         }
-        ctx.textAlign = 'center';
         ctx.fillText('Confidence', plotLeft + plotW / 2, chartH - 2);
     }
 
@@ -555,6 +705,16 @@ function _jetColor(t) {
     else if (t < 0.75) { r = (t - 0.5) * 4; g = 1; b = 0; }
     else { r = 1; g = 1 - (t - 0.75) * 4; b = 0; }
     return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+}
+
+function _lightenColor(hex, amount) {
+    let r = parseInt(hex.slice(1, 3), 16);
+    let g = parseInt(hex.slice(3, 5), 16);
+    let b = parseInt(hex.slice(5, 7), 16);
+    r = Math.min(255, Math.round(r + (255 - r) * amount));
+    g = Math.min(255, Math.round(g + (255 - g) * amount));
+    b = Math.min(255, Math.round(b + (255 - b) * amount));
+    return `rgb(${r},${g},${b})`;
 }
 
 function _roundRect(ctx, x, y, w, h, r) {

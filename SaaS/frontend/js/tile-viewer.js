@@ -717,6 +717,11 @@ export class TileViewer {
      * 종횡비 유지한 2048 해상도 그리드에 histogram2d
      * confidence 필터링은 클래스별로 적용
      */
+    /**
+     * 클래스별 density 그리드 사전 계산 — setDetectionResults 시 1회만 실행
+     * 데스크톱과 동일: confidence 필터 없이 전체 셀로 density 빌드
+     * confidence/visibility 필터링은 렌더 시 클래스 단위로 적용 (재빌드 불필요)
+     */
     _buildHeatmapCache() {
         this._heatmapCache = null;
         if (!this.detectionCells.length || !this.slideInfo) return;
@@ -745,7 +750,7 @@ export class TileViewer {
         const sx = gw / spanW;
         const sy = gh / spanH;
 
-        // 클래스별 density 그리드
+        // 클래스별 density 그리드 (confidence 필터 적용)
         const clsDensities = {};
         for (const cell of this.detectionCells) {
             const cls = cell.class_id;
@@ -902,8 +907,6 @@ export class TileViewer {
     _renderDetectionOverlay() {
         const octx = this.overlayCtx;
         if (!this.detectionCells.length) return;
-
-        if (this._heatmapDirty) this._buildHeatmapCache();
 
         // effectiveMpp 기준: 화면에 보이는 실제 해상도로 판단
         // mpp < 2.0 → 고배율 → 개별 셀, mpp >= 2.0 → 저배율 → 히트맵

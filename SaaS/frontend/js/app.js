@@ -345,38 +345,142 @@ $btnAnnClear?.addEventListener('click', () => {
     setStatus('Annotations cleared');
 });
 
-// Save annotation
-$btnAnnSave?.addEventListener('click', async () => {
-    if (!currentSlideId || viewer.annotations.length === 0) return;
-    try {
-        const result = await api.saveAnnotations(currentSlideId, viewer.annotations);
-        setStatus(`Annotations saved (${result.count})`);
-    } catch (err) { setStatus(`Save failed: ${err.message}`); }
-});
-// 툴바 Save 버튼도 annotation 저장
-$btnSave.addEventListener('click', async () => {
-    if (!currentSlideId || viewer.annotations.length === 0) return;
-    try {
-        const result = await api.saveAnnotations(currentSlideId, viewer.annotations);
-        setStatus(`Annotations saved (${result.count})`);
-    } catch (err) { setStatus(`Save failed: ${err.message}`); }
-});
+// ── Annotation Save/Load (download/upload) ──
+// JSON schema:
+// { "annotations": [ { id, name, type: "Polygon"|"Rectangle"|"Point",
+//                      coordinates: [[x,y],...], color: [r,g,b],
+//                      group, visible, properties } ] }
 
-// Load annotation
-async function loadAnnotations() {
-    if (!currentSlideId) return;
-    try {
-        const anns = await api.loadAnnotations(currentSlideId);
-        if (anns.length > 0) {
-            viewer.annotations = anns;
-            viewer._annotationCounter = anns.length;
-            viewer.requestRender();
-            renderAnnotationPanel();
-            setStatus(`Annotations loaded (${anns.length})`);
-        }
-    } catch { /* 없으면 무시 */ }
+const _TYPE_TO_LABEL = { polygon: 'Polygon', rectangle: 'Rectangle', point: 'Point' };
+const _LABEL_TO_TYPE = { polygon: 'polygon', rectangle: 'rectangle', point: 'point' };
+
+function _normalizeColor(c) {
+    if (Array.isArray(c) && c.length >= 3) return [c[0] | 0, c[1] | 0, c[2] | 0];
+    if (typeof c === 'string') {
+        const m = c.replace('#', '').match(/^([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+        if (m) return [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)];
+    }
+    return [0, 255, 0];
 }
-$btnAnnLoad?.addEventListener('click', loadAnnotations);
+
+async function _downloadAnnotations() {
+    if (!viewer.annotations.length) {
+        setStatus('No annotations to save');
+        return;
+    }
+    const payload = {
+        annotations: viewer.annotations.map(ann => ({
+            id: ann.id,
+            name: ann.name,
+            type: _TYPE_TO_LABEL[ann.type] || 'Polygon',
+            coordinates: (ann.coordinates || []).map(p => [p[0], p[1]]),
+            color: _normalizeColor(ann.color),
+            group: ann.group || 'default',
+            visible: ann.visible !== false,
+            properties: ann.properties || {},
+        }))
+    };
+    const json = JSON.stringify(payload, null, 2);
+
+    let baseName = 'annotations';
+    if (currentSlideInfo?.filename) {
+        baseName = currentSlideInfo.filename.replace(/\.[^.]+$/, '') + '_roi';
+    }
+    const suggestedName = `${baseName}.json`;
+
+    // File System Access API: 사용자가 저장 위치(폴더 + 파일명) 직접 선택
+    if (window.showSaveFilePicker) {
+        try {
+            const handle = await window.showSaveFilePicker({
+                suggestedName,
+                types: [{
+                    description: 'Annotation JSON',
+                    accept: { 'application/json': ['.json'] }
+                }]
+            });
+            const writable = await handle.createWritable();
+            await writable.write(json);
+            await writable.close();
+            setStatus(`ROI saved: ${handle.name} (${payload.annotations.length} items)`);
+            return;
+        } catch (err) {
+            if (err?.name === 'AbortError') {
+                setStatus('Save cancelled');
+                return;
+            }
+            // 권한 거부 등 → 다운로드 fallback
+            console.warn('showSaveFilePicker failed, falling back to download', err);
+        }
+    }
+
+    // Fallback: 일반 브라우저 다운로드
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = suggestedName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setStatus(`ROI saved: ${a.download} (${payload.annotations.length} items)`);
+}
+
+function _uploadAnnotations() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json,application/json';
+    input.addEventListener('change', () => {
+        const file = input.files?.[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+            try {
+                const parsed = JSON.parse(reader.result);
+                const list = Array.isArray(parsed) ? parsed : parsed?.annotations;
+                if (!Array.isArray(list)) {
+                    setStatus('Invalid file format.');
+                    return;
+                }
+                const loaded = [];
+                let counter = 0;
+                for (const item of list) {
+                    if (!item) continue;
+                    const coords = item.coordinates || item.points;
+                    if (!Array.isArray(coords)) continue;
+                    counter++;
+                    const typeRaw = (item.type || 'polygon').toString().toLowerCase();
+                    const type = _LABEL_TO_TYPE[typeRaw] || 'polygon';
+                    loaded.push({
+                        id: item.id || crypto.randomUUID?.() || `${Date.now()}_${counter}`,
+                        name: item.name || `ROI_${counter}`,
+                        type,
+                        coordinates: coords.map(p => [Number(p[0]), Number(p[1])]),
+                        color: _normalizeColor(item.color),
+                        group: item.group || 'default',
+                        visible: item.visible !== false,
+                        selected: false,
+                        properties: item.properties || {},
+                    });
+                }
+                viewer.annotations = loaded;
+                viewer._annotationCounter = loaded.length;
+                viewer.selectedAnnotationId = null;
+                viewer.requestRender();
+                renderAnnotationPanel();
+                setStatus(`ROI loaded: ${file.name} (${loaded.length} items)`);
+            } catch (err) {
+                setStatus(`Failed to load ROI: ${err.message}`);
+            }
+        };
+        reader.readAsText(file, 'utf-8');
+    });
+    input.click();
+}
+
+$btnAnnSave?.addEventListener('click', _downloadAnnotations);
+$btnSave.addEventListener('click', _downloadAnnotations);
+$btnAnnLoad?.addEventListener('click', _uploadAnnotations);
 
 // ═══════════════════════════
 // 슬라이드 정보 다이얼로그
@@ -493,9 +597,9 @@ let _confDebounceTimer = null;
 function _debouncedRender() {
     if (_confDebounceTimer) clearTimeout(_confDebounceTimer);
     _confDebounceTimer = setTimeout(() => {
-        viewer._heatmapDirty = true;
+        viewer._buildHeatmapCache();
         viewer.requestRender();
-    }, 150);
+    }, 200);
 }
 
 function buildResultList(result) {
@@ -523,7 +627,6 @@ function buildResultList(result) {
             cb.checked = checked;
             viewer.classVisibility[parseInt(id)] = checked;
         }
-        viewer._heatmapDirty = true;
         viewer.requestRender();
     });
 
@@ -561,7 +664,6 @@ function buildResultList(result) {
             const noneChecked = Object.values(classCbs).every(c => !c.checked);
             totalCb.checked = allChecked;
             totalCb.indeterminate = !allChecked && !noneChecked;
-            viewer._heatmapDirty = true;
             viewer.requestRender();
         });
 

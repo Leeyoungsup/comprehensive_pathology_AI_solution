@@ -17,6 +17,12 @@ class Settings:
         str(Path(__file__).parent.parent / "tiles")
     )
 
+    # AI 결과 캐시 디렉토리 (uploads와 분리)
+    AI_RESULTS_DIR: str = os.environ.get(
+        "AI_RESULTS_DIR",
+        str(Path(__file__).parent.parent / "ai_results")
+    )
+
     # 타일 설정
     TILE_SIZE: int = 512
     TILE_FORMAT: str = "JPEG"  # JPEG이 PNG보다 빠르고 작음

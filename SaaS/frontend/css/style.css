@@ -477,10 +477,11 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.3); }
 .viz-panel { display: none; }
 .viz-panel.active { display: block; }
 .viz-chart-row {
-    display: flex; gap: 16px; align-items: flex-start;
+    display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap;
 }
 .viz-chart-row canvas {
     background: #f8f8f8; border-radius: 6px; border: 1px solid var(--border-light);
+    max-width: 100%; flex-shrink: 1;
 }
 .viz-summary {
     margin-top: 12px; padding: 8px 12px;
@@ -488,6 +489,7 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.3); }
     font-size: 12px; color: var(--text); line-height: 1.6;
 }
 .viz-summary strong { font-weight: 600; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 .viz-heatmap-scroll {
     max-height: 400px; overflow-y: auto;
 }
