@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MeDICus Studio</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <!-- 헤더 -->
+    <header id="app-header">
+        <div class="header-left">
+            <h1 class="logo">MeDICus Studio</h1>
+        </div>
+        <div class="header-center">
+            <span id="slide-name" class="slide-name">슬라이드를 열어주세요</span>
+        </div>
+        <div class="header-right">
+            <span id="zoom-info" class="zoom-info"></span>
+        </div>
+    </header>
+
+    <!-- 메인 컨텐츠 -->
+    <div id="app-body">
+        <!-- 좌측 사이드바 -->
+        <aside id="sidebar">
+            <!-- 파일 열기 -->
+            <div class="panel">
+                <h3 class="panel-title">파일</h3>
+                <button id="btn-upload" class="btn btn-primary full-width">
+                    WSI 업로드
+                </button>
+                <input type="file" id="file-input" accept=".svs,.ndpi,.tif,.tiff,.mrxs,.vms,.vmu,.scn" hidden>
+                <div id="upload-progress" class="progress-bar" hidden>
+                    <div class="progress-fill"></div>
+                    <span class="progress-text">0%</span>
+                </div>
+            </div>
+
+            <!-- AI 분석 -->
+            <div class="panel">
+                <h3 class="panel-title">AI 분석</h3>
+                <button id="btn-detect" class="btn btn-accent full-width" disabled>
+                    Cell Detection
+                </button>
+                <div id="detection-progress" class="progress-bar" hidden>
+                    <div class="progress-fill"></div>
+                    <span class="progress-text">0%</span>
+                </div>
+                <div id="detection-info" class="info-text" hidden></div>
+            </div>
+
+            <!-- 검출 클래스 필터 -->
+            <div class="panel" id="class-filter-panel" hidden>
+                <h3 class="panel-title">클래스 필터</h3>
+                <div id="class-filters"></div>
+                <div class="slider-group">
+                    <label>Confidence: <span id="conf-value">0.30</span></label>
+                    <input type="range" id="conf-slider" min="0" max="1" step="0.01" value="0.30">
+                </div>
+            </div>
+        </aside>
+
+        <!-- WSI 뷰어 -->
+        <main id="viewer-container">
+            <!-- 드래그앤드롭 오버레이 -->
+            <div id="drop-overlay">
+                <div class="drop-message">WSI 파일을 여기에 드롭하세요</div>
+            </div>
+
+            <!-- 타일 캔버스 -->
+            <canvas id="wsi-canvas"></canvas>
+
+            <!-- 검출 오버레이 캔버스 -->
+            <canvas id="overlay-canvas"></canvas>
+
+            <!-- 미니맵 -->
+            <div id="minimap-container" hidden>
+                <canvas id="minimap-canvas"></canvas>
+                <div id="minimap-viewport"></div>
+            </div>
+
+            <!-- 줌 컨트롤 -->
+            <div id="zoom-controls">
+                <button id="btn-zoom-in" class="btn-icon" title="줌 인">+</button>
+                <button id="btn-fit" class="btn-icon" title="화면 맞춤">&#9634;</button>
+                <button id="btn-zoom-out" class="btn-icon" title="줌 아웃">&minus;</button>
+            </div>
+        </main>
+    </div>
+
+    <script type="module" src="js/app.js"></script>
+</body>
+</html>
