@@ -464,7 +464,7 @@ function onDetectionComplete(result, roiPolygons = null) {
     viewer.clearAnnotations();
     renderAnnotationPanel();
 
-    // segmentation 데이터 저장
+    // segmentation 데이터 저장 (Spatial Heatmap 시각화용)
     lastSegData = result.seg_data || null;
 
     // ROI 폴리곤 내부 셀만 필터링하여 표시

@@ -499,17 +499,18 @@ def _run_epithelial_classification(task_id, slide, slide_path, info, all_x, all_
 
 def _build_seg_overlays(slide, prediction_mask, metadata, class_names, roi_bounds):
     """
-    세그멘테이션 마스크를 썸네일 크기로 리사이즈하여 클래스별 오버레이 base64 생성.
-    데스크톱의 _create_spatial_heatmap_tab과 동일한 시각화 데이터.
+    세그멘테이션 확률맵(prob_map)을 썸네일 크기로 리사이즈하여 클래스별 오버레이 base64 생성.
+    데스크톱의 _create_spatial_heatmap_tab과 동일: jet colormap + alpha=0.75 on probability maps.
     """
     import numpy as np
     import cv2
     import base64
     import io
+    from PIL import Image
 
     try:
         # 썸네일 생성 (ROI 영역이면 해당 영역만)
-        THUMB_SIZE = 300
+        THUMB_SIZE = 800
         sw, sh = slide.dimensions
         if roi_bounds:
             x0, y0, x1, y1 = roi_bounds
@@ -542,29 +543,33 @@ def _build_seg_overlays(slide, prediction_mask, metadata, class_names, roi_bound
                                      [cv2.IMWRITE_JPEG_QUALITY, 85])
         thumb_b64 = base64.b64encode(thumb_buf.tobytes()).decode('ascii')
 
-        # 마스크를 썸네일 크기로 리사이즈
-        mask_resized = cv2.resize(prediction_mask.astype(np.uint8), (tw, th),
-                                   interpolation=cv2.INTER_NEAREST)
-
-        # 클래스별 오버레이 (Background=0 제외)
-        # class_names: ['Background', 'Stroma', 'Non_Tumor', 'Tumor']
+        # ── 확률맵 기반 오버레이 (데스크톱과 동일) ──
+        # metadata['prob_map'] = (num_classes, H, W) softmax probabilities
+        prob_map = metadata.get('prob_map')
         overlays = {}
         num_classes = len(class_names) if class_names else int(prediction_mask.max()) + 1
+
         for cls_id in range(1, num_classes):  # 0=Background 제외
             cls_name = class_names[cls_id] if class_names and cls_id < len(class_names) else f'Class_{cls_id}'
-            # 클래스 확률 근사 (argmax mask이므로 이진)
-            cls_mask = (mask_resized == cls_id).astype(np.float32)
-            # 가우시안 블러로 부드럽게
-            cls_smooth = cv2.GaussianBlur(cls_mask, (7, 7), 2.0)
-            # jet colormap 적용
-            cls_norm = (cls_smooth * 255).astype(np.uint8)
+
+            if prob_map is not None and cls_id < prob_map.shape[0]:
+                # 실제 확률맵을 썸네일 크기로 bilinear 리사이즈 (데스크톱과 동일)
+                prob_resized = cv2.resize(prob_map[cls_id].astype(np.float32), (tw, th),
+                                          interpolation=cv2.INTER_LINEAR)
+            else:
+                # fallback: argmax 마스크에서 이진 + blur
+                mask_resized = cv2.resize(prediction_mask.astype(np.uint8), (tw, th),
+                                           interpolation=cv2.INTER_NEAREST)
+                prob_resized = cv2.GaussianBlur(
+                    (mask_resized == cls_id).astype(np.float32), (7, 7), 2.0)
+
+            # jet colormap 적용 (데스크톱: cmap='jet', alpha=0.75, vmin=0, vmax=1)
+            cls_norm = (np.clip(prob_resized, 0, 1) * 255).astype(np.uint8)
             cls_jet = cv2.applyColorMap(cls_norm, cv2.COLORMAP_JET)
-            # alpha 채널: 값이 있는 곳만
-            alpha = (cls_smooth * 0.75 * 255).astype(np.uint8)
+            # alpha: 확률값에 비례 (0.75 최대)
+            alpha = (np.clip(prob_resized, 0, 1) * 0.75 * 255).astype(np.uint8)
             cls_rgba = np.dstack([cv2.cvtColor(cls_jet, cv2.COLOR_BGR2RGB), alpha])
 
-            # PNG base64 (알파 포함)
-            from PIL import Image
             img = Image.fromarray(cls_rgba, 'RGBA')
             buf = io.BytesIO()
             img.save(buf, format='PNG')

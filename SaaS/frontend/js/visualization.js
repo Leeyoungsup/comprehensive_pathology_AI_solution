@@ -347,7 +347,7 @@ function _renderSegHeatmap(panel, segData) {
     scroll.appendChild(modeLabel);
 
     const thumbSrc = `data:image/jpeg;base64,${segData.thumbnail}`;
-    const dispW = Math.min(760, segData.width * 2.5);
+    const dispW = Math.min(760, segData.width);
     const dispH = Math.round(dispW * segData.height / segData.width);
 
     for (const clsName of Object.keys(segData.overlays)) {

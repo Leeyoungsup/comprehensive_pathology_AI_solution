@@ -578,7 +578,7 @@ export class TileViewer {
         this._processLoadQueue();
 
         // 오버레이 렌더링
-        this._renderSegmentationOverlay();
+        this.overlayCtx.clearRect(0, 0, this.overlayCanvas.width, this.overlayCanvas.height);
         this._renderDetectionOverlay();
         this._renderAnnotations(this.overlayCtx);
     }
@@ -717,29 +717,35 @@ export class TileViewer {
     }
 
     /**
-     * 가우시안 블러 (3x3 반복 적용으로 근사)
-     * GPU 없이 빠르게 처리하기 위한 box blur 근사
+     * 가우시안 블러 (5x5 box blur 반복으로 근사)
+     * 데스크톱: cv2.GaussianBlur(sigma = max(3.0, w/60)) ≈ sigma 8~9
+     * 5x5 box blur × passes 회 → sigma ≈ sqrt(passes * 2) 에 근사
+     * passes=18 → sigma ≈ 6, passes=32 → sigma ≈ 8
      */
     _blurGrid(src, w, h, passes) {
         let a = new Float32Array(src);
         let b = new Float32Array(w * h);
         for (let p = 0; p < passes; p++) {
-            // 수평 블러
+            // 수평 5-tap 블러: [1,2,3,2,1]/9 가중 근사 → 균등 5-tap
             for (let y = 0; y < h; y++) {
                 for (let x = 0; x < w; x++) {
-                    const l = x > 0 ? a[y * w + x - 1] : a[y * w + x];
-                    const c = a[y * w + x];
-                    const r = x < w - 1 ? a[y * w + x + 1] : a[y * w + x];
-                    b[y * w + x] = (l + c + r) / 3;
+                    const x0 = Math.max(0, x - 2);
+                    const x1 = Math.max(0, x - 1);
+                    const x3 = Math.min(w - 1, x + 1);
+                    const x4 = Math.min(w - 1, x + 2);
+                    const row = y * w;
+                    b[row + x] = (a[row + x0] + a[row + x1] + a[row + x] + a[row + x3] + a[row + x4]) / 5;
                 }
             }
-            // 수직 블러
+            // 수직 5-tap 블러
             for (let y = 0; y < h; y++) {
+                const y0 = Math.max(0, y - 2) * w;
+                const y1 = Math.max(0, y - 1) * w;
+                const yc = y * w;
+                const y3 = Math.min(h - 1, y + 1) * w;
+                const y4 = Math.min(h - 1, y + 2) * w;
                 for (let x = 0; x < w; x++) {
-                    const t = y > 0 ? b[(y - 1) * w + x] : b[y * w + x];
-                    const c = b[y * w + x];
-                    const bt = y < h - 1 ? b[(y + 1) * w + x] : b[y * w + x];
-                    a[y * w + x] = (t + c + bt) / 3;
+                    a[yc + x] = (b[y0 + x] + b[y1 + x] + b[yc + x] + b[y3 + x] + b[y4 + x]) / 5;
                 }
             }
         }
@@ -845,13 +851,14 @@ export class TileViewer {
 
     _renderDetectionOverlay() {
         const octx = this.overlayCtx;
-        octx.clearRect(0, 0, this.overlayCanvas.width, this.overlayCanvas.height);
         if (!this.detectionCells.length) return;
 
         if (this._heatmapDirty) this._buildHeatmapCache();
 
-        const mag = this.getMagnification();
-        if (mag < 5) {
+        // effectiveMpp 기준: 화면에 보이는 실제 해상도로 판단
+        // mpp < 2.0 → 고배율 → 개별 셀, mpp >= 2.0 → 저배율 → 히트맵
+        const effectiveMpp = this.getEffectiveMpp();
+        if (effectiveMpp >= 2.0) {
             this._renderHeatmap(octx);
         } else {
             this._renderCells(octx);
@@ -930,8 +937,10 @@ export class TileViewer {
             }
         }
 
-        // 가우시안 블러 (box blur 8 passes ≈ gaussian sigma ~5)
-        const blurred = this._blurGrid(resized, outW, outH, 8);
+        // 가우시안 블러: 데스크톱 sigma = max(3.0, outW/60) ≈ 8.5
+        // 5x5 box blur 1 pass ≈ sigma 1.0 → 18 passes ≈ sigma 6, 32 passes ≈ sigma 8
+        const blurPasses = Math.max(8, Math.round(outW / 20));
+        const blurred = this._blurGrid(resized, outW, outH, blurPasses);
 
         // 최대값
         let maxVal = 0;
@@ -985,7 +994,19 @@ export class TileViewer {
         const viewRight = this.viewCenterX + halfVW;
         const viewBottom = this.viewCenterY + halfVH;
 
-        const cellRadius = Math.max(3, 8 * this.zoom);
+        // effectiveMpp에 따라 셀 크기/두께 조절
+        // mpp < 1.0: 기본 (radius=8, lineWidth=2)
+        // 1.0 <= mpp < 2.0: 작게 (radius=5, lineWidth=1.2)
+        const effectiveMpp = this.getEffectiveMpp();
+        let baseRadius, lineW;
+        if (effectiveMpp < 1.0) {
+            baseRadius = 8;
+            lineW = 2;
+        } else {
+            baseRadius = 5;
+            lineW = 1.2;
+        }
+        const cellRadius = Math.max(2, baseRadius * this.zoom);
 
         const CLASS_COLORS = {
             0: '#FF4500', 1: '#00FF00', 2: '#0000FF', 3: '#FFFF00',
@@ -1004,7 +1025,7 @@ export class TileViewer {
             octx.beginPath();
             octx.arc(cx, cy, cellRadius, 0, Math.PI * 2);
             octx.strokeStyle = color;
-            octx.lineWidth = 2;
+            octx.lineWidth = lineW;
             octx.stroke();
         }
     }
