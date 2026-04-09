@@ -455,6 +455,46 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.3); }
 .dialog-body td { padding: 4px 10px; border-bottom: 1px solid var(--border-light); }
 .dialog-body td:first-child { color: var(--text-dim); white-space: nowrap; font-weight: 500; }
 
+/* ═══ 시각화 다이얼로그 ═══ */
+#viz-dialog {
+    min-width: 820px; max-width: 960px; width: 90vw;
+}
+.viz-tabs {
+    display: flex; gap: 0; border-bottom: 2px solid var(--border);
+    padding: 0 12px; background: var(--bg-light);
+}
+.viz-tab {
+    background: none; border: none; padding: 8px 16px;
+    font-size: 12px; font-weight: 500; color: var(--text-dim);
+    cursor: pointer; border-bottom: 2px solid transparent;
+    margin-bottom: -2px; transition: color 0.15s, border-color 0.15s;
+}
+.viz-tab:hover { color: var(--text); }
+.viz-tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.viz-body {
+    padding: 16px; min-height: 460px; max-height: 70vh; overflow-y: auto;
+}
+.viz-panel { display: none; }
+.viz-panel.active { display: block; }
+.viz-chart-row {
+    display: flex; gap: 16px; align-items: flex-start;
+}
+.viz-chart-row canvas {
+    background: #f8f8f8; border-radius: 6px; border: 1px solid var(--border-light);
+}
+.viz-summary {
+    margin-top: 12px; padding: 8px 12px;
+    background: #f0f0f0; border-radius: 6px; border: 1px solid #ddd;
+    font-size: 12px; color: var(--text); line-height: 1.6;
+}
+.viz-summary strong { font-weight: 600; }
+.viz-heatmap-scroll {
+    max-height: 400px; overflow-y: auto;
+}
+.viz-heatmap-scroll canvas {
+    display: block; margin-bottom: 8px; border-radius: 4px; border: 1px solid var(--border-light);
+}
+
 /* ═══ 스크롤바 ═══ */
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }

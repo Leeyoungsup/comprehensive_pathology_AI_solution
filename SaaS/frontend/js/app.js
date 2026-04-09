@@ -5,6 +5,7 @@
 
 import { api } from './api.js';
 import { TileViewer } from './tile-viewer.js';
+import { showVisualization } from './visualization.js';
 
 // ── DOM 요소 ──
 const $ = (sel) => document.querySelector(sel);
@@ -571,6 +572,11 @@ function clearResults() {
 }
 
 $btnClearResults.addEventListener('click', clearResults);
+
+$btnVisualize.addEventListener('click', () => {
+    if (viewer.detectionCells.length === 0) return;
+    showVisualization(viewer.detectionCells);
+});
 
 // ═══════════════════════════
 // 유틸리티
