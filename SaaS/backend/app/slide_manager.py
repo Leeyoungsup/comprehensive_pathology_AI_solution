@@ -30,9 +30,22 @@ class SlideInfo:
         mpp_x = slide.properties.get("openslide.mpp-x")
         mpp_y = slide.properties.get("openslide.mpp-y")
         if mpp_x and mpp_y:
-            self.mpp = (float(mpp_x) + float(mpp_y)) / 2
+            self.mpp_x = float(mpp_x)
+            self.mpp_y = float(mpp_y)
+            self.mpp = (self.mpp_x + self.mpp_y) / 2
         else:
+            self.mpp_x = 0.25
+            self.mpp_y = 0.25
             self.mpp = 0.25  # 기본값 (40x)
+
+        # 추가 메타데이터
+        self.vendor = slide.properties.get("openslide.vendor", "Unknown")
+        self.objective_power = slide.properties.get("openslide.objective-power", "Unknown")
+
+        # 물리적 크기 (mm)
+        w, h = self.dimensions
+        self.physical_width_mm = w * self.mpp_x / 1000.0
+        self.physical_height_mm = h * self.mpp_y / 1000.0
 
         # 4단계 레벨 매핑
         self.level_stages = self._setup_level_stages()

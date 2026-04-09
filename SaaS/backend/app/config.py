@@ -5,10 +5,16 @@ from pathlib import Path
 
 
 class Settings:
-    # 업로드 디렉토리 (서버 로컬 디스크)
+    # 업로드 디렉토리 (서버 로컬 디스크 — 원본 WSI 저장)
     UPLOAD_DIR: str = os.environ.get(
         "UPLOAD_DIR",
         str(Path(__file__).parent.parent / "uploads")
+    )
+
+    # 프리타일 디렉토리 (뷰어용 JPEG 타일 캐시)
+    TILES_DIR: str = os.environ.get(
+        "TILES_DIR",
+        str(Path(__file__).parent.parent / "tiles")
     )
 
     # 타일 설정
