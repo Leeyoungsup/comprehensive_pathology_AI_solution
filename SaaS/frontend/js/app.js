@@ -38,7 +38,8 @@ const $btnTumorSeg = $('#btn-tumor-seg');
 const $btnVisualize = $('#btn-visualize');
 const $btnClearResults = $('#btn-clear-results');
 const $btnSaveResults = $('#btn-save-results');
-const $btnLoadResults = $('#btn-load-results');
+let _lastDetectionResult = null;
+let _lastDetectionTissue = null;
 const $btnDrawPolygon = $('#btn-draw-polygon');
 const $btnDrawRect = $('#btn-draw-rect');
 const $btnDrawPoint = $('#btn-draw-point');
@@ -338,6 +339,216 @@ viewer.deleteAnnotation = (id) => {
     if (ann && viewer.onAnnotationDeleted) viewer.onAnnotationDeleted(ann);
 };
 
+// ═══════════════════════════
+// Cell Edit 팝업 (Alt+Click)
+// ═══════════════════════════
+let _cellEditPopupEl = null;
+
+function _closeCellEditPopup() {
+    if (_cellEditPopupEl) {
+        _cellEditPopupEl.remove();
+        _cellEditPopupEl = null;
+    }
+    viewer.clearCellHighlight();
+    document.removeEventListener('mousedown', _outsideCellEditClick, true);
+    document.removeEventListener('keydown', _cellEditKeydown, true);
+}
+
+function _outsideCellEditClick(e) {
+    if (_cellEditPopupEl && !_cellEditPopupEl.contains(e.target)) {
+        _closeCellEditPopup();
+    }
+}
+
+let _cellEditCtx = null; // {idx, classNames, classColors}
+
+function _cellEditKeydown(e) {
+    if (!_cellEditCtx) return;
+    if (e.key === 'Escape') {
+        _closeCellEditPopup();
+        e.preventDefault();
+        return;
+    }
+    if (e.key === 'Delete' || e.key.toLowerCase() === 'd') {
+        _doDeleteCell();
+        e.preventDefault();
+        return;
+    }
+    // 숫자키 1~9, 0 → 클래스 변경
+    if (/^[0-9]$/.test(e.key)) {
+        const num = parseInt(e.key, 10);
+        const slot = num === 0 ? 9 : num - 1;
+        if (_cellEditCtx.classButtonOrder && slot < _cellEditCtx.classButtonOrder.length) {
+            const targetCls = _cellEditCtx.classButtonOrder[slot];
+            _doChangeClass(targetCls);
+            e.preventDefault();
+        }
+    }
+}
+
+function _doDeleteCell() {
+    if (!_cellEditCtx) return;
+    viewer.deleteCell(_cellEditCtx.idx);
+    _closeCellEditPopup();
+}
+
+function _doChangeClass(newClsId) {
+    if (!_cellEditCtx) return;
+    const name = _cellEditCtx.classNames[String(newClsId)] || `Class ${newClsId}`;
+    viewer.changeCellClass(_cellEditCtx.idx, newClsId, name);
+    _closeCellEditPopup();
+}
+
+// 색을 CSS 문자열로 정규화 (hex "#RRGGBB" 또는 [r,g,b] 모두 지원)
+function _toCssColor(c) {
+    if (typeof c === 'string') return c;
+    if (Array.isArray(c) && c.length >= 3) return `rgb(${c[0]},${c[1]},${c[2]})`;
+    return 'rgb(200,200,200)';
+}
+
+function _showCellEditPopup(idx, cell, screenX, screenY) {
+    _closeCellEditPopup();
+    if (!_lastDetectionResult) return;
+
+    const classNames = _lastDetectionResult.class_names || {};
+    const classColors = _lastDetectionResult.class_colors || {};
+    const curCls = cell.class_id;
+    const curName = classNames[String(curCls)] || `Class ${curCls}`;
+    const curColorCss = _toCssColor(classColors[String(curCls)]);
+    const curConf = cell.confidence ?? 0;
+
+    const popup = document.createElement('div');
+    popup.className = 'cell-edit-popup';
+    popup.style.cssText = `
+        position: fixed; z-index: 9999;
+        background: #ffffff; color: #222;
+        border: 1px solid #ccc; border-radius: 8px;
+        box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+        padding: 10px 12px; min-width: 200px;
+        font-family: sans-serif; font-size: 12px;
+        user-select: none;
+    `;
+
+    // 헤더
+    const header = document.createElement('div');
+    header.style.cssText = 'display:flex;align-items:center;gap:6px;margin-bottom:6px;';
+    const swatch = document.createElement('span');
+    swatch.style.cssText = `display:inline-block;width:14px;height:14px;border-radius:3px;
+        border:1px solid #888;background:${curColorCss};`;
+    const headerLabel = document.createElement('span');
+    headerLabel.innerHTML = `<b>${curName}</b>  (conf: ${curConf.toFixed(2)})`;
+    header.append(swatch, headerLabel);
+    popup.appendChild(header);
+
+    const sep1 = document.createElement('div');
+    sep1.style.cssText = 'height:1px;background:#ddd;margin:6px 0;';
+    popup.appendChild(sep1);
+
+    const labelChange = document.createElement('div');
+    labelChange.textContent = 'Change Class:';
+    labelChange.style.cssText = 'margin-bottom:4px;';
+    popup.appendChild(labelChange);
+
+    // 클래스 버튼들 (현재 클래스 제외, 숫자키 매핑)
+    const classButtonOrder = [];
+    const sortedClsIds = Object.keys(classNames)
+        .map(k => parseInt(k, 10))
+        .sort((a, b) => a - b);
+
+    let keyIdx = 0;
+    for (const cid of sortedClsIds) {
+        if (cid === curCls) continue;
+        const name = classNames[String(cid)];
+        const colorCss = _toCssColor(classColors[String(cid)]);
+        const keyLabel = keyIdx < 10 ? String((keyIdx + 1) % 10) : '';
+
+        const btn = document.createElement('button');
+        btn.style.cssText = `
+            display:flex;align-items:center;gap:0;
+            width:100%;margin:3px 0;padding:0;
+            background:#f0f0f0;color:#222;
+            border:1px solid #ccc;border-radius:4px;
+            font-size:12px;cursor:pointer;text-align:left;
+            box-sizing:border-box;overflow:hidden;
+            min-height:30px;
+        `;
+        btn.onmouseover = () => { btn.style.background = '#4a90d9'; btn.style.color = '#fff'; };
+        btn.onmouseout = () => { btn.style.background = '#f0f0f0'; btn.style.color = '#222'; };
+
+        // 두꺼운 색 띠 (왼쪽 전체 높이)
+        const stripe = document.createElement('span');
+        stripe.style.cssText = `flex:0 0 12px;align-self:stretch;
+            background:${colorCss};display:block;`;
+
+        // 색 스와치
+        const sw = document.createElement('span');
+        sw.style.cssText = `flex:0 0 16px;height:16px;border-radius:3px;
+            background:${colorCss};border:1px solid #333;
+            display:inline-block;margin-left:8px;`;
+
+        const text = document.createElement('span');
+        text.textContent = keyLabel ? `[${keyLabel}] ${name}` : name;
+        text.style.cssText = 'flex:1;padding:6px 10px;';
+
+        btn.append(stripe, sw, text);
+        btn.addEventListener('click', () => _doChangeClass(cid));
+        popup.appendChild(btn);
+
+        classButtonOrder.push(cid);
+        keyIdx++;
+    }
+
+    const sep2 = document.createElement('div');
+    sep2.style.cssText = 'height:1px;background:#ddd;margin:6px 0;';
+    popup.appendChild(sep2);
+
+    // 삭제 버튼
+    const delBtn = document.createElement('button');
+    delBtn.textContent = 'Delete Cell  (Del / D)';
+    delBtn.style.cssText = `
+        display:block;width:100%;padding:7px 10px;
+        background:#fdecea;color:#c0392b;
+        border:1px solid #e74c3c;border-radius:4px;
+        font-size:12px;cursor:pointer;font-weight:600;
+    `;
+    delBtn.onmouseover = () => { delBtn.style.background = '#e74c3c'; delBtn.style.color = '#fff'; };
+    delBtn.onmouseout = () => { delBtn.style.background = '#fdecea'; delBtn.style.color = '#c0392b'; };
+    delBtn.addEventListener('click', _doDeleteCell);
+    popup.appendChild(delBtn);
+
+    document.body.appendChild(popup);
+
+    // 화면 밖으로 나가지 않게 위치 보정
+    const pw = popup.offsetWidth;
+    const ph = popup.offsetHeight;
+    let px = screenX;
+    let py = screenY;
+    if (px + pw > window.innerWidth) px = window.innerWidth - pw - 8;
+    if (py + ph > window.innerHeight) py = window.innerHeight - ph - 8;
+    popup.style.left = `${Math.max(4, px)}px`;
+    popup.style.top = `${Math.max(4, py)}px`;
+
+    _cellEditPopupEl = popup;
+    _cellEditCtx = { idx, classNames, classColors, classButtonOrder };
+
+    // 외부 클릭/ESC/Del/숫자키
+    setTimeout(() => {
+        document.addEventListener('mousedown', _outsideCellEditClick, true);
+        document.addEventListener('keydown', _cellEditKeydown, true);
+    }, 0);
+}
+
+viewer.onCellEditRequested = _showCellEditPopup;
+viewer.onCellEdited = () => {
+    // 결과 리스트 카운트 갱신
+    if (_lastDetectionResult) {
+        _lastDetectionResult.cells = viewer.detectionCells;
+        _lastDetectionResult.total_cells = viewer.detectionCells.length;
+        buildResultList(_lastDetectionResult);
+    }
+    setStatus(`Cell edited — ${viewer.detectionCells.length} cells`);
+};
+
 // Clear All
 $btnAnnClear?.addEventListener('click', () => {
     viewer.clearAnnotations();
@@ -547,7 +758,7 @@ async function startDetection() {
             }
 
             if (st.status === 'completed') {
-                onDetectionComplete(st.result, roiPolygons);
+                onDetectionComplete(st.result, roiPolygons, tissueType);
                 return;
             } else if (st.status === 'error') {
                 throw new Error(st.error);
@@ -561,12 +772,16 @@ async function startDetection() {
     }
 }
 
-function onDetectionComplete(result, roiPolygons = null) {
+function onDetectionComplete(result, roiPolygons = null, tissueType = null) {
     $progressLabel.textContent = 'Detection Complete';
 
     // AI 완료 → 기존 annotation 제거 (ROI 저장 후)
     viewer.clearAnnotations();
     renderAnnotationPanel();
+
+    // 내부 저장용으로 최신 결과 보존
+    _lastDetectionResult = result;
+    _lastDetectionTissue = tissueType;
 
     // segmentation 데이터 저장 (Spatial Heatmap 시각화용)
     lastSegData = result.seg_data || null;
@@ -602,6 +817,31 @@ function _debouncedRender() {
     }, 200);
 }
 
+// 현재 confidence 임계값을 반영한 클래스별 카운트 계산
+function _computeFilteredCounts(cells) {
+    const counts = {};
+    let total = 0;
+    for (const cell of cells) {
+        const thr = viewer.classConfidence[cell.class_id] ?? 0.01;
+        if ((cell.confidence ?? 1.0) < thr) continue;
+        counts[cell.class_id] = (counts[cell.class_id] || 0) + 1;
+        total++;
+    }
+    return { counts, total };
+}
+
+// 결과 리스트의 카운트 라벨만 갱신 (confidence 슬라이더 변경 시 호출)
+let _resultCountRefs = null; // {total: el, perClass: {id: el}}
+function _updateResultCounts() {
+    if (!_resultCountRefs || !_lastDetectionResult) return;
+    const { counts, total } = _computeFilteredCounts(viewer.detectionCells);
+    _resultCountRefs.total.textContent = total.toLocaleString();
+    for (const [idStr, el] of Object.entries(_resultCountRefs.perClass)) {
+        const id = parseInt(idStr);
+        el.textContent = (counts[id] || 0).toLocaleString();
+    }
+}
+
 function buildResultList(result) {
     $resultList.innerHTML = '';
 
@@ -613,6 +853,7 @@ function buildResultList(result) {
 
     // 클래스별 체크박스 참조 저장
     const classCbs = {};
+    const perClassCountEls = {};
 
     // 총 셀 수 (전체 토글 체크박스)
     const totalItem = document.createElement('div');
@@ -678,6 +919,7 @@ function buildResultList(result) {
         const countSpan = document.createElement('span');
         countSpan.className = 'class-count';
         countSpan.textContent = count.toLocaleString();
+        perClassCountEls[id] = countSpan;
 
         item.append(cb, dot, nameSpan, countSpan);
         $resultList.appendChild(item);
@@ -700,12 +942,15 @@ function buildResultList(result) {
             const val = parseFloat(slider.value);
             sliderLabel.textContent = val.toFixed(2);
             viewer.classConfidence[id] = val;
+            _updateResultCounts();
             _debouncedRender();
         });
 
         sliderRow.append(slider, sliderLabel);
         $resultList.appendChild(sliderRow);
     }
+
+    _resultCountRefs = { total: totalCount, perClass: perClassCountEls };
 }
 
 function clearResults() {
@@ -715,13 +960,42 @@ function clearResults() {
     $btnSaveResults.disabled = true;
     viewer.setDetectionResults([]);
     lastSegData = null;
+    _lastDetectionResult = null;
+    _lastDetectionTissue = null;
 }
 
 $btnClearResults.addEventListener('click', clearResults);
 
 $btnVisualize.addEventListener('click', () => {
     if (viewer.detectionCells.length === 0) return;
-    showVisualization(viewer.detectionCells, lastSegData);
+    // 현재 클래스별 confidence 임계값을 통과한 셀만 시각화
+    const filtered = viewer.detectionCells.filter(c => {
+        const thr = viewer.classConfidence[c.class_id] ?? 0.01;
+        return (c.confidence ?? 1.0) >= thr;
+    });
+    if (filtered.length === 0) {
+        setStatus('No cells pass current confidence thresholds');
+        return;
+    }
+    showVisualization(filtered, lastSegData);
+});
+
+// Detection Result 내부 저장 (서버 AI 결과 폴더로) — 다운로드 X
+$btnSaveResults?.addEventListener('click', async () => {
+    if (!currentSlideId || !_lastDetectionResult) {
+        setStatus('No detection result to save');
+        return;
+    }
+    const tissue = _lastDetectionTissue || 'Stomach';
+    try {
+        $btnSaveResults.disabled = true;
+        const r = await api.saveDetectionResult(currentSlideId, tissue, _lastDetectionResult);
+        setStatus(`AI result saved: ${r.filename} (${r.total_cells} cells)`);
+    } catch (err) {
+        setStatus(`Save failed: ${err.message}`);
+    } finally {
+        $btnSaveResults.disabled = false;
+    }
 });
 
 // ═══════════════════════════

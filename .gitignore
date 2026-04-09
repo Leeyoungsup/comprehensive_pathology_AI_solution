@@ -31,3 +31,4 @@ log_claude.md``
 *.ndpi
 SaaS/backend/uploads/
 SaaS/backend/tiles/
+SaaS/backend/ai_results/

@@ -95,6 +95,9 @@ export class TileViewer {
         this.classVisibility = {};   // {class_id: bool}
         this.classConfidence = {};   // {class_id: float} 클래스별 threshold (기본 0.01)
         this._spatialGrid = null;    // SpatialGrid for O(1) viewport query
+        this._highlightedCellIdx = -1; // Alt+Click 편집 대상 셀
+        this.onCellEditRequested = null; // (idx, cell, screenX, screenY) callback
+        this.onCellEdited = null;        // 편집 후 콜백
 
         // Segmentation 오버레이
         this._segOverlay = null;     // {image, sceneX, sceneY, sceneW, sceneH}
@@ -284,6 +287,22 @@ export class TileViewer {
             const cx = e.clientX - rect.left;
             const cy = e.clientY - rect.top;
             const [sx, sy] = this.canvasToScene(cx, cy);
+
+            // Alt + 좌클릭: 셀 편집 팝업 (검출 결과가 있을 때)
+            if (e.altKey && e.button === 0 && this.detectionCells.length > 0) {
+                const hit = this._findNearestCell(sx, sy, 30);
+                if (hit) {
+                    // 먼저 팝업을 열고 (이전 하이라이트가 _closeCellEditPopup에서 제거됨)
+                    if (this.onCellEditRequested) {
+                        this.onCellEditRequested(hit.index, hit.cell, e.clientX, e.clientY);
+                    }
+                    // 그 다음에 새 하이라이트 설정 + 즉시 렌더
+                    this._highlightedCellIdx = hit.index;
+                    this.requestRender();
+                }
+                e.preventDefault();
+                return;
+            }
 
             // 그리기 모드
             if (this.drawMode && e.button === 0 && !e.ctrlKey) {
@@ -694,6 +713,7 @@ export class TileViewer {
             );
         }
 
+        this._highlightedCellIdx = -1;
         this.detectionCells = filtered;
         this.classVisibility = {};
         this.classConfidence = {};
@@ -710,6 +730,95 @@ export class TileViewer {
         this._heatmapDirty = true;
         this._buildHeatmapCache();
         this.requestRender();
+    }
+
+    // ── Cell editing (Alt+Click) ──
+
+    /**
+     * 클릭 위치(WSI 좌표)에서 가장 가까운 셀 찾기.
+     * @param {number} sx WSI x
+     * @param {number} sy WSI y
+     * @param {number} maxScreenPx 화면 픽셀 기준 최대 거리
+     * @returns {{index, cell}|null}
+     */
+    _findNearestCell(sx, sy, maxScreenPx = 30) {
+        if (!this.detectionCells.length) return null;
+        const maxDistWsi = this.zoom > 0 ? maxScreenPx / this.zoom : maxScreenPx;
+        const r = maxDistWsi;
+
+        // SpatialGrid로 후보 좁히기
+        let candidates;
+        if (this._spatialGrid) {
+            const cellsInBox = this._spatialGrid.query(sx - r, sy - r, sx + r, sy + r);
+            // SpatialGrid는 cell 객체만 반환 → 원본 인덱스 매핑
+            candidates = cellsInBox.map(c => ({ cell: c, index: this.detectionCells.indexOf(c) }));
+        } else {
+            candidates = this.detectionCells.map((c, i) => ({ cell: c, index: i }));
+        }
+
+        let bestIdx = -1;
+        let bestCell = null;
+        let bestDist = Infinity;
+        for (const { cell, index } of candidates) {
+            // visibility/confidence 필터 (편집 대상은 화면에 보이는 셀만)
+            if (this.classVisibility[cell.class_id] === false) continue;
+            const thresh = this.classConfidence[cell.class_id] ?? 0.01;
+            if ((cell.confidence ?? 1.0) < thresh) continue;
+
+            const dx = cell.x - sx;
+            const dy = cell.y - sy;
+            const d = Math.hypot(dx, dy);
+            if (d < bestDist) {
+                bestDist = d;
+                bestIdx = index;
+                bestCell = cell;
+            }
+        }
+
+        if (bestIdx >= 0 && bestDist <= maxDistWsi) {
+            return { index: bestIdx, cell: bestCell };
+        }
+        return null;
+    }
+
+    deleteCell(cellIdx) {
+        if (cellIdx < 0 || cellIdx >= this.detectionCells.length) return;
+        this.detectionCells.splice(cellIdx, 1);
+        this._highlightedCellIdx = -1;
+        this._refreshAfterCellEdit();
+    }
+
+    changeCellClass(cellIdx, newClassId, newClassName = null) {
+        if (cellIdx < 0 || cellIdx >= this.detectionCells.length) return;
+        const c = this.detectionCells[cellIdx];
+        c.class_id = newClassId;
+        if (newClassName) c.class_name = newClassName;
+        this._refreshAfterCellEdit();
+    }
+
+    clearCellHighlight() {
+        if (this._highlightedCellIdx !== -1) {
+            this._highlightedCellIdx = -1;
+            this.requestRender();
+        }
+    }
+
+    _refreshAfterCellEdit() {
+        // 새 클래스가 처음 등장할 수 있음
+        const cls = new Set(this.detectionCells.map(c => c.class_id));
+        cls.forEach(id => {
+            if (this.classVisibility[id] === undefined) this.classVisibility[id] = true;
+            if (this.classConfidence[id] === undefined) this.classConfidence[id] = 0.01;
+        });
+
+        // 공간 인덱스 + 히트맵 캐시 재구축
+        this._spatialGrid = new SpatialGrid(2048);
+        this._spatialGrid.build(this.detectionCells);
+        this._heatmapDirty = true;
+        this._buildHeatmapCache();
+        this.requestRender();
+
+        if (this.onCellEdited) this.onCellEdited();
     }
 
     /**
@@ -916,6 +1025,70 @@ export class TileViewer {
         } else {
             this._renderCells(octx);
         }
+
+        // 편집 대상 셀 하이라이트는 어떤 모드든 항상 표시
+        this._renderCellHighlight(octx);
+    }
+
+    _renderCellHighlight(octx) {
+        if (this._highlightedCellIdx < 0 ||
+            this._highlightedCellIdx >= this.detectionCells.length) return;
+        const hc = this.detectionCells[this._highlightedCellIdx];
+        const [hx, hy] = this.sceneToCanvas(hc.x, hc.y);
+
+        const CLASS_COLORS = {
+            0: '#FF4500', 1: '#00FF00', 2: '#0000FF', 3: '#FFFF00',
+            4: '#8A2BE2', 5: '#808080', 6: '#FF0000', 7: '#00FF00',
+        };
+        const hexColor = CLASS_COLORS[hc.class_id] || '#FFFF00';
+        const r = parseInt(hexColor.slice(1, 3), 16);
+        const g = parseInt(hexColor.slice(3, 5), 16);
+        const b = parseInt(hexColor.slice(5, 7), 16);
+
+        // 줌과 무관하게 항상 잘 보이는 크기 (최소 18px)
+        const baseR = Math.max(18, 12 * this.zoom);
+
+        octx.save();
+
+        // 외곽 어두운 링 (대비)
+        octx.strokeStyle = 'rgba(0,0,0,0.85)';
+        octx.lineWidth = 6;
+        octx.beginPath();
+        octx.arc(hx, hy, baseR + 2, 0, Math.PI * 2);
+        octx.stroke();
+
+        // 채움
+        octx.fillStyle = `rgba(${r},${g},${b},0.25)`;
+        octx.beginPath();
+        octx.arc(hx, hy, baseR, 0, Math.PI * 2);
+        octx.fill();
+
+        // 클래스 색 외곽선
+        octx.strokeStyle = `rgb(${r},${g},${b})`;
+        octx.lineWidth = 3;
+        octx.shadowColor = `rgb(${r},${g},${b})`;
+        octx.shadowBlur = 10;
+        octx.beginPath();
+        octx.arc(hx, hy, baseR, 0, Math.PI * 2);
+        octx.stroke();
+
+        // 십자선 (셀 위치 정확히 표시)
+        octx.shadowBlur = 0;
+        octx.strokeStyle = '#FFFFFF';
+        octx.lineWidth = 2;
+        const cross = baseR + 8;
+        octx.beginPath();
+        octx.moveTo(hx - cross, hy);
+        octx.lineTo(hx - baseR - 1, hy);
+        octx.moveTo(hx + baseR + 1, hy);
+        octx.lineTo(hx + cross, hy);
+        octx.moveTo(hx, hy - cross);
+        octx.lineTo(hx, hy - baseR - 1);
+        octx.moveTo(hx, hy + baseR + 1);
+        octx.lineTo(hx, hy + cross);
+        octx.stroke();
+
+        octx.restore();
     }
 
     /**
@@ -1083,6 +1256,7 @@ export class TileViewer {
             octx.strokeStyle = color;
             octx.stroke();
         }
+
     }
 
     // ── Annotation 그리기 ──

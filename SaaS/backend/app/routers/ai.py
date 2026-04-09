@@ -715,3 +715,37 @@ async def get_task_result(task_id: str):
     if task["status"] != "completed":
         raise HTTPException(400, f"작업 미완료 (status: {task['status']})")
     return task["result"]
+
+
+@router.post("/save-result")
+async def save_detection_result(
+    slide_id: str = Form(...),
+    tissue_type: str = Form("Stomach"),
+    result: str = Form(...),
+):
+    """
+    검출 결과를 서버 내부 AI 결과 폴더에 저장 (다운로드 X).
+    파일: AI_RESULTS_DIR/{slide_stem}_HE-Fit_{tissue_type}.json
+    """
+    info = slide_manager.get(slide_id)
+    if not info:
+        raise HTTPException(404, "슬라이드를 찾을 수 없습니다")
+
+    try:
+        result_obj = json.loads(result)
+    except json.JSONDecodeError as e:
+        raise HTTPException(400, f"Invalid JSON: {e}")
+
+    cache_path = _get_ai_cache_path(info.file_path, tissue_type)
+    try:
+        with open(cache_path, 'w', encoding='utf-8') as f:
+            json.dump(result_obj, f)
+    except Exception as e:
+        raise HTTPException(500, f"Save failed: {e}")
+
+    return {
+        "saved": True,
+        "path": str(cache_path),
+        "filename": cache_path.name,
+        "total_cells": result_obj.get("total_cells", 0),
+    }

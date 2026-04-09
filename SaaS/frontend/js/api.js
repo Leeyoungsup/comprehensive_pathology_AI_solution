@@ -167,6 +167,17 @@ export const api = {
         return res.json();
     },
 
+    /** 검출 결과 내부 저장 */
+    async saveDetectionResult(slideId, tissueType, result) {
+        const form = new FormData();
+        form.append('slide_id', slideId);
+        form.append('tissue_type', tissueType);
+        form.append('result', JSON.stringify(result));
+        const res = await fetch(`${API_BASE}/ai/save-result`, { method: 'POST', body: form });
+        if (!res.ok) throw new Error(await res.text());
+        return res.json();
+    },
+
     /** 작업 상태 조회 */
     async getTaskStatus(taskId) {
         const res = await fetch(`${API_BASE}/ai/task/${taskId}`);
