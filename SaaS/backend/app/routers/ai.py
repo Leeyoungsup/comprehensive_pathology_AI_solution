@@ -526,16 +526,18 @@ def _build_seg_overlays(slide, prediction_mask, metadata, class_names, roi_bound
             th = THUMB_SIZE
             tw = max(1, int(THUMB_SIZE * rw / rh))
 
-        # OpenSlide 썸네일 (ROI 영역)
-        thumb = slide.get_thumbnail((sw // max(1, sw // THUMB_SIZE), sh // max(1, sh // THUMB_SIZE)))
-        thumb_np = np.array(thumb.convert('RGB'))
-        # ROI crop
+        # 썸네일 생성
         if roi_bounds:
-            crop_x0 = int(x0 / sw * thumb_np.shape[1])
-            crop_y0 = int(y0 / sh * thumb_np.shape[0])
-            crop_x1 = int(x1 / sw * thumb_np.shape[1])
-            crop_y1 = int(y1 / sh * thumb_np.shape[0])
-            thumb_np = thumb_np[crop_y0:crop_y1, crop_x0:crop_x1]
+            # ROI: 적절한 레벨에서 직접 read_region → 정확한 영역
+            best_level = slide.get_best_level_for_downsample(max(rw, rh) / THUMB_SIZE)
+            ds = slide.level_downsamples[best_level]
+            read_w = int(rw / ds)
+            read_h = int(rh / ds)
+            region = slide.read_region((x0, y0), best_level, (read_w, read_h))
+            thumb_np = np.array(region.convert('RGB'))
+        else:
+            thumb = slide.get_thumbnail((THUMB_SIZE, THUMB_SIZE))
+            thumb_np = np.array(thumb.convert('RGB'))
         thumb_resized = cv2.resize(thumb_np, (tw, th))
 
         # 썸네일 → base64 JPEG
@@ -545,7 +547,26 @@ def _build_seg_overlays(slide, prediction_mask, metadata, class_names, roi_bound
 
         # ── 확률맵 기반 오버레이 (데스크톱과 동일) ──
         # metadata['prob_map'] = (num_classes, H, W) softmax probabilities
+        # predict_wsi는 roi_bounds에 10% 버퍼를 추가하므로 mask/prob_map 영역 ≠ roi_bounds
+        # → roi_bounds에 해당하는 부분만 crop 필요
         prob_map = metadata.get('prob_map')
+        region_offset = metadata.get('region_offset', (0, 0))
+        wsi_mpp = metadata.get('wsi_mpp', 0.25)
+        output_mpp = metadata.get('output_mpp', 8.0)
+        mpp_ratio = output_mpp / wsi_mpp  # mask 1px = WSI mpp_ratio px
+
+        # mask/prob_map에서 roi_bounds에 해당하는 crop 인덱스 계산
+        mask_h, mask_w = prediction_mask.shape
+        if roi_bounds:
+            # roi_bounds(WSI 좌표) → mask 좌표
+            crop_mx0 = max(0, int((x0 - region_offset[0]) / mpp_ratio))
+            crop_my0 = max(0, int((y0 - region_offset[1]) / mpp_ratio))
+            crop_mx1 = min(mask_w, int((x1 - region_offset[0]) / mpp_ratio))
+            crop_my1 = min(mask_h, int((y1 - region_offset[1]) / mpp_ratio))
+        else:
+            crop_mx0, crop_my0 = 0, 0
+            crop_mx1, crop_my1 = mask_w, mask_h
+
         overlays = {}
         num_classes = len(class_names) if class_names else int(prediction_mask.max()) + 1
 
@@ -553,12 +574,14 @@ def _build_seg_overlays(slide, prediction_mask, metadata, class_names, roi_bound
             cls_name = class_names[cls_id] if class_names and cls_id < len(class_names) else f'Class_{cls_id}'
 
             if prob_map is not None and cls_id < prob_map.shape[0]:
-                # 실제 확률맵을 썸네일 크기로 bilinear 리사이즈 (데스크톱과 동일)
-                prob_resized = cv2.resize(prob_map[cls_id].astype(np.float32), (tw, th),
+                # roi 영역만 crop 후 썸네일 크기로 bilinear 리사이즈
+                cropped = prob_map[cls_id][crop_my0:crop_my1, crop_mx0:crop_mx1].astype(np.float32)
+                prob_resized = cv2.resize(cropped, (tw, th),
                                           interpolation=cv2.INTER_LINEAR)
             else:
-                # fallback: argmax 마스크에서 이진 + blur
-                mask_resized = cv2.resize(prediction_mask.astype(np.uint8), (tw, th),
+                # fallback: argmax 마스크에서 crop → 이진 + blur
+                cropped = prediction_mask[crop_my0:crop_my1, crop_mx0:crop_mx1].astype(np.uint8)
+                mask_resized = cv2.resize(cropped, (tw, th),
                                            interpolation=cv2.INTER_NEAREST)
                 prob_resized = cv2.GaussianBlur(
                     (mask_resized == cls_id).astype(np.float32), (7, 7), 2.0)

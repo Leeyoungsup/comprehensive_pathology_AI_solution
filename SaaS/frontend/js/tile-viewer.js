@@ -15,6 +15,51 @@ import { api } from './api.js';
 const TILE_SIZE = 512;
 const MAX_CONCURRENT_LOADS = 12;  // 동시 타일 로딩 수
 
+/**
+ * 공간 격자 인덱스 — 데스크톱 SpatialGrid와 동일
+ * 셀을 grid_size 단위 버킷에 분류하여 뷰포트 영역의 셀만 O(1)에 조회
+ */
+class SpatialGrid {
+    constructor(gridSize = 2048) {
+        this.gridSize = gridSize;
+        this.grid = new Map();
+    }
+
+    build(cells) {
+        this.grid.clear();
+        const gs = this.gridSize;
+        for (let i = 0; i < cells.length; i++) {
+            const c = cells[i];
+            const key = (Math.floor(c.x / gs) << 16) | (Math.floor(c.y / gs) & 0xFFFF);
+            let bucket = this.grid.get(key);
+            if (!bucket) { bucket = []; this.grid.set(key, bucket); }
+            bucket.push(c);
+        }
+    }
+
+    query(xMin, yMin, xMax, yMax) {
+        const gs = this.gridSize;
+        const gxMin = Math.floor(xMin / gs);
+        const gyMin = Math.floor(yMin / gs);
+        const gxMax = Math.floor(xMax / gs);
+        const gyMax = Math.floor(yMax / gs);
+        const result = [];
+        for (let gx = gxMin; gx <= gxMax; gx++) {
+            for (let gy = gyMin; gy <= gyMax; gy++) {
+                const key = (gx << 16) | (gy & 0xFFFF);
+                const bucket = this.grid.get(key);
+                if (!bucket) continue;
+                for (const c of bucket) {
+                    if (c.x >= xMin && c.x < xMax && c.y >= yMin && c.y < yMax) {
+                        result.push(c);
+                    }
+                }
+            }
+        }
+        return result;
+    }
+}
+
 export class TileViewer {
     constructor(canvas, overlayCanvas) {
         this.canvas = canvas;
@@ -49,6 +94,7 @@ export class TileViewer {
         this.detectionCells = [];
         this.classVisibility = {};   // {class_id: bool}
         this.classConfidence = {};   // {class_id: float} 클래스별 threshold (기본 0.01)
+        this._spatialGrid = null;    // SpatialGrid for O(1) viewport query
 
         // Segmentation 오버레이
         this._segOverlay = null;     // {image, sceneX, sceneY, sceneW, sceneH}
@@ -657,6 +703,10 @@ export class TileViewer {
             this.classConfidence[id] = 0.01;
         });
 
+        // 공간 인덱스 구축 (뷰포트 영역만 O(1) 조회용)
+        this._spatialGrid = new SpatialGrid(2048);
+        this._spatialGrid.build(filtered);
+
         this._heatmapDirty = true;
         this._buildHeatmapCache();
         this.requestRender();
@@ -987,6 +1037,8 @@ export class TileViewer {
     }
 
     _renderCells(octx) {
+        if (!this._spatialGrid) return;
+
         const halfVW = this.canvas.width / this.zoom / 2;
         const halfVH = this.canvas.height / this.zoom / 2;
         const viewLeft = this.viewCenterX - halfVW;
@@ -994,9 +1046,10 @@ export class TileViewer {
         const viewRight = this.viewCenterX + halfVW;
         const viewBottom = this.viewCenterY + halfVH;
 
+        // SpatialGrid로 뷰포트 내 셀만 조회 (O(1), 전체 순회 제거)
+        const visible = this._spatialGrid.query(viewLeft, viewTop, viewRight, viewBottom);
+
         // effectiveMpp에 따라 셀 크기/두께 조절
-        // mpp < 1.0: 기본 (radius=8, lineWidth=2)
-        // 1.0 <= mpp < 2.0: 작게 (radius=5, lineWidth=1.2)
         const effectiveMpp = this.getEffectiveMpp();
         let baseRadius, lineW;
         if (effectiveMpp < 1.0) {
@@ -1013,11 +1066,11 @@ export class TileViewer {
             4: '#8A2BE2', 5: '#808080', 6: '#FF0000', 7: '#00FF00',
         };
 
-        for (const cell of this.detectionCells) {
+        octx.lineWidth = lineW;
+        for (const cell of visible) {
             const threshold = this.classConfidence[cell.class_id] ?? 0.01;
             if (cell.confidence < threshold) continue;
             if (this.classVisibility[cell.class_id] === false) continue;
-            if (cell.x < viewLeft || cell.x > viewRight || cell.y < viewTop || cell.y > viewBottom) continue;
 
             const [cx, cy] = this.sceneToCanvas(cell.x, cell.y);
             const color = CLASS_COLORS[cell.class_id] || '#FFFFFF';
@@ -1025,7 +1078,6 @@ export class TileViewer {
             octx.beginPath();
             octx.arc(cx, cy, cellRadius, 0, Math.PI * 2);
             octx.strokeStyle = color;
-            octx.lineWidth = lineW;
             octx.stroke();
         }
     }

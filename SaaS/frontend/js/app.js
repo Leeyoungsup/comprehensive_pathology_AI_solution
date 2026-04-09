@@ -488,6 +488,16 @@ const CLASS_COLORS = {
     4: '#8A2BE2', 5: '#808080', 6: '#FF0000', 7: '#00FF00',
 };
 
+// confidence 슬라이더 debounce용
+let _confDebounceTimer = null;
+function _debouncedRender() {
+    if (_confDebounceTimer) clearTimeout(_confDebounceTimer);
+    _confDebounceTimer = setTimeout(() => {
+        viewer._heatmapDirty = true;
+        viewer.requestRender();
+    }, 150);
+}
+
 function buildResultList(result) {
     $resultList.innerHTML = '';
 
@@ -497,11 +507,36 @@ function buildResultList(result) {
         counts[cell.class_id] = (counts[cell.class_id] || 0) + 1;
     }
 
-    // 총 셀 수
+    // 클래스별 체크박스 참조 저장
+    const classCbs = {};
+
+    // 총 셀 수 (전체 토글 체크박스)
     const totalItem = document.createElement('div');
     totalItem.className = 'result-item';
-    totalItem.innerHTML = `<span class="class-name" style="font-weight:600">Total Cells</span>
-        <span class="class-count">${result.total_cells.toLocaleString()}</span>`;
+
+    const totalCb = document.createElement('input');
+    totalCb.type = 'checkbox';
+    totalCb.checked = true;
+    totalCb.addEventListener('change', () => {
+        const checked = totalCb.checked;
+        for (const [id, cb] of Object.entries(classCbs)) {
+            cb.checked = checked;
+            viewer.classVisibility[parseInt(id)] = checked;
+        }
+        viewer._heatmapDirty = true;
+        viewer.requestRender();
+    });
+
+    const totalName = document.createElement('span');
+    totalName.className = 'class-name';
+    totalName.style.fontWeight = '600';
+    totalName.textContent = 'Total Cells';
+
+    const totalCount = document.createElement('span');
+    totalCount.className = 'class-count';
+    totalCount.textContent = result.total_cells.toLocaleString();
+
+    totalItem.append(totalCb, totalName, totalCount);
     $resultList.appendChild(totalItem);
 
     // 클래스별 항목 (체크박스 + 색상 + 이름 + 카운트 + 개별 confidence 슬라이더)
@@ -512,15 +547,20 @@ function buildResultList(result) {
 
         const color = CLASS_COLORS[id] || '#fff';
 
-        // 행: 체크박스 + 색상dot + 이름 + 카운트
         const item = document.createElement('div');
         item.className = 'result-item';
 
         const cb = document.createElement('input');
         cb.type = 'checkbox';
         cb.checked = true;
+        classCbs[id] = cb;
         cb.addEventListener('change', () => {
             viewer.classVisibility[id] = cb.checked;
+            // 전체 체크박스 동기화
+            const allChecked = Object.values(classCbs).every(c => c.checked);
+            const noneChecked = Object.values(classCbs).every(c => !c.checked);
+            totalCb.checked = allChecked;
+            totalCb.indeterminate = !allChecked && !noneChecked;
             viewer._heatmapDirty = true;
             viewer.requestRender();
         });
@@ -558,8 +598,7 @@ function buildResultList(result) {
             const val = parseFloat(slider.value);
             sliderLabel.textContent = val.toFixed(2);
             viewer.classConfidence[id] = val;
-            viewer._heatmapDirty = true;
-            viewer.requestRender();
+            _debouncedRender();
         });
 
         sliderRow.append(slider, sliderLabel);
