@@ -738,7 +738,6 @@ export class TileViewer {
         }
         const lvl = ov.levels[chosenL];
         const scaleX = ov.sceneW / lvl.width;    // scene px per level-pixel
-        const scaleY = ov.sceneH / lvl.height;
 
         // 업샘플(zoom 이 큼)이면 스무딩 off, 다운샘플이면 low 품질
         const screenPerLvlPx = this.zoom * scaleX;
@@ -761,15 +760,38 @@ export class TileViewer {
             if (!this._vsSplitMode) return;
         }
 
-        // 타일 scene 폭/높이
         const TS = ov.tileSize || 512;
-        const tileSceneW = TS * scaleX;
-        const tileSceneH = TS * scaleY;
 
-        const tx0 = Math.max(0, Math.floor((xlo - ov.originX) / tileSceneW));
-        const ty0 = Math.max(0, Math.floor((ylo - ov.originY) / tileSceneH));
-        const tx1 = Math.min(lvl.nx - 1, Math.floor((xhi - ov.originX - 1e-6) / tileSceneW));
-        const ty1 = Math.min(lvl.ny - 1, Math.floor((yhi - ov.originY - 1e-6) / tileSceneH));
+        // 특정 레벨의 가시 타일을 draw (요청/로드 분리 옵션 포함)
+        // requestMissing: true 면 캐시 miss 시 _getVsTile 로 백그라운드 로드 트리거
+        //                 false 면 이미 캐시된 타일만 그림 (fallback 용)
+        const drawLevel = (L, requestMissing) => {
+            const lv = ov.levels[L];
+            const sX = ov.sceneW / lv.width;
+            const sY = ov.sceneH / lv.height;
+            const tW = TS * sX;
+            const tH = TS * sY;
+            const a = Math.max(0, Math.floor((xlo - ov.originX) / tW));
+            const b = Math.max(0, Math.floor((ylo - ov.originY) / tH));
+            const c = Math.min(lv.nx - 1, Math.floor((xhi - ov.originX - 1e-6) / tW));
+            const d = Math.min(lv.ny - 1, Math.floor((yhi - ov.originY - 1e-6) / tH));
+            for (let ty = b; ty <= d; ty++) {
+                for (let tx = a; tx <= c; tx++) {
+                    const img = requestMissing
+                        ? this._getVsTile(L, tx, ty)
+                        : this._peekVsTile(L, tx, ty);
+                    if (!img) continue;
+                    const tileLvlW = Math.min(TS, lv.width - tx * TS);
+                    const tileLvlH = Math.min(TS, lv.height - ty * TS);
+                    const sceneX = ov.originX + tx * tW;
+                    const sceneY = ov.originY + ty * tH;
+                    const [tcx, tcy] = this.sceneToCanvas(sceneX, sceneY);
+                    const dw = tileLvlW * sX * this.zoom;
+                    const dh = tileLvlH * sY * this.zoom;
+                    ctx.drawImage(img, tcx, tcy, dw, dh);
+                }
+            }
+        };
 
         // ROI 폴리곤 클립
         const roiPolys = ov.roiPolygons;
@@ -795,21 +817,19 @@ export class TileViewer {
             ctx.restore();
         };
 
+        // drawTiles: 저해상도 레벨 → 선택 레벨 → 더 고해상도 (캐시된 것만) 순으로 레이어링
+        //   1) 가장 깊은 레벨(최저해상도)을 배경으로 깔아 빈 영역 제거 (blur pad)
+        //   2) 선택 레벨을 덧그림 (로드 트리거)
+        //   3) 선택 레벨보다 더 고해상도 (L-1, L-2...) 중 이미 캐시된 타일이 있으면 덧그림
+        //      (줌아웃 직후 이전 고해상도 타일이 남아있어 선명도 유지)
         const drawTiles = () => {
-            for (let ty = ty0; ty <= ty1; ty++) {
-                for (let tx = tx0; tx <= tx1; tx++) {
-                    const img = this._getVsTile(chosenL, tx, ty);
-                    if (!img) continue;
-                    // 경계 타일은 level 이미지 경계에서 잘릴 수 있음
-                    const tileLvlW = Math.min(TS, lvl.width - tx * TS);
-                    const tileLvlH = Math.min(TS, lvl.height - ty * TS);
-                    const sceneX = ov.originX + tx * tileSceneW;
-                    const sceneY = ov.originY + ty * tileSceneH;
-                    const [tcx, tcy] = this.sceneToCanvas(sceneX, sceneY);
-                    const dw = tileLvlW * scaleX * this.zoom;
-                    const dh = tileLvlH * scaleY * this.zoom;
-                    ctx.drawImage(img, tcx, tcy, dw, dh);
-                }
+            const bgL = ov.levels.length - 1;
+            if (bgL !== chosenL) {
+                drawLevel(bgL, true);  // 저해상도는 항상 요청 → 거의 항상 캐시됨
+            }
+            drawLevel(chosenL, true);
+            for (let L = chosenL - 1; L >= 0; L--) {
+                drawLevel(L, false);  // 더 고해상도는 캐시된 것만 추가로 덧그림
             }
         };
 
@@ -890,6 +910,21 @@ export class TileViewer {
                 drawWithRoiClip(drawTiles);
             }
         }
+    }
+
+    /**
+     * VS 타일 캐시 조회만 (로드 트리거 없음). 폴백 드로우용.
+     */
+    _peekVsTile(level, tx, ty) {
+        const key = `${level}/${tx}/${ty}`;
+        if (this._vsTileCache.has(key)) {
+            const img = this._vsTileCache.get(key);
+            // LRU touch
+            this._vsTileCache.delete(key);
+            this._vsTileCache.set(key, img);
+            return img;
+        }
+        return null;
     }
 
     /**
