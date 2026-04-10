@@ -126,8 +126,30 @@
 
                 <!-- VS-IHC 탭 -->
                 <div id="vs-tab" class="tab-content">
-                    <button class="action-btn" disabled>IHC → H&E (Membrane)</button>
-                    <button class="action-btn" disabled>IHC → H&E (Nucleus)</button>
+                    <div class="sub-group">
+                        <div class="sub-header">
+                            Target Resolution
+                            <span id="vs-mpp-label" class="vs-mpp-label">★ 2.0 µm/px (x5)</span>
+                        </div>
+                        <input type="range" id="vs-target-mpp" class="vs-mpp-slider"
+                               min="0" max="3" step="1" value="1">
+                        <div class="vs-mpp-ticks">
+                            <span>4.0</span>
+                            <span>2.0★</span>
+                            <span>1.0</span>
+                            <span>0.5</span>
+                        </div>
+                    </div>
+                    <button id="btn-vs-membrane" class="action-btn primary" disabled>IHC → H&E (Membrane)</button>
+                    <button id="btn-vs-nucleus" class="action-btn" disabled title="Model not available yet">IHC → H&E (Nucleus)</button>
+                    <button id="btn-vs-toggle" class="toggle-pill" disabled aria-pressed="true">
+                        <span class="toggle-pill-knob"></span>
+                        <span class="toggle-pill-label">Show Virtual Stain Overlay</span>
+                    </button>
+                    <button id="btn-vs-split" class="toggle-pill" disabled aria-pressed="false">
+                        <span class="toggle-pill-knob"></span>
+                        <span class="toggle-pill-label">Split View (IHC | Virtual H&amp;E)</span>
+                    </button>
                 </div>
 
                 <!-- PD-Score 탭 -->

@@ -43,6 +43,14 @@ const $btnDrawPolygon = $('#btn-draw-polygon');
 const $btnDrawRect = $('#btn-draw-rect');
 const $btnDrawPoint = $('#btn-draw-point');
 
+// VS-IHC
+const $btnVsMembrane = $('#btn-vs-membrane');
+const $btnVsNucleus = $('#btn-vs-nucleus');
+const $btnVsToggle = $('#btn-vs-toggle');
+const $btnVsSplit = $('#btn-vs-split');
+let _vsRunning = false;
+let _vsLastTargetMpp = 2.0;
+
 const $slideList = $('#slide-list');
 
 // ── 상태 ──
@@ -129,6 +137,7 @@ function onSlideLoaded(slideId, slideInfo, filename) {
 
     // 버튼 활성화
     $btnDetect.disabled = false;
+    $btnVsMembrane.disabled = false;
     $btnInfo.disabled = false;
     $btnSave.disabled = false;
     document.querySelectorAll('.toggle-btn').forEach(b => b.disabled = false);
@@ -142,8 +151,12 @@ function onSlideLoaded(slideId, slideInfo, filename) {
     // 결과 초기화
     clearResults();
 
-    // annotation 자동 불러오기
-    loadAnnotations();
+    // VS-IHC 오버레이 초기화
+    viewer.clearVirtualStainOverlay();
+    _setVsToggleState(false, true);
+    _setVsSplitState(false, true);
+
+    // annotation은 사용자가 Load 버튼으로 파일에서 불러옴 (서버 자동 로드 X)
 
     setProgress(0);
 }
@@ -152,16 +165,29 @@ function onSlideLoaded(slideId, slideInfo, filename) {
 // 드래그 앤 드롭
 // ═══════════════════════════
 const $viewerContainer = $('#viewer-container');
+
+// OS 파일 드래그만 감지 (뷰어 내부 요소/텍스트 드래그는 무시)
+function _isFileDrag(e) {
+    const t = e.dataTransfer && e.dataTransfer.types;
+    if (!t) return false;
+    // DOMStringList / Array 모두 지원
+    if (typeof t.contains === 'function') return t.contains('Files');
+    return Array.from(t).includes('Files');
+}
+
 $viewerContainer.addEventListener('dragover', (e) => {
+    if (!_isFileDrag(e)) return;
     e.preventDefault();
     $dropOverlay.classList.add('visible');
 });
 $viewerContainer.addEventListener('dragleave', (e) => {
+    if (!_isFileDrag(e)) return;
     if (!$viewerContainer.contains(e.relatedTarget)) {
         $dropOverlay.classList.remove('visible');
     }
 });
 $viewerContainer.addEventListener('drop', (e) => {
+    if (!_isFileDrag(e)) return;
     e.preventDefault();
     $dropOverlay.classList.remove('visible');
     if (e.dataTransfer.files.length > 0) uploadFile(e.dataTransfer.files[0]);
@@ -975,10 +1001,11 @@ $btnVisualize.addEventListener('click', () => {
         setStatus('No cells pass current confidence thresholds');
         return;
     }
-    const thumbUrl = currentSlideId ? api.thumbnailUrl(currentSlideId, 1024) : null;
+    const thumbUrl = currentSlideId ? api.previewUrl(currentSlideId, 4096) : null;
     const slideName = ($slideName.textContent || '').replace(/\.[^.]+$/, '') || 'slide';
     const tissue = _lastDetectionTissue || 'Stomach';
-    showVisualization(filtered, lastSegData, thumbUrl, { slideName, tissue });
+    const slideDims = currentSlideInfo?.dimensions || null;  // [w, h] level-0
+    showVisualization(filtered, lastSegData, thumbUrl, { slideName, tissue, slideDims });
 });
 
 // Detection Result 내부 저장 (서버 AI 결과 폴더로) — 다운로드 X
@@ -1322,6 +1349,147 @@ $btnViewGrid.addEventListener('click', () => {
     $slideList.classList.add('grid-view');
     $btnViewGrid.classList.add('active');
     $btnViewList.classList.remove('active');
+});
+
+// ═══════════════════════════
+// VS-IHC (Virtual Staining)
+// ═══════════════════════════
+async function startVirtualStain(stainType) {
+    if (!currentSlideId || _vsRunning) return;
+    _vsRunning = true;
+    $btnVsMembrane.disabled = true;
+    $progressLabel.textContent = 'Virtual Staining...';
+    setProgress(0);
+    setStatus('Virtual staining 시작...');
+
+    viewer.setDrawMode(null);
+
+    // ROI: polygon/rectangle annotation을 폴리곤으로 전달
+    const roiAnns = viewer.annotations.filter(a =>
+        a.visible && a.type !== 'point' && a.coordinates.length >= 3);
+    const roiPolygons = roiAnns.length > 0 ? roiAnns.map(a => a.coordinates) : null;
+
+    const targetMpp = _vsMppFromSlider();
+
+    try {
+        const { task_id } = await api.startVirtualStain(currentSlideId, stainType, roiPolygons, targetMpp);
+        // 결과 로딩 시 같은 mpp로 PNG 요청
+        _vsLastTargetMpp = targetMpp;
+
+        while (true) {
+            await sleep(1000);
+            const st = await api.getTaskStatus(task_id);
+            const msg = st.status_msg || `${st.progress}%`;
+            setProgress(st.progress, msg);
+            setStatus(msg);
+
+            if (st.status === 'completed') {
+                onVirtualStainComplete(st.result);
+                return;
+            } else if (st.status === 'error') {
+                throw new Error(st.error);
+            }
+        }
+    } catch (err) {
+        setStatus(`Virtual staining 실패: ${err.message}`);
+        $progressLabel.textContent = 'Virtual staining failed';
+    } finally {
+        _vsRunning = false;
+        $btnVsMembrane.disabled = false;
+    }
+}
+
+function onVirtualStainComplete(result) {
+    const stain = result.stain_type || 'ihc_membrane';
+    const tmpp = result.target_mpp || _vsLastTargetMpp || 2.0;
+    viewer.setVirtualStainOverlay({
+        slide_id: currentSlideId,
+        stain_type: stain,
+        target_mpp: tmpp,
+        roi_origin: result.roi_origin,
+        canvas_l0_w: result.canvas_l0_w,
+        canvas_l0_h: result.canvas_l0_h,
+        tile_size: result.tile_size || 512,
+        levels: result.levels || [],
+        roi_polygons: result.roi_polygons || null,  // 표시 클립용 (level-0 좌표)
+    });
+    _setVsToggleState(true, false);
+    _setVsSplitState(false, false);  // 분할 모드는 사용자가 켜야 함
+
+    // AI 완료: ROI annotation 제거 (desktop 동작과 일치)
+    viewer.clearAnnotations();
+    renderAnnotationPanel();
+
+    const tc = result.tissue_count || 0;
+    const tot = result.total_patches || 0;
+    setProgress(100);
+    $progressLabel.textContent = result.cached
+        ? 'Virtual staining loaded (cached)'
+        : 'Virtual staining complete';
+    setStatus(`Virtual staining complete — ${tc}/${tot} tissue patches`);
+}
+
+// VS-IHC target mpp slider — index → mpp value
+const VS_MPP_VALUES = [4.0, 2.0, 1.0, 0.5];
+const VS_MPP_LABELS = [
+    '4.0 µm/px (x2.5)',
+    '★ 2.0 µm/px (x5)',
+    '1.0 µm/px (x10)',
+    '0.5 µm/px (x20)',
+];
+function _vsMppFromSlider() {
+    const el = document.querySelector('#vs-target-mpp');
+    const idx = el ? parseInt(el.value, 10) : 1;
+    return VS_MPP_VALUES[idx] ?? 2.0;
+}
+const $vsMppSlider = document.querySelector('#vs-target-mpp');
+const $vsMppLabel = document.querySelector('#vs-mpp-label');
+$vsMppSlider?.addEventListener('input', () => {
+    const idx = parseInt($vsMppSlider.value, 10);
+    if ($vsMppLabel) $vsMppLabel.textContent = VS_MPP_LABELS[idx] || '';
+});
+
+$btnVsMembrane?.addEventListener('click', () => startVirtualStain('ihc_membrane'));
+// ─── VS toggle 헬퍼 ───
+function _setVsToggleState(visible, disabled) {
+    if (!$btnVsToggle) return;
+    $btnVsToggle.disabled = !!disabled;
+    $btnVsToggle.setAttribute('aria-pressed', visible ? 'true' : 'false');
+    const lab = $btnVsToggle.querySelector('.toggle-pill-label');
+    if (lab) lab.textContent = visible ? 'Virtual Stain Overlay: ON' : 'Virtual Stain Overlay: OFF';
+}
+function _setVsSplitState(enabled, disabled) {
+    if (!$btnVsSplit) return;
+    $btnVsSplit.disabled = !!disabled;
+    $btnVsSplit.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+    const lab = $btnVsSplit.querySelector('.toggle-pill-label');
+    if (lab) lab.textContent = enabled
+        ? 'Split View: ON  (← IHC | Virtual H&E →)'
+        : 'Split View (IHC | Virtual H&E)';
+}
+
+$btnVsToggle?.addEventListener('click', () => {
+    if ($btnVsToggle.disabled) return;
+    const next = $btnVsToggle.getAttribute('aria-pressed') !== 'true';
+    _setVsToggleState(next, false);
+    viewer.setVirtualStainVisible(next);
+    // overlay를 끄면 split도 의미가 없으므로 끔
+    if (!next) {
+        _setVsSplitState(false, false);
+        viewer.setVirtualStainSplitMode(false);
+    }
+});
+
+$btnVsSplit?.addEventListener('click', () => {
+    if ($btnVsSplit.disabled) return;
+    const next = $btnVsSplit.getAttribute('aria-pressed') !== 'true';
+    _setVsSplitState(next, false);
+    // split을 켜면 overlay도 강제로 ON
+    if (next) {
+        _setVsToggleState(true, false);
+        viewer.setVirtualStainVisible(true);
+    }
+    viewer.setVirtualStainSplitMode(next);
 });
 
 // 페이지 로드 시 슬라이드 목록 가져오기

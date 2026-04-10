@@ -108,6 +108,11 @@ export const api = {
         return `${API_BASE}/slides/${slideId}/thumbnail?size=${size}`;
     },
 
+    /** 고해상도 프리뷰 URL (PDF 리포트용) */
+    previewUrl(slideId, size = 2048) {
+        return `${API_BASE}/slides/${slideId}/preview?size=${size}`;
+    },
+
     /** 썸네일 URL (파일명 기반 — 리스트용, slide_manager 불필요) */
     thumbnailUrlByName(filename, path = '', size = 300) {
         return `${API_BASE}/slides/thumbnail-by-name?filename=${encodeURIComponent(filename)}&path=${encodeURIComponent(path)}&size=${size}`;
@@ -183,5 +188,27 @@ export const api = {
         const res = await fetch(`${API_BASE}/ai/task/${taskId}`);
         if (!res.ok) throw new Error(await res.text());
         return res.json();
+    },
+
+    /** Virtual Stain (VS-IHC) 시작 */
+    async startVirtualStain(slideId, stainType = 'ihc_membrane', roiPolygons = null, targetMpp = 2.0) {
+        const form = new FormData();
+        form.append('slide_id', slideId);
+        form.append('stain_type', stainType);
+        form.append('target_mpp', String(targetMpp));
+        if (roiPolygons) form.append('roi_polygons', JSON.stringify(roiPolygons));
+        const res = await fetch(`${API_BASE}/ai/virtual-stain`, { method: 'POST', body: form });
+        if (!res.ok) throw new Error(await res.text());
+        return res.json();
+    },
+
+    /** Virtual Stain 결과 PNG URL (리포트/PDF용 풀해상도 composite) */
+    virtualStainImageUrl(slideId, stainType = 'ihc_membrane', targetMpp = 2.0) {
+        return `${API_BASE}/ai/virtual-stain/${slideId}/${stainType}.png?target_mpp=${targetMpp}&t=${Date.now()}`;
+    },
+
+    /** Virtual Stain 피라미드 타일 URL (뷰어 렌더용) */
+    virtualStainTileUrl(slideId, stainType, targetMpp, level, tx, ty) {
+        return `${API_BASE}/ai/virtual-stain/${slideId}/${stainType}/tile/${level}/${tx}_${ty}.jpeg?target_mpp=${targetMpp}`;
     },
 };

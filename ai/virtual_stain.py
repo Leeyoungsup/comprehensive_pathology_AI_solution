@@ -18,7 +18,7 @@ from PyQt5.QtCore import QThread, pyqtSignal
 
 _vs_thread_local = threading.local()
 
-from skimage.morphology import binary_closing, binary_opening, disk
+from skimage.morphology import closing as _sk_closing, opening as _sk_opening, disk
 from scipy.ndimage import binary_fill_holes
 
 
@@ -511,9 +511,9 @@ class VirtualStainWorker(QThread):
         # 조직 = (Hematoxylin OR DAB OR 텍스처) AND NOT 확실한_배경
         pixel_tissue = ((hem_mask > 0) | (dab_mask > 0) | (texture_mask > 0)) & (~definite_bg)
 
-        pixel_tissue = binary_closing(pixel_tissue, disk(5))
+        pixel_tissue = _sk_closing(pixel_tissue, disk(5))
         pixel_tissue = binary_fill_holes(pixel_tissue)
-        pixel_tissue = binary_opening(pixel_tissue, disk(3))
+        pixel_tissue = _sk_opening(pixel_tissue, disk(3))
 
         tissue_full = np.array(
             Image.fromarray(pixel_tissue.astype(np.uint8) * 255).resize(

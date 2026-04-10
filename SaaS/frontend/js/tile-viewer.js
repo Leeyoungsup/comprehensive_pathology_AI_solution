@@ -103,6 +103,22 @@ export class TileViewer {
         this._segOverlay = null;     // {image, sceneX, sceneY, sceneW, sceneH}
         this.segClassVisibility = {}; // {cls_id: bool}
 
+        // Virtual Stain (VS-IHC) 오버레이 — 타일 피라미드 기반
+        // meta: {slideId, stainType, targetMpp, originX, originY, sceneW, sceneH,
+        //        tileSize, levels: [{level,width,height,nx,ny}...], roiPolygons}
+        this._vsOverlay = null;
+        this._vsVisible = true;
+        this._vsSplitMode = false;   // true: 분할선 기준 우측에만 VS 표시 (좌: 원본 IHC)
+        this._vsSplitFrac = 0.5;     // 분할선 위치 (0..1, 캔버스 가로 비율)
+        this._vsSplitDragging = false;
+        this._vsSplitHandleW = 10;   // 분할선 hit-area (±px)
+
+        // VS 타일 캐시 (level/tx/ty 키)
+        this._vsTileCache = new Map();    // key → HTMLImageElement (LRU: Map insertion order)
+        this._vsTileLoading = new Set();  // in-flight keys
+        this._vsTileMissing = new Set();  // 404 마크 (빈 타일 재요청 방지)
+        this._vsMaxTiles = 512;
+
         // ── Annotation ──
         this.annotations = [];        // [{id, name, type, coordinates, color, visible, selected, group}]
         this.drawMode = null;         // 'polygon' | 'rectangle' | 'point' | null
@@ -288,6 +304,17 @@ export class TileViewer {
             const cy = e.clientY - rect.top;
             const [sx, sy] = this.canvasToScene(cx, cy);
 
+            // VS Split mode: 분할선 핸들 hit-test (최우선)
+            if (e.button === 0 && this._vsSplitMode && this._vsOverlay && this._vsVisible) {
+                const splitX = this.canvas.width * this._vsSplitFrac;
+                if (Math.abs(cx - splitX) <= this._vsSplitHandleW) {
+                    this._vsSplitDragging = true;
+                    this.canvas.style.cursor = 'ew-resize';
+                    e.preventDefault();
+                    return;
+                }
+            }
+
             // Alt + 좌클릭: 셀 편집 팝업 (검출 결과가 있을 때)
             if (e.altKey && e.button === 0 && this.detectionCells.length > 0) {
                 const hit = this._findNearestCell(sx, sy, 30);
@@ -349,6 +376,31 @@ export class TileViewer {
             const cy = e.clientY - rect.top;
             const [sx, sy] = this.canvasToScene(cx, cy);
 
+            // VS Split 분할선 드래그
+            if (this._vsSplitDragging) {
+                const w = this.canvas.width;
+                let frac = cx / w;
+                // 양 끝 여백 (최소 5%)
+                frac = Math.max(0.05, Math.min(0.95, frac));
+                this._vsSplitFrac = frac;
+                this.requestRender();
+                return;
+            }
+            // hover 시 cursor 힌트 (드래그/패닝/그리기 중이 아닐 때만)
+            if (this._vsSplitMode && this._vsOverlay && this._vsVisible &&
+                !this._isPanning && !this._dragControlPoint && !this._dragAnnotation && !this.drawMode) {
+                const insideCanvas = cx >= 0 && cy >= 0 &&
+                                     cx <= this.canvas.width && cy <= this.canvas.height;
+                if (insideCanvas) {
+                    const splitX = this.canvas.width * this._vsSplitFrac;
+                    if (Math.abs(cx - splitX) <= this._vsSplitHandleW) {
+                        this.canvas.style.cursor = 'ew-resize';
+                    } else if (this.canvas.style.cursor === 'ew-resize') {
+                        this.canvas.style.cursor = 'grab';
+                    }
+                }
+            }
+
             // 컨트롤포인트 드래그
             if (this._dragControlPoint) {
                 const ann = this.annotations.find(a => a.id === this._dragControlPoint.annId);
@@ -393,6 +445,11 @@ export class TileViewer {
         });
 
         window.addEventListener('mouseup', (e) => {
+            if (this._vsSplitDragging) {
+                this._vsSplitDragging = false;
+                this.canvas.style.cursor = this.drawMode ? 'crosshair' : 'grab';
+                return;
+            }
             if (this._dragControlPoint) {
                 this._dragControlPoint = null;
                 this.canvas.style.cursor = this.drawMode ? 'crosshair' : 'grab';
@@ -642,10 +699,252 @@ export class TileViewer {
         // 큐에 있는 타일 로딩 시작
         this._processLoadQueue();
 
+        // Virtual Stain 오버레이 (메인 캔버스 위에 직접 그림 — 슬라이드를 가림)
+        this._renderVirtualStainOverlay(ctx);
+
         // 오버레이 렌더링
         this.overlayCtx.clearRect(0, 0, this.overlayCanvas.width, this.overlayCanvas.height);
         this._renderDetectionOverlay();
         this._renderAnnotations(this.overlayCtx);
+    }
+
+    _renderVirtualStainOverlay(ctx) {
+        const ov = this._vsOverlay;
+        if (!ov || !this._vsVisible) return;
+        if (!ov.levels || ov.levels.length === 0) return;
+
+        const canvasW = this.canvas.width;
+        const canvasH = this.canvas.height;
+
+        // 오버레이 전체 → 캔버스 매핑
+        const [cx, cy] = this.sceneToCanvas(ov.originX, ov.originY);
+        const cw = ov.sceneW * this.zoom;
+        const ch = ov.sceneH * this.zoom;
+
+        // 가시 교집합
+        const dx0 = Math.max(0, cx);
+        const dy0 = Math.max(0, cy);
+        const dx1 = Math.min(canvasW, cx + cw);
+        const dy1 = Math.min(canvasH, cy + ch);
+        const overlayVisible = (dx1 > dx0 && dy1 > dy0);
+        if (!overlayVisible && !this._vsSplitMode) return;
+
+        // ── 레벨 선택: level width 가 화면상 오버레이 폭보다 아주 조금 작거나 같은 것 중 가장 낮은 해상도 ──
+        // 화면에 그려질 VS 폭(픽셀)과 각 레벨 이미지 폭을 비교
+        let chosenL = 0;
+        for (let L = 0; L < ov.levels.length; L++) {
+            if (ov.levels[L].width >= cw * 0.8) chosenL = L;
+            else break;
+        }
+        const lvl = ov.levels[chosenL];
+        const scaleX = ov.sceneW / lvl.width;    // scene px per level-pixel
+        const scaleY = ov.sceneH / lvl.height;
+
+        // 업샘플(zoom 이 큼)이면 스무딩 off, 다운샘플이면 low 품질
+        const screenPerLvlPx = this.zoom * scaleX;
+        if (screenPerLvlPx > 1) {
+            ctx.imageSmoothingEnabled = false;
+        } else {
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = 'low';
+        }
+
+        // 가시 scene 영역
+        const [vsx0, vsy0] = this.canvasToScene(0, 0);
+        const [vsx1, vsy1] = this.canvasToScene(canvasW, canvasH);
+        const xlo = Math.max(ov.originX, vsx0);
+        const ylo = Math.max(ov.originY, vsy0);
+        const xhi = Math.min(ov.originX + ov.sceneW, vsx1);
+        const yhi = Math.min(ov.originY + ov.sceneH, vsy1);
+        if (xhi <= xlo || yhi <= ylo) {
+            // 오버레이가 가시영역 밖 — split 분할선만 그리고 끝 (아래서 처리)
+            if (!this._vsSplitMode) return;
+        }
+
+        // 타일 scene 폭/높이
+        const TS = ov.tileSize || 512;
+        const tileSceneW = TS * scaleX;
+        const tileSceneH = TS * scaleY;
+
+        const tx0 = Math.max(0, Math.floor((xlo - ov.originX) / tileSceneW));
+        const ty0 = Math.max(0, Math.floor((ylo - ov.originY) / tileSceneH));
+        const tx1 = Math.min(lvl.nx - 1, Math.floor((xhi - ov.originX - 1e-6) / tileSceneW));
+        const ty1 = Math.min(lvl.ny - 1, Math.floor((yhi - ov.originY - 1e-6) / tileSceneH));
+
+        // ROI 폴리곤 클립
+        const roiPolys = ov.roiPolygons;
+        const drawWithRoiClip = (drawFn) => {
+            if (!roiPolys || roiPolys.length === 0) {
+                drawFn();
+                return;
+            }
+            ctx.save();
+            ctx.beginPath();
+            for (const poly of roiPolys) {
+                if (!poly || poly.length < 3) continue;
+                const [px0, py0] = this.sceneToCanvas(poly[0][0], poly[0][1]);
+                ctx.moveTo(px0, py0);
+                for (let i = 1; i < poly.length; i++) {
+                    const [pxi, pyi] = this.sceneToCanvas(poly[i][0], poly[i][1]);
+                    ctx.lineTo(pxi, pyi);
+                }
+                ctx.closePath();
+            }
+            ctx.clip();
+            drawFn();
+            ctx.restore();
+        };
+
+        const drawTiles = () => {
+            for (let ty = ty0; ty <= ty1; ty++) {
+                for (let tx = tx0; tx <= tx1; tx++) {
+                    const img = this._getVsTile(chosenL, tx, ty);
+                    if (!img) continue;
+                    // 경계 타일은 level 이미지 경계에서 잘릴 수 있음
+                    const tileLvlW = Math.min(TS, lvl.width - tx * TS);
+                    const tileLvlH = Math.min(TS, lvl.height - ty * TS);
+                    const sceneX = ov.originX + tx * tileSceneW;
+                    const sceneY = ov.originY + ty * tileSceneH;
+                    const [tcx, tcy] = this.sceneToCanvas(sceneX, sceneY);
+                    const dw = tileLvlW * scaleX * this.zoom;
+                    const dh = tileLvlH * scaleY * this.zoom;
+                    ctx.drawImage(img, tcx, tcy, dw, dh);
+                }
+            }
+        };
+
+        if (this._vsSplitMode) {
+            const splitX = Math.round(canvasW * this._vsSplitFrac);
+            if (overlayVisible && xhi > xlo && yhi > ylo) {
+                ctx.save();
+                ctx.beginPath();
+                ctx.rect(splitX, 0, canvasW - splitX, canvasH);
+                ctx.clip();
+                drawWithRoiClip(drawTiles);
+                ctx.restore();
+            }
+
+            // 분할선 + 핸들 + 라벨
+            ctx.save();
+            // 그림자 라인 (가독성)
+            ctx.strokeStyle = 'rgba(0, 0, 0, 0.5)';
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+            ctx.moveTo(splitX, 0);
+            ctx.lineTo(splitX, canvasH);
+            ctx.stroke();
+            // 흰색 라인
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.95)';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(splitX, 0);
+            ctx.lineTo(splitX, canvasH);
+            ctx.stroke();
+
+            // 가운데 드래그 핸들 (원형 + 좌우 화살표)
+            const handleY = canvasH / 2;
+            const handleR = 14;
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
+            ctx.strokeStyle = 'rgba(0, 0, 0, 0.6)';
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.arc(splitX, handleY, handleR, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+            // 좌우 화살표
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+            ctx.beginPath();
+            ctx.moveTo(splitX - 7, handleY);
+            ctx.lineTo(splitX - 2, handleY - 5);
+            ctx.lineTo(splitX - 2, handleY + 5);
+            ctx.closePath();
+            ctx.fill();
+            ctx.beginPath();
+            ctx.moveTo(splitX + 7, handleY);
+            ctx.lineTo(splitX + 2, handleY - 5);
+            ctx.lineTo(splitX + 2, handleY + 5);
+            ctx.closePath();
+            ctx.fill();
+
+            ctx.font = 'bold 12px sans-serif';
+            ctx.textBaseline = 'top';
+            const padX = 8, padY = 6;
+            const labelL = 'IHC (original)';
+            const labelR = 'Virtual H&E';
+            const mL = ctx.measureText(labelL);
+            const mR = ctx.measureText(labelR);
+            const bh = 18;
+            // 좌측 라벨
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+            ctx.fillRect(padX, padY, mL.width + 12, bh);
+            ctx.fillStyle = '#fff';
+            ctx.fillText(labelL, padX + 6, padY + 3);
+            // 우측 라벨
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+            ctx.fillRect(canvasW - mR.width - padX - 12, padY, mR.width + 12, bh);
+            ctx.fillStyle = '#fff';
+            ctx.fillText(labelR, canvasW - mR.width - padX - 6, padY + 3);
+            ctx.restore();
+        } else {
+            if (overlayVisible && xhi > xlo && yhi > ylo) {
+                drawWithRoiClip(drawTiles);
+            }
+        }
+    }
+
+    /**
+     * VS 타일 반환 (LRU 캐시 + 비동기 로드).
+     * 없으면 null 리턴하고 백그라운드 로드 후 재렌더.
+     */
+    _getVsTile(level, tx, ty) {
+        const key = `${level}/${tx}/${ty}`;
+        // LRU touch
+        if (this._vsTileCache.has(key)) {
+            const img = this._vsTileCache.get(key);
+            this._vsTileCache.delete(key);
+            this._vsTileCache.set(key, img);
+            return img;
+        }
+        if (this._vsTileMissing.has(key)) return null;
+        if (this._vsTileLoading.has(key)) return null;
+
+        const ov = this._vsOverlay;
+        if (!ov) return null;
+        this._vsTileLoading.add(key);
+
+        const img = new Image();
+        img.onload = () => {
+            this._vsTileLoading.delete(key);
+            // 로드 도중 overlay 가 바뀌었으면 버림
+            if (this._vsOverlay !== ov) return;
+            // LRU 제거
+            if (this._vsTileCache.size >= this._vsMaxTiles) {
+                const oldest = this._vsTileCache.keys().next().value;
+                this._vsTileCache.delete(oldest);
+            }
+            this._vsTileCache.set(key, img);
+            this.requestRender();
+        };
+        img.onerror = () => {
+            this._vsTileLoading.delete(key);
+            // 404 (빈 타일) 또는 네트워크 오류 → missing 기록해 재요청 차단
+            this._vsTileMissing.add(key);
+        };
+        img.src = api.virtualStainTileUrl(
+            ov.slideId, ov.stainType, ov.targetMpp, level, tx, ty
+        );
+        return null;
+    }
+
+    setVirtualStainSplitMode(enabled) {
+        this._vsSplitMode = !!enabled;
+        // split mode에선 항상 overlay가 보여야 의미가 있음
+        if (this._vsSplitMode) this._vsVisible = true;
+        if (!this._vsSplitMode) {
+            this._vsSplitDragging = false;
+            this.canvas.style.cursor = this.drawMode ? 'crosshair' : 'grab';
+        }
+        this.requestRender();
     }
 
     // ── 타일 로딩 (병렬, 큐 기반) ──
@@ -1002,6 +1301,64 @@ export class TileViewer {
         this._segOverlay = null;
         this.segClassVisibility = {};
         this.requestRender();
+    }
+
+    /**
+     * Virtual Stain (VS-IHC) 오버레이 설정 — 타일 피라미드 방식.
+     * @param {object} meta - {
+     *   slide_id, stain_type, target_mpp,
+     *   roi_origin: [x,y], canvas_l0_w, canvas_l0_h,
+     *   tile_size, levels: [{level,width,height,nx,ny}...],
+     *   roi_polygons? (표시 클립용)
+     * }
+     */
+    setVirtualStainOverlay(meta) {
+        // 이전 타일 캐시 정리
+        this._vsTileCache.clear();
+        this._vsTileLoading.clear();
+        this._vsTileMissing.clear();
+
+        if (!meta || !meta.levels || meta.levels.length === 0) {
+            console.warn('[viewer] VS overlay: missing tile levels metadata');
+            this._vsOverlay = null;
+            this.requestRender();
+            return;
+        }
+
+        const [ox, oy] = meta.roi_origin || [0, 0];
+        this._vsOverlay = {
+            slideId: meta.slide_id,
+            stainType: meta.stain_type || 'ihc_membrane',
+            targetMpp: meta.target_mpp || 2.0,
+            originX: ox,
+            originY: oy,
+            sceneW: meta.canvas_l0_w,
+            sceneH: meta.canvas_l0_h,
+            tileSize: meta.tile_size || 512,
+            levels: meta.levels,
+            roiPolygons: meta.roi_polygons || null,
+        };
+        this._vsVisible = true;
+        this.requestRender();
+    }
+
+    setVirtualStainVisible(visible) {
+        this._vsVisible = !!visible;
+        this.requestRender();
+    }
+
+    clearVirtualStainOverlay() {
+        this._vsOverlay = null;
+        this._vsVisible = true;
+        this._vsSplitMode = false;
+        this._vsTileCache.clear();
+        this._vsTileLoading.clear();
+        this._vsTileMissing.clear();
+        this.requestRender();
+    }
+
+    hasVirtualStainOverlay() {
+        return !!this._vsOverlay;
     }
 
     _renderSegmentationOverlay() {

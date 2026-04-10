@@ -293,6 +293,74 @@ html, body { height: 100%; overflow: hidden; font-family: 'Segoe UI', 'Malgun Go
 }
 .radio-item input[type="radio"] { accent-color: var(--accent); }
 
+/* VS-IHC target mpp slider */
+.vs-mpp-label {
+    float: right;
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 600;
+    color: var(--accent);
+}
+.vs-mpp-slider {
+    width: 100%;
+    accent-color: var(--accent);
+    margin: 4px 0 2px;
+}
+.vs-mpp-ticks {
+    display: flex;
+    justify-content: space-between;
+    font-size: 10px;
+    color: var(--text-dim);
+    padding: 0 2px;
+}
+
+/* Toggle pill button (VS-IHC) */
+.toggle-pill {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    margin-top: 8px;
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--bg-white);
+    color: var(--text, #202124);
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background .15s ease, border-color .15s ease;
+}
+.toggle-pill:hover:not(:disabled) { background: var(--bg-hover); }
+.toggle-pill:disabled { opacity: 0.5; cursor: not-allowed; }
+.toggle-pill .toggle-pill-knob {
+    width: 28px; height: 16px;
+    border-radius: 999px;
+    background: #c5c8cc;
+    position: relative;
+    flex-shrink: 0;
+    transition: background .15s ease;
+}
+.toggle-pill .toggle-pill-knob::after {
+    content: '';
+    position: absolute;
+    top: 2px; left: 2px;
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+    transition: transform .15s ease;
+}
+.toggle-pill[aria-pressed="true"] {
+    background: var(--accent-light);
+    border-color: var(--accent);
+    color: var(--accent);
+    font-weight: 600;
+}
+.toggle-pill[aria-pressed="true"] .toggle-pill-knob { background: var(--accent); }
+.toggle-pill[aria-pressed="true"] .toggle-pill-knob::after { transform: translateX(12px); }
+.toggle-pill .toggle-pill-label { flex: 1; text-align: left; }
+
 /* ═══ 버튼 ═══ */
 .action-btn {
     width: 100%; padding: 8px 0; margin-bottom: 6px;

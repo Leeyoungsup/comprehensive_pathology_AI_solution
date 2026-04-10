@@ -53,13 +53,14 @@ export function showVisualization(cells, segData = null, thumbnailUrl = null, me
         thumbnailUrl, thumbnailImg: null,
         slideName: meta.slideName || 'slide',
         tissue: meta.tissue || 'Stomach',
+        slideDims: meta.slideDims || null,
     };
 
-    // 썸네일 비동기 프리로드 (PDF용)
+    // 썸네일 비동기 프리로드 (PDF용) — same-origin이므로 crossOrigin 불필요
     if (thumbnailUrl) {
         const img = new Image();
-        img.crossOrigin = 'anonymous';
-        img.onload = () => { _vizState && (_vizState.thumbnailImg = img); };
+        img.onload = () => { if (_vizState) _vizState.thumbnailImg = img; };
+        img.onerror = (e) => console.warn('[viz] thumbnail preload failed', e);
         img.src = thumbnailUrl;
     }
 
@@ -770,7 +771,8 @@ function _roundRect(ctx, x, y, w, h, r) {
 // 데스크톱 detection_visualization_dialog.py의 PDF 레이아웃을 웹 Canvas로 포팅
 // jsPDF는 동적 import (CDN ESM)
 
-const PDF_W = 2100, PDF_H = 1485;  // A4 landscape ~ 180dpi
+const PDF_W = 2100, PDF_H = 1485;  // 논리 좌표 (모든 draw 함수가 사용)
+const PDF_SCALE = 2;               // 물리 픽셀 배율 — 출력 선명도 향상
 const PDF_COL = {
     bg: '#FFFFFF', panel: '#F3F4F6', panelBorder: '#E5E7EB',
     text: '#111827', subtext: '#6B7280', accent: '#1E3A8A',
@@ -835,17 +837,18 @@ async function _exportPDF(state) {
 function _loadImage(src) {
     return new Promise((resolve, reject) => {
         const img = new Image();
-        img.crossOrigin = 'anonymous';
         img.onload = () => resolve(img);
-        img.onerror = reject;
+        img.onerror = () => reject(new Error('image load failed: ' + src));
         img.src = src;
     });
 }
 
 function _pdfNewCanvas() {
     const c = document.createElement('canvas');
-    c.width = PDF_W; c.height = PDF_H;
+    c.width = PDF_W * PDF_SCALE;
+    c.height = PDF_H * PDF_SCALE;
     const ctx = c.getContext('2d');
+    ctx.scale(PDF_SCALE, PDF_SCALE);
     ctx.fillStyle = PDF_COL.bg;
     ctx.fillRect(0, 0, PDF_W, PDF_H);
     return c;
@@ -1199,23 +1202,21 @@ function _pdfDrawTumorAnalysis(state) {
 }
 
 function _pdfDrawSpatialHeatmap(state) {
-    const { cells, countsByClass, thumbnailImg } = state;
+    const { cells, countsByClass, thumbnailImg, slideDims } = state;
     const c = _pdfNewCanvas();
     const ctx = c.getContext('2d');
     _pdfHeader(ctx, 'Spatial Distribution');
 
     if (cells.length === 0) return c;
 
-    // 셀 좌표는 WSI level-0 픽셀. 썸네일이 슬라이드 전체를 표현하므로
-    // (0,0)~(slideW,slideH) 좌표계를 사용해 썸네일 위에 그대로 매핑한다.
-    // 썸네일이 없으면 셀 bbox만으로 폴백.
-    let originX, originY, slideW, slideH;
-    if (thumbnailImg) {
-        // 썸네일 가로세로 비율이 곧 슬라이드 비율
-        originX = 0; originY = 0;
-        slideW = thumbnailImg.naturalWidth;
-        slideH = thumbnailImg.naturalHeight;
+    // 셀 좌표는 WSI level-0 픽셀. 슬라이드 level-0 크기를 좌표계로 사용해
+    // 썸네일/프리뷰 위에 정확히 매핑한다.
+    let originX = 0, originY = 0, slideW, slideH;
+    if (slideDims && slideDims[0] && slideDims[1]) {
+        slideW = slideDims[0];
+        slideH = slideDims[1];
     } else {
+        // 폴백: 셀 bbox
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
         for (const cell of cells) {
             if (cell.x < minX) minX = cell.x;
@@ -1252,24 +1253,24 @@ function _pdfDrawSpatialHeatmap(state) {
     ctx.lineWidth = 2;
     ctx.strokeRect(ox, oy, drawW, drawH);
 
-    // 어두운 반투명 마스크로 셀 가시성 강화 (썸네일 위에 그릴 때)
+    // 옅은 반투명 마스크로 셀 가시성 강화 (썸네일 위에 그릴 때)
     if (thumbnailImg) {
-        ctx.fillStyle = 'rgba(255,255,255,0.35)';
+        ctx.fillStyle = 'rgba(255,255,255,0.20)';
         ctx.fillRect(ox, oy, drawW, drawH);
     }
 
-    // 셀 오버레이 (서브샘플링)
-    const MAX_PTS = 40000;
+    // 셀 오버레이 (서브샘플링) — 점 크기는 그리는 면적에 비례
+    const MAX_PTS = 80000;
     const step = cells.length > MAX_PTS ? Math.ceil(cells.length / MAX_PTS) : 1;
-    const dotSize = thumbnailImg ? 5 : 4;
-    ctx.globalAlpha = 0.75;
+    const dotR = Math.max(1.5, Math.min(drawW, drawH) / 600);
+    ctx.globalAlpha = 0.85;
     for (let i = 0; i < cells.length; i += step) {
         const cell = cells[i];
         const sx = ox + ((cell.x - originX) / slideW) * drawW;
         const sy = oy + ((cell.y - originY) / slideH) * drawH;
         ctx.fillStyle = CLASS_COLORS[cell.class_id] || '#888';
         ctx.beginPath();
-        ctx.arc(sx, sy, dotSize / 2, 0, Math.PI * 2);
+        ctx.arc(sx, sy, dotR, 0, Math.PI * 2);
         ctx.fill();
     }
     ctx.globalAlpha = 1;

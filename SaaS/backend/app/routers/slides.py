@@ -325,6 +325,21 @@ async def get_thumbnail_by_name(
         raise HTTPException(500, f"썸네일 생성 실패: {e}")
 
 
+@router.get("/{slide_id}/preview")
+async def get_preview(slide_id: str, size: int = Query(2048, ge=512, le=8192)):
+    """고해상도 슬라이드 프리뷰 (PDF 리포트용, 캐시 미사용)"""
+    info = slide_manager.get(slide_id)
+    if not info:
+        raise HTTPException(404, "슬라이드를 찾을 수 없습니다")
+    import io
+    thumb = info.slide.get_thumbnail((size, size))
+    thumb_rgb = thumb.convert("RGB")
+    buf = io.BytesIO()
+    thumb_rgb.save(buf, format="JPEG", quality=92)
+    buf.seek(0)
+    return StreamingResponse(buf, media_type="image/jpeg")
+
+
 @router.get("/{slide_id}/thumbnail")
 async def get_thumbnail(slide_id: str, size: int = Query(300, ge=64, le=1024)):
     """slide_id 기반 썸네일 (하위 호환)"""

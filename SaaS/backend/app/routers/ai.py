@@ -13,8 +13,8 @@ from pathlib import Path
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import APIRouter, HTTPException, Form
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, HTTPException, Form, Query
+from fastapi.responses import JSONResponse, FileResponse
 
 from app.config import settings
 from app.slide_manager import slide_manager
@@ -41,17 +41,24 @@ def _update_task(task_id, **kwargs):
 
 def _get_ai_cache_path(slide_path: str, tissue_type: str) -> Path:
     """
-    AI 결과 캐시 파일 경로.
-    settings.AI_RESULTS_DIR (uploads 와는 별개) 에 저장한다.
-    파일명: {slide_stem}_HE-Fit_{tissue_type}.json
+    HE-Fit 결과 캐시: ai_results/HE-Fit/{slide_stem}_HE-Fit_{tissue_type}.json
+    레거시 경로 (ai_results/{slide_stem}_HE-Fit_{tissue_type}.json) 가 있으면
+    새 위치로 자동 이동한다.
     """
     p = Path(slide_path)
-    cache_dir = Path(settings.AI_RESULTS_DIR)
+    cache_dir = Path(settings.AI_RESULTS_DIR) / "HE-Fit"
     try:
         cache_dir.mkdir(parents=True, exist_ok=True)
     except Exception:
         pass
-    return cache_dir / f"{p.stem}_HE-Fit_{tissue_type}.json"
+    new_path = cache_dir / f"{p.stem}_HE-Fit_{tissue_type}.json"
+    legacy_path = Path(settings.AI_RESULTS_DIR) / f"{p.stem}_HE-Fit_{tissue_type}.json"
+    if not new_path.exists() and legacy_path.exists():
+        try:
+            legacy_path.replace(new_path)
+        except Exception as e:
+            print(f"[ai] HE-Fit legacy migration failed: {e}")
+    return new_path
 
 
 def _run_detection(task_id: str, slide_id: str, roi_polygons: Optional[list], tissue_type: str):
@@ -749,3 +756,556 @@ async def save_detection_result(
         "filename": cache_path.name,
         "total_cells": result_obj.get("total_cells", 0),
     }
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Virtual Stain (VS-IHC) — IHC → H&E
+# ═══════════════════════════════════════════════════════════════════
+
+VS_MODEL_FILES = {
+    "ihc_membrane": "IHC_HnE_virtual_stain_membrane.pth",
+    # nucleus 모델은 아직 학습 안 됨 — 추가 시 여기에 등록
+}
+
+
+def _get_vs_cache_paths(slide_path: str, stain_type: str, target_mpp: float = 2.0):
+    """
+    Virtual stain 결과 캐시: ai_results/VS-IHC/{slide_stem}_VS-IHC_{stain}_mpp{p}.{png|json}
+    타일 피라미드는 sibling 폴더: ..._tile/{level}/{tx}_{ty}.jpeg
+    레거시 (ai_results 루트) 경로가 있으면 새 위치로 자동 이동.
+    """
+    p = Path(slide_path)
+    cache_dir = Path(settings.AI_RESULTS_DIR) / "VS-IHC"
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    mpp_str = f"{target_mpp:g}".replace(".", "p")
+    base_name = f"{p.stem}_VS-IHC_{stain_type}_mpp{mpp_str}"
+    new_png = (cache_dir / base_name).with_suffix(".png")
+    new_meta = (cache_dir / base_name).with_suffix(".json")
+
+    legacy_dir = Path(settings.AI_RESULTS_DIR)
+    legacy_png = (legacy_dir / base_name).with_suffix(".png")
+    legacy_meta = (legacy_dir / base_name).with_suffix(".json")
+    legacy_tile = legacy_dir / f"{base_name}_tile"
+
+    for src, dst in ((legacy_png, new_png), (legacy_meta, new_meta)):
+        if src.exists() and not dst.exists():
+            try:
+                src.replace(dst)
+            except Exception as e:
+                print(f"[ai] VS legacy migration failed ({src.name}): {e}")
+    if legacy_tile.exists() and not (cache_dir / f"{base_name}_tile").exists():
+        try:
+            legacy_tile.replace(cache_dir / f"{base_name}_tile")
+        except Exception as e:
+            print(f"[ai] VS legacy tile dir migration failed: {e}")
+    return new_png, new_meta
+
+
+def _get_vs_tile_dir(slide_path: str, stain_type: str, target_mpp: float = 2.0) -> Path:
+    """VS 타일 피라미드 폴더: {png_parent}/{png_stem}_tile/"""
+    png_path, _ = _get_vs_cache_paths(slide_path, stain_type, target_mpp)
+    return png_path.parent / f"{png_path.stem}_tile"
+
+
+def _generate_vs_tiles(output_canvas, tile_dir: Path,
+                       tile_size: int = 512, n_levels: int = 4,
+                       quality: int = 88) -> list[dict]:
+    """
+    output_canvas (uint8 H×W×3 또는 H×W×4) → 4단계 피라미드 JPEG 타일 생성.
+    레벨 0 = 원본 해상도, 각 레벨은 /2 다운샘플.
+    완전히 흰 타일은 스킵 (서빙 시 404 → 프론트에서 무시).
+    반환: [{"level":0,"width":W,"height":H,"nx":..,"ny":..,"tile_count":..}, ...]
+    """
+    import numpy as np
+    from PIL import Image
+
+    if tile_dir.exists():
+        # 기존 타일 제거 (재생성 시 stale 제거)
+        try:
+            import shutil
+            shutil.rmtree(tile_dir)
+        except Exception:
+            pass
+    tile_dir.mkdir(parents=True, exist_ok=True)
+
+    # RGBA → RGB (alpha=0 영역은 흰색 배경으로 합성해 JPEG 저장)
+    if output_canvas.ndim == 3 and output_canvas.shape[2] == 4:
+        rgb = output_canvas[:, :, :3].copy()
+        a = output_canvas[:, :, 3]
+        mask = a < 255
+        if mask.any():
+            rgb[mask] = 255
+        pil = Image.fromarray(rgb, 'RGB')
+    else:
+        pil = Image.fromarray(output_canvas, 'RGB')
+
+    levels_meta: list[dict] = []
+    current = pil
+    for lv in range(n_levels):
+        w, h = current.size
+        nx = (w + tile_size - 1) // tile_size
+        ny = (h + tile_size - 1) // tile_size
+        level_dir = tile_dir / str(lv)
+        level_dir.mkdir(parents=True, exist_ok=True)
+
+        arr = np.asarray(current)
+        count = 0
+        for ty in range(ny):
+            for tx in range(nx):
+                left = tx * tile_size
+                upper = ty * tile_size
+                right = min(left + tile_size, w)
+                lower = min(upper + tile_size, h)
+                patch = arr[upper:lower, left:right]
+                # 거의 전부 흰색이면 스킵 (디스크 절약)
+                if patch.size == 0:
+                    continue
+                if patch.min() >= 248:
+                    continue
+                tile_img = Image.fromarray(patch, 'RGB')
+                tile_img.save(level_dir / f"{tx}_{ty}.jpeg", "JPEG",
+                              quality=quality, optimize=False)
+                count += 1
+
+        levels_meta.append({
+            "level": lv, "width": int(w), "height": int(h),
+            "nx": int(nx), "ny": int(ny), "tile_count": int(count),
+        })
+
+        if lv < n_levels - 1:
+            new_w = max(1, w // 2)
+            new_h = max(1, h // 2)
+            current = current.resize((new_w, new_h), Image.BILINEAR)
+
+    return levels_meta
+
+
+def _run_virtual_stain(task_id: str, slide_id: str,
+                       roi_polygons, stain_type: str,
+                       target_mpp: float = 2.0):
+    """
+    Virtual staining 백그라운드 작업.
+    desktop ai/virtual_stain.py 의 VirtualStainWorker.run() 로직을 그대로 옮김.
+    Qt 시그널 대신 _update_task() 사용.
+    """
+    try:
+        import torch
+        import numpy as np
+        from PIL import Image
+        import openslide
+
+        from ai.virtual_stain import (
+            Generator, _make_blend_weight, _read_patch, VirtualStainWorker
+        )
+
+        # Pillow의 decompression-bomb 가드 해제 (VS composite 가 수억 px 일 수 있음)
+        Image.MAX_IMAGE_PIXELS = None
+
+        info = slide_manager.get(slide_id)
+        if not info:
+            _update_task(task_id, status="error", error="슬라이드를 찾을 수 없습니다")
+            return
+
+        # ── ROI 폴리곤 보관 (표시 클립용; 추론은 항상 전체로 수행) ──
+        # 추론/저장은 ROI 무시하고 전체로 진행해 캐시를 만든다.
+        # 단, 사용자가 ROI를 지정한 경우 그 폴리곤은 결과에 그대로 담아 프론트에서
+        # 오버레이를 ROI 영역으로만 클립해 보여주도록 한다.
+        display_roi_polygons = roi_polygons
+        roi_polygons = None  # 전체 추론 강제
+
+        # ── 캐시 확인 ──
+        png_path, meta_path = _get_vs_cache_paths(info.file_path, stain_type, target_mpp)
+        if png_path.exists() and meta_path.exists():
+            try:
+                _update_task(task_id, status="running", progress=10,
+                             status_msg=f"Loading cached virtual stain: {png_path.name}")
+                with open(meta_path, 'r', encoding='utf-8') as f:
+                    cached_meta = json.load(f)
+
+                # 레거시 캐시: 타일 피라미드가 없으면 PNG에서 1회 업그레이드 생성
+                tile_dir = _get_vs_tile_dir(info.file_path, stain_type, target_mpp)
+                if (not cached_meta.get("levels")) or (not tile_dir.exists()):
+                    try:
+                        _update_task(task_id, progress=30,
+                                     status_msg="Upgrading legacy cache → tile pyramid...")
+                        legacy_png = Image.open(str(png_path))
+                        if legacy_png.mode == 'RGBA':
+                            bg = Image.new('RGB', legacy_png.size, (255, 255, 255))
+                            bg.paste(legacy_png, mask=legacy_png.split()[3])
+                            legacy_arr = np.asarray(bg)
+                        else:
+                            legacy_arr = np.asarray(legacy_png.convert('RGB'))
+                        tile_size_px = int(cached_meta.get("tile_size", 512))
+                        levels_meta = _generate_vs_tiles(
+                            legacy_arr, tile_dir,
+                            tile_size=tile_size_px, n_levels=4,
+                        )
+                        cached_meta['tile_size'] = tile_size_px
+                        cached_meta['levels'] = levels_meta
+                        with open(meta_path, 'w', encoding='utf-8') as f:
+                            json.dump(cached_meta, f)
+                    except Exception as e:
+                        import traceback
+                        print(f"VS legacy tile upgrade failed: {e}\n{traceback.format_exc()}")
+
+                cached_meta['image_filename'] = png_path.name
+                cached_meta['cached'] = True
+                if display_roi_polygons is not None:
+                    cached_meta['roi_polygons'] = display_roi_polygons
+                _update_task(task_id, status="completed", progress=100,
+                             status_msg="Loaded cached virtual stain",
+                             result=cached_meta)
+                return
+            except Exception as e:
+                print(f"VS cache load failed, running fresh: {e}")
+
+        # ── 모델 경로 확인 ──
+        model_filename = VS_MODEL_FILES.get(stain_type)
+        if not model_filename:
+            _update_task(task_id, status="error",
+                         error=f"Unknown stain type: {stain_type}")
+            return
+        model_path = Path(settings.MODEL_DIR) / model_filename
+        if not model_path.exists():
+            _update_task(task_id, status="error",
+                         error=f"Virtual stain model not found: {model_path}")
+            return
+
+        _update_task(task_id, status="running", progress=1,
+                     status_msg="Loading virtual stain model...")
+
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        use_fp16 = (device.type == 'cuda')
+
+        generator = Generator(3, 3).to(device)
+        generator.load_state_dict(torch.load(str(model_path), map_location=device))
+        generator.eval()
+        if use_fp16:
+            generator = generator.half()
+
+        _update_task(task_id, progress=3, status_msg="Opening slide...")
+
+        slide_path = info.file_path
+        slide = openslide.OpenSlide(slide_path)
+
+        # target_mpp is provided as parameter
+        patch_size = 512
+        batch_size = 4
+
+        native_mpp = float(slide.properties.get('openslide.mpp-x', 0.25))
+        downsample_factor = target_mpp / native_mpp
+        ps = patch_size
+        overlap = ps // 4
+        stride = ps - overlap
+        read_size = int(ps * downsample_factor)
+        read_stride = int(stride * downsample_factor)
+
+        best_level = slide.get_best_level_for_downsample(downsample_factor)
+        level_ds = slide.level_downsamples[best_level]
+        level_read = int(read_size / level_ds)
+
+        W, H = slide.dimensions
+
+        # ROI bounds 계산 (폴리곤 → bounding box)
+        roi_bounds = None
+        if roi_polygons:
+            xs = [p[0] for poly in roi_polygons for p in poly]
+            ys = [p[1] for poly in roi_polygons for p in poly]
+            roi_bounds = (
+                max(0, int(min(xs))), max(0, int(min(ys))),
+                min(W, int(max(xs))), min(H, int(max(ys))),
+            )
+
+        if roi_bounds:
+            x_min, y_min, x_max, y_max = roi_bounds
+        else:
+            x_min, y_min, x_max, y_max = 0, 0, W, H
+
+        # ROI가 한 패치보다 작으면 read_size로 확장 (슬라이드 경계 안에서 클램프)
+        if x_max - x_min < read_size:
+            cx = (x_min + x_max) // 2
+            x_min = max(0, cx - read_size // 2)
+            x_max = min(W, x_min + read_size)
+            x_min = max(0, x_max - read_size)
+        if y_max - y_min < read_size:
+            cy = (y_min + y_max) // 2
+            y_min = max(0, cy - read_size // 2)
+            y_max = min(H, y_min + read_size)
+            y_min = max(0, y_max - read_size)
+
+        if W < read_size or H < read_size:
+            _update_task(task_id, status="error",
+                         error=f"Slide too small for target_mpp={target_mpp} "
+                               f"(needs >= {read_size}px at level-0, slide is {W}x{H}).")
+            slide.close()
+            return
+
+        pos_x = list(range(x_min, x_max - read_size + 1, read_stride))
+        pos_y = list(range(y_min, y_max - read_size + 1, read_stride))
+        if not pos_x:
+            pos_x = [x_min]
+        if not pos_y:
+            pos_y = [y_min]
+        if pos_x[-1] + read_size < x_max:
+            pos_x.append(max(pos_x[-1] + read_stride, x_max - read_size))
+        if pos_y[-1] + read_size < y_max:
+            pos_y.append(max(pos_y[-1] + read_stride, y_max - read_size))
+
+        n_px, n_py = len(pos_x), len(pos_y)
+        out_w = (n_px - 1) * stride + ps
+        out_h = (n_py - 1) * stride + ps
+        canvas_l0_w = pos_x[-1] + read_size - x_min
+        canvas_l0_h = pos_y[-1] + read_size - y_min
+
+        _update_task(task_id, progress=5, status_msg="Creating tissue mask...")
+
+        # tissue grid 빌드는 worker의 메서드를 직접 호출 (인스턴스 불필요한 staticmethod 형태가 아니라
+        # 인스턴스 메서드여서 래핑 필요) — 가장 단순한 방법: dummy worker 인스턴스 생성
+        dummy_worker = VirtualStainWorker(
+            image_path=slide_path,
+            model_path=str(model_path),
+            stain_type=stain_type,
+            target_mpp=target_mpp,
+            patch_size=patch_size,
+            batch_size=batch_size,
+            roi_bounds=roi_bounds,
+            roi_polygons=roi_polygons,
+        )
+        tissue_grid, tissue_pixel_mask = dummy_worker._build_tissue_grid(
+            slide, x_min, y_min, canvas_l0_w, canvas_l0_h,
+            n_px, n_py, stride, ps, out_w, out_h,
+        )
+        tissue_total = int(tissue_grid.sum())
+        _update_task(task_id, progress=8,
+                     status_msg=f"Grid {n_px}x{n_py}: {tissue_total} tissue patches")
+
+        # ── 패치 리스트 ──
+        all_patches = []
+        for yi in range(n_py):
+            for xi in range(n_px):
+                x0 = pos_x[xi]
+                y0 = pos_y[yi]
+                out_of_bounds = (x0 + read_size > W) or (y0 + read_size > H)
+                is_tissue = bool(tissue_grid[yi, xi]) and not out_of_bounds
+                all_patches.append((xi, yi, x0, y0,
+                                    xi * stride, yi * stride, is_tissue))
+
+        # ── 누적 캔버스 ──
+        blend_weight = _make_blend_weight(ps, overlap)
+        blend_3ch = blend_weight[:, :, None]
+        output_acc = np.zeros((out_h, out_w, 3), dtype=np.float32)
+        input_acc = np.zeros((out_h, out_w, 3), dtype=np.float32)
+        weight_acc = np.zeros((out_h, out_w), dtype=np.float32)
+
+        tissue_count = 0
+        bs = batch_size
+        io_workers = min(max(2, os.cpu_count() or 4), 8)
+        tissue_batch = []
+
+        with torch.inference_mode(), ThreadPoolExecutor(max_workers=io_workers) as pool:
+            futures = []
+            for (xi, yi, x0, y0, px, py_c, is_tissue) in all_patches:
+                f = pool.submit(_read_patch, slide_path, x0, y0,
+                                best_level, level_read, ps, None, None)
+                futures.append(f)
+
+            for patch_idx, (xi, yi, x0, y0, px, py_c, is_tissue) in enumerate(all_patches):
+                region_np = futures[patch_idx].result()
+                input_acc[py_c:py_c + ps, px:px + ps] += region_np * blend_3ch
+
+                if not is_tissue:
+                    output_acc[py_c:py_c + ps, px:px + ps] += region_np * blend_3ch
+                    weight_acc[py_c:py_c + ps, px:px + ps] += blend_weight
+                else:
+                    t = torch.from_numpy(region_np).permute(2, 0, 1)
+                    t = t / 255.0 * 2.0 - 1.0
+                    tissue_batch.append((px, py_c, t))
+
+                is_end_of_row = (xi == n_px - 1)
+                batch_full = len(tissue_batch) >= bs
+                if tissue_batch and (batch_full or is_end_of_row):
+                    VirtualStainWorker._run_batch(
+                        generator, device, use_fp16, tissue_batch,
+                        output_acc, weight_acc, blend_3ch, blend_weight, ps,
+                    )
+                    tissue_count += len(tissue_batch)
+                    tissue_batch.clear()
+
+                if is_end_of_row:
+                    pct = 8 + int(87 * (yi + 1) / n_py)
+                    _update_task(task_id, progress=pct,
+                                 status_msg=f"Virtual staining... row {yi + 1}/{n_py} "
+                                            f"({tissue_count} tissue patches)")
+
+        if tissue_batch:
+            VirtualStainWorker._run_batch(
+                generator, device, use_fp16, tissue_batch,
+                output_acc, weight_acc, blend_3ch, blend_weight, ps,
+            )
+            tissue_count += len(tissue_batch)
+            tissue_batch.clear()
+
+        _update_task(task_id, progress=96, status_msg="Composing final image...")
+
+        # ── Compose ──
+        uncovered = weight_acc < 0.01
+        weight_acc = np.maximum(weight_acc, 1e-10)
+        output_canvas = (output_acc / weight_acc[:, :, None]).clip(0, 255).astype(np.uint8)
+        input_canvas = (input_acc / weight_acc[:, :, None]).clip(0, 255).astype(np.uint8)
+        output_canvas[uncovered] = 255
+        input_canvas[uncovered] = 255
+        output_canvas[~tissue_pixel_mask] = input_canvas[~tissue_pixel_mask]
+
+        # ── Polygon ROI 마스킹 → RGBA ──
+        import cv2
+        alpha = np.full((out_h, out_w), 255, dtype=np.uint8)
+        if roi_polygons:
+            scale_x = out_w / canvas_l0_w
+            scale_y = out_h / canvas_l0_h
+            poly_mask = np.zeros((out_h, out_w), dtype=np.uint8)
+            for poly_coords in roi_polygons:
+                pts = np.array([
+                    [round((x - x_min) * scale_x), round((y - y_min) * scale_y)]
+                    for x, y in poly_coords
+                ], dtype=np.int32)
+                cv2.fillPoly(poly_mask, [pts], 255)
+            alpha = poly_mask
+
+        rgba = np.dstack([output_canvas, alpha])
+
+        # ── 캐시 저장 (전체 추론만 도달; ROI는 위에서 캐시 hit 또는 폴리곤 무시) ──
+        levels_meta = []
+        tile_size_px = 512
+        try:
+            _update_task(task_id, progress=97, status_msg="Saving composite PNG...")
+            Image.fromarray(rgba, 'RGBA').save(str(png_path), format='PNG', optimize=False)
+
+            _update_task(task_id, progress=98, status_msg="Generating tile pyramid...")
+            tile_dir = _get_vs_tile_dir(info.file_path, stain_type, target_mpp)
+            levels_meta = _generate_vs_tiles(
+                output_canvas, tile_dir,
+                tile_size=tile_size_px, n_levels=4,
+            )
+
+            meta = {
+                "stain_type": stain_type,
+                "roi_origin": [int(x_min), int(y_min)],
+                "canvas_l0_w": int(canvas_l0_w),
+                "canvas_l0_h": int(canvas_l0_h),
+                "target_mpp": target_mpp,
+                "tissue_count": int(tissue_count),
+                "total_patches": int(n_px * n_py),
+                "image_filename": png_path.name,
+                "tile_size": tile_size_px,
+                "levels": levels_meta,
+            }
+            with open(meta_path, 'w', encoding='utf-8') as f:
+                json.dump(meta, f)
+            print(f"VS result cached: {png_path} + {len(levels_meta)} pyramid levels")
+        except Exception as e:
+            import traceback
+            print(f"VS cache save failed: {e}\n{traceback.format_exc()}")
+
+        result_payload = {
+            "stain_type": stain_type,
+            "image_filename": png_path.name,
+            "roi_origin": [int(x_min), int(y_min)],
+            "canvas_l0_w": int(canvas_l0_w),
+            "canvas_l0_h": int(canvas_l0_h),
+            "target_mpp": target_mpp,
+            "tissue_count": int(tissue_count),
+            "total_patches": int(n_px * n_py),
+            "tile_size": tile_size_px,
+            "levels": levels_meta,
+            "cached": False,
+        }
+        if display_roi_polygons is not None:
+            result_payload["roi_polygons"] = display_roi_polygons
+        _update_task(task_id, status="completed", progress=100,
+                     status_msg=f"Virtual staining complete — {tissue_count}/{n_px * n_py} patches",
+                     result=result_payload)
+
+        del generator
+        slide.close()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    except Exception as e:
+        import traceback
+        _update_task(task_id, status="error",
+                     error=f"Virtual staining failed: {e}\n{traceback.format_exc()}")
+
+
+@router.post("/virtual-stain")
+async def start_virtual_stain(
+    slide_id: str = Form(...),
+    stain_type: str = Form("ihc_membrane"),
+    target_mpp: float = Form(2.0),
+    roi_polygons: Optional[str] = Form(None),
+):
+    """Virtual stain (VS-IHC) 작업 시작 (비동기)"""
+    info = slide_manager.get(slide_id)
+    if not info:
+        raise HTTPException(404, "슬라이드를 찾을 수 없습니다")
+    if stain_type not in VS_MODEL_FILES:
+        raise HTTPException(400, f"Unknown stain type: {stain_type}")
+
+    polygons = json.loads(roi_polygons) if roi_polygons else None
+    task_id = uuid.uuid4().hex[:12]
+
+    with _tasks_lock:
+        _tasks[task_id] = {
+            "status": "queued", "progress": 0,
+            "result": None, "error": None, "status_msg": "",
+        }
+
+    t = threading.Thread(
+        target=_run_virtual_stain,
+        args=(task_id, slide_id, polygons, stain_type, target_mpp),
+        daemon=True,
+    )
+    t.start()
+    return {"task_id": task_id, "status": "queued"}
+
+
+@router.get("/virtual-stain/{slide_id}/{stain_type}.png")
+async def get_virtual_stain_image(slide_id: str, stain_type: str,
+                                  target_mpp: float = Query(2.0)):
+    """Virtual stain 캐시 PNG 서빙 (전체 추론 결과, PDF/리포트용)"""
+    info = slide_manager.get(slide_id)
+    if not info:
+        raise HTTPException(404, "슬라이드를 찾을 수 없습니다")
+    png_path, _ = _get_vs_cache_paths(info.file_path, stain_type, target_mpp)
+    if not png_path.exists():
+        raise HTTPException(404, "Virtual stain image not found")
+    return FileResponse(str(png_path), media_type="image/png")
+
+
+@router.get("/virtual-stain/{slide_id}/{stain_type}/tile/{level}/{tx}_{ty}.jpeg")
+async def get_virtual_stain_tile(
+    slide_id: str,
+    stain_type: str,
+    level: int,
+    tx: int,
+    ty: int,
+    target_mpp: float = Query(2.0),
+):
+    """
+    Virtual stain 피라미드 타일 서빙.
+    디스크에 있으면 정적 서빙, 없으면 404 (빈/흰 타일은 생성 안 함).
+    """
+    info = slide_manager.get(slide_id)
+    if not info:
+        raise HTTPException(404, "슬라이드를 찾을 수 없습니다")
+    tile_dir = _get_vs_tile_dir(info.file_path, stain_type, target_mpp)
+    tile_path = tile_dir / str(level) / f"{tx}_{ty}.jpeg"
+    if not tile_path.exists():
+        raise HTTPException(404, "tile not found")
+    return FileResponse(
+        str(tile_path),
+        media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=604800"},
+    )
